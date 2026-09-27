@@ -18,9 +18,25 @@ import (
 // call. in decides both how the stream is framed and how a record's fields are
 // read.
 func Run(r io.Reader, w io.Writer, in config.Input, sink func(rec []byte)) error {
+	return run(func(emit func([]byte)) error {
+		return ingest.Records(r, in.Format, emit)
+	}, w, in, sink)
+}
+
+// RunStored is Run for one of loghorn's own stored log files, framed by
+// ingest.Stored rather than by in.Format: a stored day can mix producers, so
+// no single framing fits it. in still decides how a record's fields are read.
+// There is no sink, since a stored file is already recorded.
+func RunStored(r io.Reader, w io.Writer, in config.Input) error {
+	return run(func(emit func([]byte)) error {
+		return ingest.Stored(r, emit)
+	}, w, in, nil)
+}
+
+func run(frame func(emit func([]byte)) error, w io.Writer, in config.Input, sink func(rec []byte)) error {
 	p := adapter.New(in)
 	var writeErr error
-	err := ingest.Records(r, in.Format, func(rec []byte) {
+	err := frame(func(rec []byte) {
 		if sink != nil {
 			sink(rec)
 		}

@@ -106,3 +106,18 @@ func TestRunKeepsFeedingSinkAfterWriteError(t *testing.T) {
 		t.Fatalf("sink got %q, want %q", got, want)
 	}
 }
+
+// A stored day whose first run wrote JSON lines and whose second wrote YAML
+// documents still reads each YAML document back as one record.
+func TestRunStoredMixedDay(t *testing.T) {
+	input := "{\"severity\":\"INFO\",\"textPayload\":\"routine\"}\n" +
+		"---\nseverity: ERROR\ntextPayload: boom\n" +
+		"---\nseverity: INFO\ntextPayload: fine\n"
+	var out bytes.Buffer
+	if err := RunStored(strings.NewReader(input), &out, config.Default().Input); err != nil {
+		t.Fatal(err)
+	}
+	if want := "---\nseverity: ERROR\ntextPayload: boom\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}

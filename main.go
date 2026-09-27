@@ -219,13 +219,12 @@ func main() {
 	if *filterMode {
 		if *historical {
 			// Each file is run through the engine on its own rather than
-			// concatenated: with format left "auto", ingest.Records peeks the
-			// start of each stream to choose among JSON, YAML and line framing,
-			// and different stored days can come from different producers. A
-			// pinned format skips that detection but each file is still framed
-			// independently. No sink: -historical never writes to the log file.
+			// concatenated, and framed by ingest.Stored rather than by the
+			// configured format: one stored day can hold runs from different
+			// producers, so it is framed line by line. No sink: -historical
+			// never writes to the log file.
 			for _, f := range historicalFiles {
-				if err := headless.Run(f, os.Stdout, cfg.Input, nil); err != nil {
+				if err := headless.RunStored(f, os.Stdout, cfg.Input); err != nil {
 					fmt.Fprintln(os.Stderr, "loghorn:", err)
 					os.Exit(1)
 				}
@@ -335,12 +334,18 @@ func main() {
 		// One goroutine loops over the sources in order rather than one per
 		// source: live mode's list always has exactly one element, and
 		// -historical's stored files must be read oldest-first, in sequence, not
-		// interleaved — with format left "auto", each ingest.Records call also
-		// independently detects JSON, YAML or line framing by peeking its own
-		// stream's start; a pinned format applies to every source alike.
+		// interleaved. A stored file is framed by ingest.Stored, not by the
+		// configured format: one stored day can mix producers (JSON lines, then
+		// YAML documents), and framing chosen from its first line shreds the rest.
+		frame := func(r io.Reader, emit func([]byte)) error {
+			return ingest.Records(r, cfg.Input.Format, emit)
+		}
+		if *historical {
+			frame = ingest.Stored
+		}
 		var err error
 		for _, src := range sources {
-			err = ingest.Records(src, cfg.Input.Format, func(line []byte) {
+			err = frame(src, func(line []byte) {
 				sink(line)
 				e := parser.ParseLine(line)
 				e.Received = time.Now()
