@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -277,6 +278,23 @@ func TestSavedWidthRoundTrip(t *testing.T) {
 	eff := Effective(s, got)
 	if eff.Fields[0].Width != 140 {
 		t.Fatalf("effective width %d", eff.Fields[0].Width)
+	}
+}
+
+// A zero (automatic) width is not written, so files without widths keep
+// their old form.
+func TestSaveOmitsZeroWidth(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	path, err := SaveSchema(dir, sampleSchema())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "width") {
+		t.Fatalf("zero width written:\n%s", data)
 	}
 }
 

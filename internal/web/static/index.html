@@ -77,16 +77,10 @@
     <h2>Columns</h2>
     <div id="columns" class="sb-row">
       <span id="colnames" class="colnames"></span>
-      <button id="edit-columns" type="button">edit</button>
-      <button id="col-restore" type="button" title="show the default columns at their natural widths" hidden>restore defaults</button>
     </div>
-    <div id="columns-panel" class="panel" hidden>
-      <ul id="col-list" class="col-list"></ul>
-      <div class="panel-actions">
-        <button id="col-apply" type="button">Apply</button>
-        <button id="col-default" type="button">Default columns</button>
-        <button id="col-cancel" type="button" class="link">cancel</button>
-      </div>
+    <div class="sb-row">
+      <button id="col-az" type="button" title="order the columns by their last name part, A to Z">A→Z</button>
+      <button id="col-restore" type="button" title="show the stream's default columns" hidden>restore defaults</button>
     </div>
   </section>
 </aside>
@@ -125,5 +119,7 @@
     <button id="schema-close" type="button" class="link">close</button>
   </div>
 </dialog>
+<div id="col-menu" class="menu col-menu" role="menu" hidden></div>
+<div id="col-sub" class="menu col-menu col-sub" role="menu" hidden></div>
 </body>
 </html>

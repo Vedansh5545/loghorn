@@ -66,7 +66,7 @@ type Field struct {
 	Visualizer string `toml:"visualizer" json:"visualizer"`
 	Label      string `toml:"label,omitempty" json:"label,omitempty"`
 	Hidden     bool   `toml:"hidden,omitempty" json:"hidden,omitempty"`
-	Width      int    `toml:"width,omitempty" json:"width,omitempty"` // pixels; 0 = automatic
+	Width      int    `toml:"width,omitempty,omitzero" json:"width,omitempty"` // pixels; 0 = automatic
 	Inferred   Type   `toml:"-" json:"inferred"`
 	Count      int    `toml:"-" json:"count"`
 	New        bool   `toml:"-" json:"new"`

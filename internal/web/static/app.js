@@ -361,7 +361,9 @@ function wireBar() {
     state.groupBy = [];
     state.aggregates = [];
     state.plot = { op: "count" };
-    closeColumns();
+    closeColumnMenu();
+    hiddenThisQuery = [];
+    tempWidths = {};
     clearExplore();
     loadSchema().then(() => {
       rebuildExplore();
@@ -488,14 +490,8 @@ function tableHeaderCell(c) {
   inner.append(breakable(c.label || c.path));
   const grip = el("span", "col-resize");
   grip.title = "drag to resize · double-click to fit";
-  grip.addEventListener("pointerdown", (e) => startResize(e, th));
-  grip.addEventListener("dblclick", () => {
-    const w = loadWidths();
-    delete w[c.path];
-    saveWidths(w);
-    applyWidths();
-  });
-  th.append(inner, grip);
+  if (!c.group) th.dataset.temp = "1"; // a metric: not a schema field
+  th.append(inner, resizeGrip(th));
   return th;
 }
 
@@ -610,59 +606,57 @@ function headerCell(c, count) {
   th.dataset.path = c.path;
   th.title = c.path + " : " + c.type;
   const inner = el("div", "th-inner");
-  inner.append(breakable(c.label || c.path));
+  const label = breakable(c.label || c.path);
+  label.classList.add("th-menu");
+  label.tabIndex = 0;
+  label.setAttribute("role", "button");
+  label.setAttribute("aria-haspopup", "true");
+  label.addEventListener("click", () => openColumnMenu(c.path, label));
+  label.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    openColumnMenu(c.path, label);
+  });
+  inner.append(label);
   const del = el("button", "col-del");
   del.type = "button";
-  del.title = "remove this column (restore from Columns)";
+  del.title = "hide this column";
   del.setAttribute("aria-label", "remove column " + c.path);
   del.disabled = count <= 1;
   del.append(trashIcon());
-  del.addEventListener("click", () => removeColumn(c.path));
+  del.addEventListener("click", () => hideColumn(c.path));
   inner.append(del);
+  th.append(inner, resizeGrip(th));
+  return th;
+}
+
+// ---- column widths ----
+// A dragged width is saved in the stream's schema (field width; 0 = natural).
+// Table-view metric columns are not schema fields: their widths last until
+// the stream changes.
+
+let tempWidths = {};
+
+function resizeGrip(th) {
   const grip = el("span", "col-resize");
   grip.title = "drag to resize · double-click to fit";
   grip.addEventListener("pointerdown", (e) => startResize(e, th));
   grip.addEventListener("dblclick", () => {
-    const w = loadWidths();
-    delete w[c.path];
-    saveWidths(w);
-    applyWidths();
+    const path = th.dataset.path;
+    if (th.dataset.temp) {
+      delete tempWidths[path];
+      applyWidths();
+    } else if ((fieldByPath(path) || {}).width) {
+      saveFieldFormat(path, { width: 0 });
+    }
   });
-  th.append(inner, grip);
-  return th;
+  return grip;
 }
 
-function removeColumn(path) {
-  const cols = currentColumns().filter((p) => p !== path);
-  if (!cols.length) return;
-  state.columns = cols;
-  closeColumns();
-  runQuery();
-}
-
-// ---- column widths ----
-// Widths the user dragged are kept per stream in this browser only.
-
-function widthsKey() {
-  return "loghorn.widths." + state.stream;
-}
-
-function loadWidths() {
-  try {
-    const w = JSON.parse(localStorage.getItem(widthsKey()) || "{}");
-    return w && typeof w === "object" ? w : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveWidths(w) {
-  try {
-    if (Object.keys(w).length) localStorage.setItem(widthsKey(), JSON.stringify(w));
-    else localStorage.removeItem(widthsKey());
-  } catch {
-    // storage unavailable: widths last until reload
-  }
+function savedWidths() {
+  const w = {};
+  for (const f of schemaFields()) if (f.width > 0) w[f.path] = f.width;
+  return Object.assign(w, tempWidths);
 }
 
 // applyWidths lays the table out from its content, then, if any column has a
@@ -671,7 +665,7 @@ function saveWidths(w) {
 function applyWidths(extra) {
   const table = $("table");
   const ths = Array.from($("head").children);
-  const w = Object.assign(loadWidths(), extra || {});
+  const w = Object.assign(savedWidths(), extra || {});
   table.classList.remove("fixed");
   table.style.width = "";
   for (const th of ths) th.style.width = "";
@@ -713,20 +707,25 @@ function startResize(e, th) {
     grip.removeEventListener("pointerup", up);
     grip.removeEventListener("pointercancel", up);
     document.body.classList.remove("resizing");
-    const w = loadWidths();
-    w[path] = width;
-    saveWidths(w);
-    renderRestore();
+    if (width === startW) {
+      applyWidths(); // a click, not a drag
+    } else if (th.dataset.temp) {
+      tempWidths[path] = width;
+    } else {
+      saveFieldFormat(path, { width });
+    }
   };
   grip.addEventListener("pointermove", move);
   grip.addEventListener("pointerup", up);
   grip.addEventListener("pointercancel", up);
 }
 
-// renderRestore shows the restore button while the columns or their widths
-// differ from the defaults.
+// renderRestore shows the restore button while the shown columns differ from
+// the stream's default columns.
 function renderRestore() {
-  $("col-restore").hidden = !state.columns.length && !Object.keys(loadWidths()).length;
+  const def = schemaData && schemaData.schema && Array.isArray(schemaData.schema.columns) ? schemaData.schema.columns : [];
+  const cols = currentColumns();
+  $("col-restore").hidden = !def.length || (cols.length === def.length && cols.every((p, i) => p === def[i]));
 }
 
 // preOf is a <pre> whose http(s) URLs are links.
@@ -829,9 +828,12 @@ function renderColumnNames() {
   const cols = lastResult ? lastResult.columns : [];
   cols.forEach((c, i) => {
     if (i) box.append(el("span", "sep", " · "));
-    const s = el("span", "", c.label || c.path);
-    s.title = c.path;
-    box.append(s);
+    const b = el("button", "colname", c.label || c.path);
+    b.type = "button";
+    b.title = c.path;
+    b.setAttribute("aria-haspopup", "true");
+    b.addEventListener("click", () => openColumnMenu(c.path, b));
+    box.append(b);
   });
 }
 
@@ -1382,98 +1384,278 @@ function drawMetrics() {
   box.append(add);
 }
 
-// ---- column editor ----
+// ---- column menu ----
+// Clicking a Samples header label or a sidebar column name opens a menu with
+// the column's formatting (saved to the schema), hide, sort and placement.
 
-let colDraft = []; // [{path, label, on}]
+let hiddenThisQuery = []; // paths hidden in this query, most recent first
+let menuPath = "";
+let menuAnchor = null;
+let labelCommit = null; // saves the menu's label input if it changed
 
-function openColumns() {
-  const shown = currentColumns();
-  const fields = schemaFields();
-  colDraft = shown.map((p) => ({ path: p, label: (fieldByPath(p) || {}).label || "", on: true }));
-  for (const f of fields) {
-    if (!shown.includes(f.path)) colDraft.push({ path: f.path, label: f.label || "", on: false, hidden: f.hidden });
-  }
-  renderColList();
-  $("columns-panel").hidden = false;
+// colInfo is what the page knows of a column: its schema field, else its
+// result column, else a bare string field.
+function colInfo(path) {
+  const f = fieldByPath(path);
+  if (f) return f;
+  const c = lastResult && lastResultStream === state.stream && Array.isArray(lastResult.columns)
+    ? lastResult.columns.find((x) => x.path === path) : null;
+  return { path, type: (c && c.type) || "string", label: (c && c.label) || "" };
 }
 
-function closeColumns() {
-  $("columns-panel").hidden = true;
+function setColumns(cols) {
+  closeColumnMenu();
+  state.columns = cols;
+  runQuery();
 }
 
-let dragFrom = -1;
-
-function moveCol(from, to) {
-  if (to < 0 || to >= colDraft.length || from === to) return;
-  const [c] = colDraft.splice(from, 1);
-  colDraft.splice(to, 0, c);
-  renderColList();
+// hideColumn removes path from this query's columns; the last one stays.
+function hideColumn(path) {
+  const cols = currentColumns().filter((p) => p !== path);
+  if (!cols.length) return;
+  hiddenThisQuery = [path, ...hiddenThisQuery.filter((p) => p !== path)];
+  setColumns(cols);
 }
 
-function renderColList() {
-  const list = $("col-list");
-  list.replaceChildren();
-  colDraft.forEach((c, i) => {
-    const li = el("li", "col-item");
-    li.draggable = true;
-    li.dataset.path = c.path;
-    li.addEventListener("dragstart", (e) => {
-      dragFrom = i;
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", c.path);
-    });
-    li.addEventListener("dragover", (e) => e.preventDefault());
-    li.addEventListener("drop", (e) => {
-      e.preventDefault();
-      moveCol(dragFrom, i);
-    });
-    const label = el("label");
-    const cb = el("input");
-    cb.type = "checkbox";
-    cb.checked = c.on;
-    cb.addEventListener("change", () => (c.on = cb.checked));
-    label.append(cb, el("span", "fpath", c.path));
-    if (c.label) label.append(el("span", "flabel", c.label));
-    if (c.hidden) label.append(badge("hidden"));
-    const up = el("button", "mv", "↑");
-    up.type = "button";
-    up.setAttribute("aria-label", "move " + c.path + " up");
-    up.disabled = i === 0;
-    up.addEventListener("click", () => moveCol(i, i - 1));
-    const down = el("button", "mv", "↓");
-    down.type = "button";
-    down.setAttribute("aria-label", "move " + c.path + " down");
-    down.disabled = i === colDraft.length - 1;
-    down.addEventListener("click", () => moveCol(i, i + 1));
-    li.append(el("span", "grip", "⋮⋮"), label, up, down);
-    list.append(li);
+// moveColumnAfter places path (shown or not) immediately right of afterPath.
+function moveColumnAfter(path, afterPath) {
+  if (path === afterPath) return;
+  const cols = currentColumns().filter((p) => p !== path);
+  const i = cols.indexOf(afterPath);
+  if (i < 0) return;
+  cols.splice(i + 1, 0, path);
+  setColumns(cols);
+}
+
+function moveColumnToStart(path) {
+  setColumns([path, ...currentColumns().filter((p) => p !== path)]);
+}
+
+// alphabetizeColumns orders the shown columns by their last path element,
+// ignoring case, then by full path.
+function alphabetizeColumns() {
+  const key = (p) => p.slice(p.lastIndexOf(".") + 1).toLowerCase();
+  const cols = currentColumns().sort((a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
   });
+  setColumns(cols);
+}
+
+function closeColumnMenu() {
+  if (labelCommit) labelCommit();
+  labelCommit = null;
+  $("col-menu").hidden = true;
+  $("col-sub").hidden = true;
+  $("col-menu").replaceChildren();
+  $("col-sub").replaceChildren();
+  menuPath = "";
+  menuAnchor = null;
+}
+
+// placeMenu puts a menu below anchor (or to the right of it with side),
+// kept inside the viewport.
+function placeMenu(menu, anchor, side) {
+  menu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  let left = side ? r.right + 2 : r.left;
+  let top = side ? r.top : r.bottom + 4;
+  if (left + m.width > window.innerWidth - 8) left = side ? r.left - m.width - 2 : window.innerWidth - 8 - m.width;
+  if (top + m.height > window.innerHeight - 8) top = Math.max(8, window.innerHeight - 8 - m.height);
+  menu.style.left = Math.max(8, left) + window.scrollX + "px";
+  menu.style.top = top + window.scrollY + "px";
+}
+
+function menuButton(text, onClick, disabled) {
+  const b = el("button", "menu-item", text);
+  b.type = "button";
+  b.disabled = !!disabled;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function menuRow(label, control) {
+  const l = el("label", "menu-row");
+  l.append(el("span", "", label), control);
+  return l;
+}
+
+function openColumnMenu(path, anchorEl) {
+  if (menuPath === path && menuAnchor === anchorEl) {
+    closeColumnMenu();
+    return;
+  }
+  closeColumnMenu();
+  closeFavorites();
+  menuPath = path;
+  menuAnchor = anchorEl;
+  const menu = $("col-menu");
+  const f = colInfo(path);
+  const shown = currentColumns();
+  menu.append(el("div", "menu-title fpath", path));
+  const vis = selectOf(VISUALIZERS, f.visualizer || defaultVisualizer(path, f.type), (v) => saveFieldFormat(path, { visualizer: v }));
+  menu.append(menuRow("visualizer", vis));
+  if (UNIT_TYPES.has(f.type)) {
+    menu.append(menuRow("unit", selectOf(UNITS, f.unit || "", (v) => saveFieldFormat(path, { unit: v }))));
+  }
+  const label = el("input");
+  label.type = "text";
+  label.placeholder = path;
+  label.value = f.label || "";
+  let saved = label.value;
+  labelCommit = () => {
+    if (label.value === saved) return;
+    saved = label.value;
+    saveFieldFormat(path, { label: label.value });
+  };
+  label.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      labelCommit();
+    }
+  });
+  label.addEventListener("blur", () => labelCommit && labelCommit());
+  menu.append(menuRow("label", label));
+  menu.append(el("hr"));
+  const hide = menuButton("Hide", () => hideColumn(path), shown.length <= 1 || !shown.includes(path));
+  if (hide.disabled) hide.title = "the last column cannot be hidden";
+  menu.append(hide);
+  menu.append(menuButton("Sort ascending", () => sortBy(path, false)));
+  menu.append(menuButton("Sort descending", () => sortBy(path, true)));
+  const sub = menuButton("Add / Move ▸", () => openColumnSubmenu(path, sub));
+  sub.setAttribute("aria-haspopup", "true");
+  menu.append(sub);
+  menu.append(menuButton("Move to start", () => moveColumnToStart(path), shown[0] === path || !shown.includes(path)));
+  placeMenu(menu, anchorEl, false);
+}
+
+function sortBy(path, desc) {
+  closeColumnMenu();
+  state.sort = { field: path, desc };
+  runQuery();
+}
+
+// openColumnSubmenu lists fields to add, and the other shown columns to move,
+// right of path: those hidden in this query first under Add.
+function openColumnSubmenu(path, anchorEl) {
+  const sub = $("col-sub");
+  sub.replaceChildren();
+  const shown = currentColumns();
+  const add = hiddenThisQuery.filter((p) => !shown.includes(p));
+  for (const f of schemaFields()) {
+    if (!shown.includes(f.path) && !add.includes(f.path)) add.push(f.path);
+  }
+  const list = (title, paths, empty) => {
+    const box = el("div", "menu-list");
+    box.append(el("div", "menu-title", title));
+    if (!paths.length) box.append(el("div", "muted menu-empty", empty));
+    for (const p of paths) {
+      const f = fieldByPath(p);
+      const b = menuButton("", () => moveColumnAfter(p, path));
+      b.classList.add("fpath");
+      b.append(document.createTextNode(p));
+      if (f && f.label) b.append(el("span", "flabel", " " + f.label));
+      if (hiddenThisQuery.includes(p) && !shown.includes(p)) b.append(el("span", "flabel", " · hidden"));
+      b.title = "put " + p + " right of " + path;
+      box.append(b);
+    }
+    return box;
+  };
+  sub.append(list("Add", add, "every field is shown"), list("Move", shown.filter((p) => p !== path), "no other columns"));
+  placeMenu(sub, anchorEl, true);
 }
 
 function wireColumns() {
-  $("edit-columns").addEventListener("click", () => {
-    if ($("columns-panel").hidden) openColumns();
-    else closeColumns();
+  const menus = [$("col-menu"), $("col-sub")];
+  for (const m of menus) {
+    // Keep focus (and the label input) from being lost to a button press
+    // before its click lands; the label still saves when the menu closes.
+    m.addEventListener("mousedown", (e) => {
+      if (e.target.closest("button")) e.preventDefault();
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!menuPath) return;
+    if (menus.some((m) => m.contains(e.target))) return;
+    if (menuAnchor && menuAnchor.contains(e.target)) return;
+    closeColumnMenu();
   });
-  $("col-cancel").addEventListener("click", closeColumns);
-  $("col-apply").addEventListener("click", () => {
-    const cols = colDraft.filter((c) => c.on).map((c) => c.path);
-    if (!cols.length) return;
-    state.columns = cols;
-    closeColumns();
-    runQuery();
-  });
-  $("col-default").addEventListener("click", () => {
-    state.columns = [];
-    closeColumns();
-    runQuery();
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && menuPath) closeColumnMenu();
   });
   $("col-restore").addEventListener("click", () => {
-    state.columns = [];
-    saveWidths({});
-    closeColumns();
-    runQuery();
+    setColumns([]);
   });
+  $("col-az").addEventListener("click", alphabetizeColumns);
+}
+
+// ---- saving a column's formatting ----
+
+let formatSaves = Promise.resolve();
+
+// saveFieldFormat merges patch (visualizer, unit, label, width, type) into
+// path's field of the current stream's effective schema and saves the whole
+// schema, keeping the stream's default columns. Saves run one after another,
+// each from the schema the previous one reloaded, so none loses another's edit.
+async function saveFieldFormat(path, patch) {
+  const stream = state.stream;
+  if (!stream || !schemaData || !schemaData.schema || schemaData.schema.stream !== stream) return;
+  if (!fieldByPath(path) && Object.keys(patch).length === 1 && patch.width === 0) return;
+  // Apply locally first so the page shows the change before the reload, and
+  // again when the save runs: an earlier save's reload replaces schemaData.
+  const apply = () => {
+    const fields = schemaData.schema.fields || (schemaData.schema.fields = []);
+    let f = fields.find((x) => x.path === path);
+    if (!f) {
+      f = { path, type: "string", visualizer: defaultVisualizer(path, "string") };
+      fields.push(f);
+    }
+    Object.assign(f, patch);
+    if (!UNIT_TYPES.has(f.type)) f.unit = "";
+  };
+  apply();
+  // Headers and cells are formatted by the server, so a visual change shows
+  // once the save lands; a width shows now.
+  const visual = Object.keys(patch).some((k) => k !== "width");
+  if (!visual) applyWidths();
+  const run = async () => {
+    if (state.stream !== stream || !schemaData || schemaData.schema.stream !== stream) return;
+    apply();
+    const sch = schemaData.schema;
+    const body = {
+      stream,
+      columns: Array.isArray(sch.columns) ? sch.columns.slice() : [],
+      fields: (sch.fields || []).map(schemaFieldBody),
+    };
+    try {
+      await api("PUT", "/api/schema?stream=" + encodeURIComponent(stream), body);
+      const fresh = await api("GET", "/api/schema?stream=" + encodeURIComponent(stream));
+      if (state.stream !== stream) return;
+      schemaData = fresh;
+      fillFieldPaths();
+      if (visual) {
+        rebuildExplore();
+        runQuery();
+      } else {
+        applyWidths();
+      }
+    } catch (err) {
+      showError("saving the schema: " + (err.detail || err.message));
+    }
+  };
+  formatSaves = formatSaves.then(run);
+  return formatSaves;
+}
+
+// schemaFieldBody is the saved form of a field: the PUT /api/schema body.
+function schemaFieldBody(f) {
+  return {
+    path: f.path, type: f.type, unit: UNIT_TYPES.has(f.type) ? f.unit || "" : "",
+    visualizer: f.visualizer, label: f.label || "", hidden: !!f.hidden, width: f.width || 0,
+  };
 }
 
 // ---- schema panel ----
@@ -1592,10 +1774,7 @@ async function saveSchema() {
   const body = {
     stream: state.stream,
     columns: cols,
-    fields: schemaDraft.map((f) => ({
-      path: f.path, type: f.type, unit: UNIT_TYPES.has(f.type) ? f.unit || "" : "",
-      visualizer: f.visualizer, label: f.label || "", hidden: !!f.hidden,
-    })),
+    fields: schemaDraft.map(schemaFieldBody),
   };
   try {
     const res = await api("PUT", "/api/schema?stream=" + encodeURIComponent(state.stream), body);
@@ -1654,6 +1833,7 @@ async function loadFavorites() {
 }
 
 function openFavorites() {
+  closeColumnMenu();
   $("fav-menu").hidden = false;
   $("fav-button").setAttribute("aria-expanded", "true");
   favStatus("");
@@ -1670,7 +1850,11 @@ async function loadFavorite(f) {
   const before = state.stream;
   applyQuery(JSON.parse(JSON.stringify(f.query || {})));
   if (!state.stream) state.stream = before;
-  closeColumns();
+  closeColumnMenu();
+  if (state.stream !== before) {
+    hiddenThisQuery = [];
+    tempWidths = {};
+  }
   syncBar();
   syncView();
   clearExplore();

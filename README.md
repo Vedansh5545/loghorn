@@ -217,7 +217,15 @@ and the filters, one row per field / operator / value (a bad value is flagged on
 its own row and the other filters keep working). Three modes share it:
 
 - **Samples** — the matching records themselves; click a row for the full
-  record. Pick and order the columns under *Columns*.
+  record. Click a column name (in the header or under *Columns*) for its
+  menu: visualizer, unit and label (saved to the stream's schema at once),
+  Hide, Sort ascending/descending, *Add / Move* (put a field not shown, or
+  another column, right of this one; columns hidden in this query come
+  first), and Move to start. The trash icon in a header hides the column.
+  *A→Z* orders the columns by the last part of their path (`status` for
+  `httpRequest.status`); *restore defaults* brings back the stream's default
+  columns. Drag a header's edge to set its width, which is saved in the
+  schema too; double-click the edge to return to the natural width.
 - **Table** — one row per group. *Group by* takes one or more fields (records
   with an empty or bad value group as `(empty)`); *Metrics* always includes
   `count` and adds `sum`, `avg`, `min`, `max`, `p50`, `p95` or `p99` of a
@@ -231,7 +239,7 @@ its own row and the other filters keep working). Three modes share it:
 
 The URL carries the query, and a favorite saves the mode with it.
 
-Schemas (field types and display) and favorite queries are saved as TOML in
+Schemas (field types, display and column widths) and favorite queries are saved as TOML in
 the repo's `.config/loghorn/`: `schemas/<stream>.toml` and `queries.toml`.
 Nothing is written under your home directory. `-web` cannot be combined with
 `-filter`.
