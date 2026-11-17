@@ -1139,6 +1139,7 @@ function drawGroupBy() {
     const x = el("button", "chip-x", "×");
     x.type = "button";
     x.setAttribute("aria-label", "remove group by " + path);
+    x.addEventListener("mousedown", (e) => e.preventDefault());
     x.addEventListener("click", () => {
       state.groupBy.splice(i, 1);
       drawGroupBy();
@@ -1163,6 +1164,11 @@ function drawGroupBy() {
 
 function syncAggregates() {
   state.aggregates = metricRows.filter((r) => r.field).map((r) => ({ op: r.op, field: r.field }));
+  // The plotted metric must stay one of the aggregates, or every query fails.
+  const p = state.plot;
+  if (p && p.op !== "count" && !state.aggregates.some((a) => a.op === p.op && a.field === p.field)) {
+    state.plot = { op: "count" };
+  }
 }
 
 function numericFields() {
