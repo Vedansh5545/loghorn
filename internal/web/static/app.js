@@ -28,6 +28,7 @@ const VIEWS = ["samples", "table", "graph"];
 let session = null;
 let streams = [];
 let lastResult = null;
+let lastResultStream = ""; // the stream lastResult belongs to
 let schemaData = null; // {schema, ops} of state.stream
 
 // el builds an element; text, when given, is set with textContent.
@@ -547,6 +548,7 @@ function renderGraph(result) {
 
 export function render(result) {
   lastResult = result;
+  lastResultStream = state.stream;
   const head = $("head");
   head.replaceChildren();
   for (const c of result.columns) head.append(headerCell(c, result.columns.length));
@@ -816,7 +818,7 @@ function badge(text, cls) {
 
 // currentColumns is the column paths the table shows now.
 function currentColumns() {
-  if (lastResult && Array.isArray(lastResult.columns)) return lastResult.columns.map((c) => c.path);
+  if (lastResult && lastResultStream === state.stream && Array.isArray(lastResult.columns)) return lastResult.columns.map((c) => c.path);
   if (state.columns.length) return state.columns.slice();
   return schemaData && schemaData.schema && Array.isArray(schemaData.schema.columns) ? schemaData.schema.columns.slice() : [];
 }
