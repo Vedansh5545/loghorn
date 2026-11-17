@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jimbeveridge/loghorn/internal/adapter"
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/entry"
 	"gopkg.in/yaml.v3"
@@ -31,11 +30,6 @@ type Record struct {
 // record has no JSON object or no labels.schema stream label.
 func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	raw := bytes.TrimSpace(e.Raw)
-	var prefixTime time.Time
-	stripped := false
-	if rest, t, ok := StripActionsPrefix(raw); ok {
-		raw, prefixTime, stripped = rest, t, true
-	}
 
 	var obj map[string]any
 	switch {
@@ -59,9 +53,6 @@ func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	}
 
 	sev := e.Severity
-	if stripped {
-		sev = adapter.New(in).ParseLine(raw).Severity
-	}
 
 	n := normalizer{obj: obj, naming: in.FieldNaming, fields: map[string]any{}, used: map[string]bool{}, top: map[string]bool{}}
 	n.promote(sev)
@@ -78,7 +69,9 @@ func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 		}
 	}
 	if r.Time.IsZero() {
-		r.Time = prefixTime
+		// adapter.ParseLine already put a GitHub Actions line prefix's time
+		// here when the JSON had none.
+		r.Time = e.Timestamp
 	}
 	return r, true
 }

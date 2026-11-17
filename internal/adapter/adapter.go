@@ -41,7 +41,22 @@ func ParseLine(line []byte) entry.Entry { return defaultParser.ParseLine(line) }
 // "---", or one whole object from a `--json` array. It never returns an error:
 // a record that looks like JSON or YAML but fails to parse falls back to raw
 // text, flagged Malformed.
+//
+// A line from a GitHub Actions job log carries a timestamp prefix
+// (`2026-11-17T17:00:30.3832868Z `) in front of whatever the step printed.
+// When what follows the prefix parses as a JSON LogEntry, the entry is that
+// LogEntry: Raw starts at the JSON, and the prefix's time stands in for a
+// missing log timestamp. Any other prefixed line is handled exactly as if the
+// prefix were ordinary text, so GitHub's own lines keep their timestamps.
 func (p *Parser) ParseLine(line []byte) entry.Entry {
+	if rest, ts, ok := StripActionsPrefix(line); ok && p.logEntry.Detect(rest) {
+		if e, err := p.logEntry.Parse(rest); err == nil {
+			if e.Timestamp.IsZero() {
+				e.Timestamp = ts
+			}
+			return e
+		}
+	}
 	switch {
 	case p.logEntry.Detect(line):
 		if e, err := p.logEntry.Parse(line); err == nil {
