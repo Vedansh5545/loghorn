@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Ref names one Actions job.
@@ -51,6 +52,26 @@ type Job struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
+}
+
+// sanitize drops control characters from every text field. Job and workflow
+// names are chosen by whoever writes the workflow — on a public repository,
+// anyone opening a pull request — and are printed straight to the terminal,
+// so an escape sequence in one could otherwise drive it.
+func (j *Job) sanitize() {
+	for _, f := range []*string{&j.Name, &j.Workflow, &j.Branch, &j.Status, &j.Conclusion, &j.HTMLURL} {
+		*f = stripControl(*f)
+	}
+}
+
+// stripControl removes C0, DEL and C1 control characters, ESC among them.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Repo is the job's "owner/name", read from its page URL, or "" if that
@@ -226,6 +247,9 @@ func Jobs(r RunRef) ([]Job, error) {
 	if len(page.Jobs) == 0 {
 		return nil, fmt.Errorf("run %s has no jobs", r.Run)
 	}
+	for i := range page.Jobs {
+		page.Jobs[i].sanitize()
+	}
 	sort.SliceStable(page.Jobs, func(i, k int) bool { return page.Jobs[i].Name < page.Jobs[k].Name })
 	return page.Jobs, nil
 }
@@ -243,6 +267,7 @@ func Fetch(r Ref) (Job, []byte, error) {
 	if err := json.Unmarshal(meta, &job); err != nil {
 		return Job{}, nil, fmt.Errorf("reading job %s: %w", r.Job, err)
 	}
+	job.sanitize()
 	logs, err := api(r.Host, base+"/logs")
 	if err != nil {
 		return job, nil, err

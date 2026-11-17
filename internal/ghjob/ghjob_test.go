@@ -165,3 +165,31 @@ func TestFirstFailed(t *testing.T) {
 		t.Fatalf("FirstFailed = %d, want 1", got)
 	}
 }
+
+// Names come from whoever wrote the workflow, so escape sequences in them
+// must not reach the terminal, from either Jobs or Fetch.
+func TestJobTextLosesControlCharacters(t *testing.T) {
+	const evil = `"name":"x\u001b]0;pwned\u0007y\u009bz","workflow_name":"w\u001b[2Jv","conclusion":"fail\nure"`
+	stubGH(t, func(args ...string) ([]byte, error) {
+		if strings.HasSuffix(args[1], "/logs") {
+			return []byte("log"), nil
+		}
+		if strings.Contains(args[1], "/runs/") {
+			return []byte(`{"jobs":[{"id":1,` + evil + `}]}`), nil
+		}
+		return []byte(`{"id":1,` + evil + `}`), nil
+	})
+	jobs, err := Jobs(RunRef{Repo: "o/r", Run: "5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _, err := Fetch(Ref{Repo: "o/r", Job: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []Job{jobs[0], job} {
+		if j.Name != "x]0;pwnedyz" || j.Workflow != "w[2Jv" || j.Conclusion != "failure" {
+			t.Fatalf("control characters survived: %+v", j)
+		}
+	}
+}
