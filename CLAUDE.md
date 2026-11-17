@@ -19,6 +19,12 @@ after launch leaves it running.
   Handler tests must use `httptest.NewServer`; a request built with
   `httptest.NewRequest` and passed to `ServeHTTP` has no local address and
   gets 403.
+- Number values in test records must be `json.Number`: `schema.Convert`
+  rejects plain `float64`/`int64` as the wrong type.
+- A button inside a control that redraws on its input's blur/change must
+  `preventDefault` on `mousedown`, or the redraw swallows the click.
+- The server requires `plot` to be count or one of `aggregates`, so any edit
+  of the metrics list in the page must also reconcile `state.plot`.
 
 ## Config lookups that walk up the tree
 
