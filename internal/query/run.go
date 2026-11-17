@@ -45,6 +45,7 @@ type Result struct {
 	Groups      int       `json:"groups,omitempty"` // table: groups before the limit
 	Columns     []Column  `json:"columns"`
 	Rows        []Row     `json:"rows"`
+	Graph       *Graph    `json:"graph,omitempty"`
 	Matched     int       `json:"matched"`
 	StreamTotal int       `json:"streamTotal"`
 	Truncated   bool      `json:"truncated"`
@@ -246,7 +247,14 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		runTable(matched, s, q, &res)
 		return res, nil
 	case "graph":
-		return res, nil // filled in by the graph stage
+		g, err := runGraph(matched, s, q, from, to, time.Local)
+		if err != nil {
+			return Result{}, err
+		}
+		res.Graph = g
+		res.Columns = []Column{}
+		res.Rows = []Row{}
+		return res, nil
 	}
 
 	sortRecords(matched, s, q.Sort)

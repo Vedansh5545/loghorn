@@ -173,6 +173,31 @@ func TestQueryEndToEnd(t *testing.T) {
 	wantError(t, code, 403, b)
 }
 
+func TestQueryTableAndGraphOverHTTP(t *testing.T) {
+	f := newFixture(t, pino)
+	for _, view := range []string{"table", "graph"} {
+		q := `{"stream":"db","view":"` + view + `","range":{"from":"all"},"groupBy":["level"]}`
+		code, b := f.do(t, http.MethodPost, "/api/query", q, "")
+		if code != 200 {
+			t.Fatalf("%s query = %d %s", view, code, b)
+		}
+		var res struct {
+			View  string
+			Rows  []json.RawMessage
+			Graph *struct{ Series []json.RawMessage }
+		}
+		if err := json.Unmarshal(b, &res); err != nil || res.View != view {
+			t.Fatalf("%s result = %s (%v)", view, b, err)
+		}
+		if view == "table" && len(res.Rows) == 0 {
+			t.Errorf("table has no rows: %s", b)
+		}
+		if view == "graph" && (res.Graph == nil || len(res.Graph.Series) == 0) {
+			t.Errorf("graph has no series: %s", b)
+		}
+	}
+}
+
 func TestQueryValidation400(t *testing.T) {
 	f := newFixture(t, pino)
 	for _, body := range []string{
