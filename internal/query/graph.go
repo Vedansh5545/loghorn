@@ -155,7 +155,7 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 		if r.Time.Before(g.Starts[0]) || r.Time.After(last) {
 			continue
 		}
-		key, labels := groupKey(r, gfields)
+		key, labels, _ := groupKey(r, gfields)
 		x := byKey[key]
 		if x == nil {
 			x = &grp{key: key, labels: labels}

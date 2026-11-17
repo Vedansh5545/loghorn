@@ -460,7 +460,7 @@ function metricFormat(col) {
 // renderGraph draws the time series of a graph result.
 function renderGraph(result) {
   const g = result.graph || { series: [], starts: [] };
-  autoBucket = g.bucket || "";
+  autoBucket = state.bucket === "auto" ? g.bucket || "" : "";
   drawBucket();
   drawGraph($("graph"), g, metricFormat(g.metric));
   const n = (g.series || []).length;
@@ -699,6 +699,7 @@ async function refresh() {
     await loadSession();
     syncBar();
     await loadSchema();
+    rebuildExplore();
   } catch (err) {
     showError(err.message);
     return;
@@ -970,12 +971,10 @@ async function commitTriple(t) {
     return;
   }
   if (sameFilter(t.filter, f)) return;
-  const filters = triples.map((x) => (x === t ? f : x.filter)).filter(Boolean);
-  const q = Object.assign({}, state, { filters });
-  const mine = ++querySeq;
-  let result;
+  // Validate the triple on its own, so errors of the whole query (bucket
+  // count, plot, aggregates) are not blamed on it.
   try {
-    result = await api("POST", "/api/query", q);
+    await api("POST", "/api/query", { stream: state.stream, range: state.range, filters: [f], limit: 1 });
   } catch (err) {
     if (!triples.includes(t) || !sameFilter(candidate(t), f)) return; // edited meanwhile
     const had = !!t.filter;
@@ -990,13 +989,7 @@ async function commitTriple(t) {
   t.filter = f;
   setTripleError(t, "");
   syncFilters();
-  if (mine !== querySeq) {
-    runQuery(); // a newer query ran without this filter
-    return;
-  }
-  saveURL();
-  clearError();
-  renderResult(result);
+  runQuery();
 }
 
 function removeTriple(t) {
@@ -1517,6 +1510,7 @@ async function saveSchema() {
   try {
     const res = await api("PUT", "/api/schema?stream=" + encodeURIComponent(state.stream), body);
     await loadSchema();
+    rebuildExplore();
     fillSchemaDialog();
     status.textContent = "saved to " + res.path;
     runQuery();

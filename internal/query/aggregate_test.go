@@ -94,6 +94,27 @@ func TestTableEmptyGroupValue(t *testing.T) {
 	}
 }
 
+func TestTableRealEmptyLabelStaysSeparate(t *testing.T) {
+	s := sch(routeF)
+	recs := []record.Record{rec(1, t0, "x", "route", "(empty)"), rec(2, t0, "x")}
+	res := run(t, recs, s, Query{View: "table", GroupBy: []string{"route"}})
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %+v", res.Rows)
+	}
+	var real, missing bool
+	for _, row := range res.Rows {
+		if row.Cells[0].V == "(empty)" {
+			real = true
+		}
+		if row.Cells[0].V == nil {
+			missing = true
+		}
+	}
+	if !real || !missing {
+		t.Errorf("real=%v missing=%v rows=%+v", real, missing, res.Rows)
+	}
+}
+
 func latRecs() []record.Record {
 	var recs []record.Record
 	for i := 1; i <= 10; i++ {

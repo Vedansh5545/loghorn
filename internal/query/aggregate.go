@@ -53,18 +53,24 @@ func lookupField(s schema.Schema, path string) schema.Field {
 }
 
 // groupKey returns the display labels of r's group-by values and their joined
-// key. An empty or bad value is labelled "(empty)".
-func groupKey(r *record.Record, fields []schema.Field) (key string, labels []string) {
+// key. An empty or bad value is labelled "(empty)" and flagged in empty; the
+// key marks it with \x01 so it never merges with a real "(empty)" value.
+func groupKey(r *record.Record, fields []schema.Field) (key string, labels []string, empty []bool) {
 	labels = make([]string, len(fields))
+	empty = make([]bool, len(fields))
+	parts := make([]string, len(fields))
 	for i, f := range fields {
 		c := cell(r.Fields[f.Path], f)
 		if c.Bad || c.V == nil {
 			labels[i] = emptyLabel
+			empty[i] = true
+			parts[i] = "\x01"
 		} else {
 			labels[i] = fmt.Sprint(c.V)
+			parts[i] = labels[i]
 		}
 	}
-	return strings.Join(labels, "\x00"), labels
+	return strings.Join(parts, "\x00"), labels, empty
 }
 
 // metricColumn describes the result column of aggregate a.
@@ -181,6 +187,7 @@ func metricCell(v float64, ok bool, typ schema.Type) Cell {
 type group struct {
 	key    string
 	labels []string
+	empty  []bool
 	recs   []*record.Record
 }
 
@@ -196,10 +203,10 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 	} else {
 		byKey := map[string]*group{}
 		for _, r := range matched {
-			key, labels := groupKey(r, gfields)
+			key, labels, empty := groupKey(r, gfields)
 			g := byKey[key]
 			if g == nil {
-				g = &group{key: key, labels: labels}
+				g = &group{key: key, labels: labels, empty: empty}
 				byKey[key] = g
 				groups = append(groups, g)
 			}
@@ -242,7 +249,7 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 	for _, g := range groups {
 		cells := make([]Cell, 0, len(res.Columns))
 		for i, f := range gfields {
-			if g.labels[i] == emptyLabel {
+			if g.empty[i] {
 				cells = append(cells, Cell{})
 			} else {
 				cells = append(cells, cell(g.recs[0].Fields[f.Path], f))
