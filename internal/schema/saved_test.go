@@ -235,3 +235,14 @@ func TestEffectiveMerge(t *testing.T) {
 		t.Errorf("saved columns %v", got)
 	}
 }
+
+func TestFindConfigDirOutsideGitIgnoresAncestors(t *testing.T) {
+	root := evalDir(t)
+	start := filepath.Join(root, "scratch", "deep")
+	mkdirs(t, start, filepath.Join(root, ".config", "loghorn"))
+	t.Setenv("HOME", root)
+	dir, found, err := FindConfigDir(start)
+	if err != nil || found || dir != filepath.Join(start, ".config", "loghorn") {
+		t.Fatalf("got %q %v %v", dir, found, err)
+	}
+}

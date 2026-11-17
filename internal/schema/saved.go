@@ -56,15 +56,15 @@ func FindConfigDir(start string) (dir string, found bool, err error) {
 	if err != nil {
 		return "", false, err
 	}
+	// Find the git root first; outside git only start itself is considered, so
+	// an ancestor such as ~/.config/loghorn is never picked up.
 	gitRoot := ""
 	for cur := abs; ; {
-		cand := filepath.Join(cur, ".config", "loghorn")
-		if st, e := os.Stat(cand); e == nil && st.IsDir() {
-			return cand, true, nil
-		}
 		if _, e := os.Stat(filepath.Join(cur, ".git")); e == nil {
 			gitRoot = cur
 			break
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return "", false, e
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
@@ -74,6 +74,16 @@ func FindConfigDir(start string) (dir string, found bool, err error) {
 	}
 	if gitRoot == "" {
 		gitRoot = abs
+	}
+	for cur := abs; ; {
+		cand := filepath.Join(cur, ".config", "loghorn")
+		if st, e := os.Stat(cand); e == nil && st.IsDir() {
+			return cand, true, nil
+		}
+		if cur == gitRoot {
+			break
+		}
+		cur = filepath.Dir(cur)
 	}
 	return filepath.Join(gitRoot, ".config", "loghorn"), false, nil
 }
@@ -136,6 +146,14 @@ func SaveSchema(dir string, s Schema) (path string, err error) {
 	}
 	defer os.Remove(tmp.Name()) // no-op after a successful rename
 	if err := toml.NewEncoder(tmp).Encode(s); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return "", err
 	}
