@@ -154,3 +154,12 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 @media (max-width: 800px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+.sb-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sb-body .field-pick { min-width: 0; font-family: var(--mono); font-size: 12.5px; }
+.sb-body .tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.metric { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.metric select { min-width: 0; }
+.metric .m-field { flex: 1; }
+.metric-fixed { font-family: var(--mono); font-size: 12.5px; padding: 1px 6px; color: var(--muted); }
+td .muted { color: var(--muted); }

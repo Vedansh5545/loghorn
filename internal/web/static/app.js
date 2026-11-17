@@ -280,10 +280,13 @@ function wireBar() {
     state.columns = [];
     state.filters = [];
     state.sort = { field: "", desc: true };
+    state.groupBy = [];
+    state.aggregates = [];
+    state.plot = { op: "count" };
     closeColumns();
-    clearTriples();
+    clearExplore();
     loadSchema().then(() => {
-      rebuildTriples();
+      rebuildExplore();
       runQuery();
     });
   });
@@ -361,6 +364,9 @@ async function loadSession() {
     state.stream = streams[0].name;
     state.columns = [];
     state.filters = [];
+    state.groupBy = [];
+    state.aggregates = [];
+    state.plot = { op: "count" };
   }
 }
 
@@ -388,30 +394,58 @@ function renderResult(result) {
   else render(result);
 }
 
-// renderTable is a plain placeholder until the Table view is built.
+// metricLabel names an aggregate: "count", or its operator and field.
+export function metricLabel(a) {
+  if (!a || a.op === "count") return "count";
+  const f = fieldByPath(a.field);
+  return a.op + " " + ((f && f.label) || a.field);
+}
+
+// tableHeaderCell is a column header with a resize grip but no remove button.
+function tableHeaderCell(c) {
+  const th = el("th");
+  th.dataset.path = c.path;
+  th.title = c.path + " : " + c.type;
+  const inner = el("div", "th-inner");
+  inner.append(breakable(c.label || c.path));
+  const grip = el("span", "col-resize");
+  grip.title = "drag to resize · double-click to fit";
+  grip.addEventListener("pointerdown", (e) => startResize(e, th));
+  grip.addEventListener("dblclick", () => {
+    const w = loadWidths();
+    delete w[c.path];
+    saveWidths(w);
+    applyWidths();
+  });
+  th.append(inner, grip);
+  return th;
+}
+
+// renderTable shows grouped results: one row per group, no expansion.
 function renderTable(result) {
-  const table = $("table");
-  table.classList.remove("fixed");
-  table.style.width = "";
-  $("head").replaceChildren(...result.columns.map((c) => {
-    const th = el("th");
-    th.append(breakable(c.label || c.path));
-    return th;
-  }));
+  const head = $("head");
+  head.replaceChildren(...result.columns.map(tableHeaderCell));
   const body = $("body");
   body.replaceChildren();
   for (const row of result.rows) {
     const tr = el("tr");
     result.columns.forEach((c, i) => {
       const td = el("td", NUMERIC.has(c.type) ? "num" : "");
-      td.append(visualize(row.cells[i], c));
+      const cell = row.cells[i];
+      if (c.group && (!cell || cell.v === null || cell.v === undefined) && !(cell && cell.bad)) {
+        td.append(el("span", "muted", "(empty)"));
+      } else {
+        td.append(visualize(cell, c));
+      }
       tr.append(td);
     });
     body.append(tr);
   }
-  let foot = (result.groups || 0).toLocaleString() + " groups · " + result.matched.toLocaleString() + " records match";
+  const n = result.groups || 0;
+  let foot = n.toLocaleString() + " " + (n === 1 ? "group" : "groups") + " · " + result.matched.toLocaleString() + " records match";
   if (result.truncated) foot += " · limit reached";
   $("footer-text").textContent = foot;
+  applyWidths();
 }
 
 // renderGraph is a placeholder until the Graph view is built.
@@ -1072,6 +1106,131 @@ function drawValue(t) {
   box.append(input);
 }
 
+// ---- group by and metrics ----
+
+const METRIC_OPS = ["sum", "avg", "min", "max", "p50", "p95", "p99"];
+
+// metricRows are the rows of the Metrics section; state.aggregates holds only
+// those with a field chosen.
+let metricRows = [];
+
+function clearExplore() {
+  clearTriples();
+  metricRows = [];
+  $("sb-group-body").replaceChildren();
+  $("sb-metrics-body").replaceChildren();
+}
+
+function rebuildExplore() {
+  rebuildTriples();
+  metricRows = state.aggregates.map((a) => ({ op: a.op, field: a.field || "" }));
+  drawGroupBy();
+  drawMetrics();
+}
+
+function drawGroupBy() {
+  const box = $("sb-group-body");
+  box.replaceChildren();
+  const tags = el("span", "tags");
+  state.groupBy.forEach((path, i) => {
+    const f = fieldByPath(path);
+    const tag = el("span", "tag", (f && f.label) || path);
+    tag.title = path;
+    const x = el("button", "chip-x", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "remove group by " + path);
+    x.addEventListener("click", () => {
+      state.groupBy.splice(i, 1);
+      drawGroupBy();
+      runQuery();
+    });
+    tag.append(x);
+    tags.append(tag);
+  });
+  const pick = fieldPicker("", (p) => {
+    if (p && fieldByPath(p) && !state.groupBy.includes(p)) {
+      state.groupBy.push(p);
+      drawGroupBy();
+      runQuery();
+      return;
+    }
+    drawGroupBy();
+  });
+  pick.placeholder = "add a field";
+  pick.setAttribute("aria-label", "group by field");
+  box.append(tags, pick);
+}
+
+function syncAggregates() {
+  state.aggregates = metricRows.filter((r) => r.field).map((r) => ({ op: r.op, field: r.field }));
+}
+
+function numericFields() {
+  return schemaFields().filter((f) => NUMERIC.has(f.type));
+}
+
+function drawMetrics() {
+  const box = $("sb-metrics-body");
+  box.replaceChildren();
+  const fixed = el("div", "metric");
+  fixed.append(el("span", "metric-fixed", "count"));
+  box.append(fixed);
+  for (const r of metricRows) {
+    const row = el("div", "metric");
+    const op = el("select", "m-op");
+    op.setAttribute("aria-label", "operator");
+    for (const o of METRIC_OPS) {
+      const opt = el("option", "", o);
+      opt.value = o;
+      op.append(opt);
+    }
+    op.value = r.op;
+    op.addEventListener("change", () => {
+      r.op = op.value;
+      syncAggregates();
+      if (r.field) runQuery();
+    });
+    const fsel = el("select", "m-field");
+    fsel.setAttribute("aria-label", "number field");
+    const none = el("option", "", "field");
+    none.value = "";
+    fsel.append(none);
+    const fields = numericFields();
+    if (r.field && !fields.some((f) => f.path === r.field)) fields.push({ path: r.field, label: "" });
+    for (const f of fields) {
+      const opt = el("option", "", f.label || f.path);
+      opt.value = f.path;
+      opt.title = f.path;
+      fsel.append(opt);
+    }
+    fsel.value = r.field;
+    fsel.addEventListener("change", () => {
+      r.field = fsel.value;
+      syncAggregates();
+      runQuery();
+    });
+    const x = el("button", "chip-x", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "remove metric");
+    x.addEventListener("click", () => {
+      metricRows.splice(metricRows.indexOf(r), 1);
+      const had = !!r.field;
+      syncAggregates();
+      drawMetrics();
+      if (had) runQuery();
+    });
+    row.append(op, fsel, x);
+    box.append(row);
+  }
+  const add = el("button", "", "+ metric");
+  add.type = "button";
+  add.addEventListener("click", () => {
+    metricRows.push({ op: "avg", field: "" });
+    drawMetrics();
+  });
+  box.append(add);
+}
+
 // ---- column editor ----
 
 let colDraft = []; // [{path, label, on}]
@@ -1356,9 +1515,9 @@ async function loadFavorite(f) {
   closeColumns();
   syncBar();
   syncView();
-  clearTriples();
+  clearExplore();
   if (state.stream !== before || !schemaData) await loadSchema();
-  rebuildTriples();
+  rebuildExplore();
   runQuery();
 }
 
@@ -1419,7 +1578,7 @@ async function init() {
   wireSchema();
   wireFavorites();
   await refresh();
-  rebuildTriples();
+  rebuildExplore();
 }
 
 init();
