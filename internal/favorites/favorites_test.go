@@ -113,3 +113,22 @@ func TestRoundTripPreservesQuery(t *testing.T) {
 		t.Fatalf("round trip:\n got %#v\nwant %#v", favs[0].Query, q)
 	}
 }
+
+func TestFavoriteRoundTripsExploreFields(t *testing.T) {
+	dir := t.TempDir()
+	q := query.Query{
+		Stream: "api", View: "graph", GroupBy: []string{"route", "status"}, Bucket: "5m",
+		Aggregates: []query.Aggregate{{Op: "p95", Field: "latency"}, {Op: "sum", Field: "bytes"}},
+		Plot:       &query.Aggregate{Op: "p95", Field: "latency"},
+	}
+	if err := Put(dir, Favorite{Name: "g", Query: q}, false); err != nil {
+		t.Fatal(err)
+	}
+	favs, err := Load(dir)
+	if err != nil || len(favs) != 1 {
+		t.Fatalf("Load = %v, %v", favs, err)
+	}
+	if !reflect.DeepEqual(favs[0].Query, q) {
+		t.Fatalf("got %#v\nwant %#v", favs[0].Query, q)
+	}
+}

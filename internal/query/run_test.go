@@ -242,11 +242,11 @@ func TestFiltersAnd(t *testing.T) {
 	eq(t, seqs(run(t, recs, s, q)), []int{2})
 }
 
-func TestReservedFieldsIgnored(t *testing.T) {
+func TestAggregateFieldsIgnoredBySamples(t *testing.T) {
 	s := sch(schema.Field{Path: "x", Type: schema.TString})
 	recs := []record.Record{rec(1, t0, ""), rec(2, t0.Add(time.Second), "")}
 	base := run(t, recs, s, Query{})
-	q := Query{GroupBy: []string{"x"}, Aggregates: []Aggregate{{Op: "count"}}, Bucket: "1m", View: "chart"}
+	q := Query{GroupBy: []string{"x"}, Bucket: "1m", View: "samples"}
 	got := run(t, recs, s, q)
 	eq(t, seqs(got), seqs(base))
 }

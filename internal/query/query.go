@@ -36,7 +36,8 @@ type Sort struct {
 	Desc  bool   `json:"desc" toml:"desc"`
 }
 
-// Aggregate is reserved for a later aggregation stage.
+// Aggregate is one metric: an operator over a numeric field. Op "count"
+// needs no field (used by Plot).
 type Aggregate struct {
 	Op    string `json:"op" toml:"op"`
 	Field string `json:"field,omitempty" toml:"field,omitempty"`
@@ -52,11 +53,13 @@ type Query struct {
 	Sort    Sort     `json:"sort" toml:"sort"`
 	Limit   int      `json:"limit" toml:"limit"`
 
-	// Reserved for aggregation; accepted, stored, ignored by Run in v1.
+	// Explore views. View is samples (default), table or graph. GroupBy and
+	// Aggregates drive table and graph; Bucket and Plot drive graph.
 	GroupBy    []string    `json:"groupBy,omitempty" toml:"groupBy,omitempty"`
 	Aggregates []Aggregate `json:"aggregates,omitempty" toml:"aggregates,omitempty"`
 	Bucket     string      `json:"bucket,omitempty" toml:"bucket,omitempty"`
 	View       string      `json:"view,omitempty" toml:"view,omitempty"`
+	Plot       *Aggregate  `json:"plot,omitempty" toml:"plot,omitempty"`
 }
 
 // OpsFor lists the operators valid for a field type.
@@ -180,6 +183,45 @@ func (q Query) Validate(s schema.Schema) error {
 	}
 	if _, _, err := q.Range.resolve(time.Now(), time.Time{}); err != nil {
 		return err
+	}
+	return q.validateExplore(s)
+}
+
+func (q Query) validateExplore(s schema.Schema) error {
+	switch q.View {
+	case "", "samples", "table", "graph":
+	default:
+		return fmt.Errorf("view %q: want samples, table or graph", q.View)
+	}
+	for _, g := range q.GroupBy {
+		if g == "" {
+			return fmt.Errorf("group-by field is empty")
+		}
+	}
+	for _, a := range q.Aggregates {
+		if !inList(AggregateOps, a.Op) {
+			return fmt.Errorf("aggregate operator %q: want one of %s", a.Op, strings.Join(AggregateOps, ", "))
+		}
+		if a.Field == "" {
+			return fmt.Errorf("aggregate %q needs a field", a.Op)
+		}
+		if t := fieldType(s, a.Field); !isNumericType(t) {
+			return fmt.Errorf("aggregate %q needs a numeric field; %q is %s", a.Op, a.Field, t)
+		}
+	}
+	if q.Bucket != "" && !inList(Buckets, q.Bucket) {
+		return fmt.Errorf("bucket %q: want one of %s", q.Bucket, strings.Join(Buckets, ", "))
+	}
+	if p := q.Plot; p != nil && !(p.Op == "count" && p.Field == "") {
+		found := false
+		for _, a := range q.Aggregates {
+			if a == *p {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("plot %s(%s) must be count or one of the aggregates", p.Op, p.Field)
+		}
 	}
 	return nil
 }

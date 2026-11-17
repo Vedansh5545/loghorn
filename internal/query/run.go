@@ -21,6 +21,7 @@ type Column struct {
 	Type       schema.Type `json:"type"`
 	Unit       string      `json:"unit"`
 	Visualizer string      `json:"visualizer"`
+	Group      bool        `json:"group,omitempty"` // a group-by column (table view)
 }
 
 // Cell is one value; V is nil for empty, the raw string with Bad set when the
@@ -40,6 +41,8 @@ type Row struct {
 
 // Result is the answer to a query. A zero From means unbounded.
 type Result struct {
+	View        string    `json:"view"`
+	Groups      int       `json:"groups,omitempty"` // table: groups before the limit
 	Columns     []Column  `json:"columns"`
 	Rows        []Row     `json:"rows"`
 	Matched     int       `json:"matched"`
@@ -237,7 +240,14 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	}
 	res.Matched = len(matched)
 
-	// Reserved aggregation stage (GroupBy/Aggregates/Bucket): a no-op in v1.
+	res.View = q.view()
+	switch res.View {
+	case "table":
+		runTable(matched, s, q, &res)
+		return res, nil
+	case "graph":
+		return res, nil // filled in by the graph stage
+	}
 
 	sortRecords(matched, s, q.Sort)
 
