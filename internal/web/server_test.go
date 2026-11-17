@@ -305,6 +305,43 @@ func TestForeignHost403(t *testing.T) {
 	}
 }
 
+// TestForeignHostWrites403 pins the Host guard on the write routes: a foreign
+// Host is refused even when the Origin matches the server or the Host.
+func TestForeignHostWrites403(t *testing.T) {
+	f := newFixture(t, pino)
+	port := f.srv.Listener.Addr().String()
+	port = port[strings.LastIndex(port, ":")+1:]
+	reqs := []struct{ method, path, body string }{
+		{http.MethodPut, "/api/schema?stream=db", `{"stream":"db","fields":[]}`},
+		{http.MethodPut, "/api/favorites/x", `{"stream":"db"}`},
+		{http.MethodDelete, "/api/favorites/x", ""},
+		{http.MethodPost, "/api/query", `{"stream":"db"}`},
+	}
+	for _, host := range []string{"evil.example:" + port, "evil.example", "127.0.0.1:1"} {
+		for _, origin := range []string{"", f.srv.URL, "http://" + host} {
+			for _, rq := range reqs {
+				req, _ := http.NewRequest(rq.method, f.srv.URL+rq.path, strings.NewReader(rq.body))
+				req.Host = host
+				if origin != "" {
+					req.Header.Set("Origin", origin)
+				}
+				resp, err := f.srv.Client().Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != 403 {
+					t.Fatalf("Host %s Origin %q %s %s = %d %s; want 403", host, origin, rq.method, rq.path, resp.StatusCode, b)
+				}
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(f.repo, ".config")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused write created .config: %v", err)
+	}
+}
+
 func TestForeignOrigin403(t *testing.T) {
 	f := newFixture(t, pino)
 	body := `{"stream":"db","fields":[]}`

@@ -1,12 +1,14 @@
 package query
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
@@ -280,8 +282,15 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 }
 
 // containsFold reports whether b contains the lower-case needle, ignoring
-// ASCII case, without allocating.
+// case. An ASCII needle takes a fast path that folds only ASCII and does not
+// allocate; a needle with any non-ASCII byte lowercases b with Unicode rules,
+// the same way the needle was lowercased.
 func containsFold(b, needle []byte) bool {
+	for _, c := range needle {
+		if c >= utf8.RuneSelf {
+			return bytes.Contains(bytes.ToLower(b), needle)
+		}
+	}
 	n := len(needle)
 	for i := 0; i+n <= len(b); i++ {
 		j := 0
@@ -323,7 +332,9 @@ func cell(raw any, f schema.Field) Cell {
 	case schema.TBool:
 		return Cell{V: v.Bool}
 	case schema.TJSON:
-		return Cell{V: raw}
+		// JSON text, not the decoded value: the browser's JSON.parse would
+		// round integers above 2^53, and json.Marshal keeps json.Number digits.
+		return Cell{V: rawString(raw)}
 	}
 	return Cell{V: v.Str}
 }

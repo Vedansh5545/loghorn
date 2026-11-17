@@ -172,6 +172,22 @@ func TestLoadSavedRejectsUnknownVisualizer(t *testing.T) {
 	}
 }
 
+func TestLoadSavedDefaultsMissingVisualizer(t *testing.T) {
+	dir := evalDir(t)
+	mkdirs(t, filepath.Join(dir, "schemas"))
+	body := "stream = \"x\"\n[[field]]\npath = \"ts\"\ntype = \"timestamp\"\nunit = \"ms\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "schemas", "x.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSaved(dir, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := DefaultVisualizer("ts", TTimestamp); got.Fields[0].Visualizer != want || want == "" {
+		t.Fatalf("visualizer = %q, want %q", got.Fields[0].Visualizer, want)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

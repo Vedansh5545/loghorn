@@ -10,6 +10,7 @@ import (
 
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
+	"github.com/jimbeveridge/loghorn/internal/store"
 )
 
 func TestParseTheme(t *testing.T) {
@@ -207,5 +208,28 @@ func TestWebRejectsFilter(t *testing.T) {
 	}
 	if webFlagError(true, false) != nil || webFlagError(false, true) != nil {
 		t.Fatal("-web alone and -filter alone must be accepted")
+	}
+}
+
+func TestWebStoreMode(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name                          string
+		historical, ghMode, fileInput bool
+		want                          store.Mode
+		wantStart                     time.Time
+	}{
+		{"live", false, false, false, store.ModeLive, now},
+		{"historical", true, false, false, store.ModeHistorical, time.Time{}},
+		{"gh", false, true, false, store.ModeGHJob, time.Time{}},
+		{"stdin from file", false, false, true, store.ModeHistorical, time.Time{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mode, start := webStoreMode(c.historical, c.ghMode, c.fileInput, now)
+			if mode != c.want || !start.Equal(c.wantStart) {
+				t.Fatalf("webStoreMode = %v, %v; want %v, %v", mode, start, c.want, c.wantStart)
+			}
+		})
 	}
 }

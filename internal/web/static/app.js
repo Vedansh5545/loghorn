@@ -84,12 +84,18 @@ function toDate(v) {
   return null;
 }
 
-// formatDuration takes seconds.
-function formatDuration(sec) {
-  if (Math.abs(sec) < 1) {
-    const ms = Math.round(sec * 10000) / 10; // ms, at most one decimal
-    return ms + " ms";
+const DURATION_SCALE = { s: 1, ms: 1e3, us: 1e6, ns: 1e9 };
+
+// formatDuration takes seconds. With a display unit (s|ms|us|ns) it prints in
+// that unit; otherwise it picks ms below one second and s above.
+export function formatDuration(sec, unit) {
+  const scale = DURATION_SCALE[unit];
+  if (scale) {
+    const n = Math.round(sec * scale * 100) / 100; // at most two decimals
+    return n.toLocaleString() + " " + unit;
   }
+  const ms = Math.round(sec * 10000) / 10; // ms, at most one decimal
+  if (Math.abs(ms) < 1000) return ms + " ms";
   return sec.toFixed(2) + " s";
 }
 
@@ -147,26 +153,17 @@ export function visualize(cell, column) {
       return e;
     }
     case "duration":
-      if (typeof v === "number") return el("span", "", formatDuration(v));
+      if (typeof v === "number") return el("span", "", formatDuration(v, column.unit));
       return el("span", "", asText(v));
     case "number":
       if (typeof v === "number") return el("span", "", v.toLocaleString());
       return el("span", "", groupDigits(String(v)));
     case "severity":
       return el("span", "sev sev-" + severityClass(v), asText(v));
-    case "json": {
-      let s = v;
-      if (typeof v === "string") {
-        try {
-          s = JSON.stringify(JSON.parse(v));
-        } catch {
-          s = v;
-        }
-      } else {
-        s = JSON.stringify(v);
-      }
-      return truncated(s, 80);
-    }
+    case "json":
+      // The server sends JSON cells as text; never re-parse it, because
+      // JSON.parse rounds integers above 2^53.
+      return truncated(asText(v), 80);
     case "sql":
     case "raw":
     default:

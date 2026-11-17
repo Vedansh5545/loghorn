@@ -264,9 +264,12 @@ func main() {
 	// no bar marker, no stderr message. -historical is read-only in the same
 	// spirit — it never opens the log file at all, so it works even while
 	// another loghorn is recording, and --exclusive has no effect on it.
+	// fileInput is stdin redirected from a regular file (`loghorn < file`): a
+	// replay of a finished log in everything but the flags.
+	fileInput := len(flag.Args()) == 0 && isRegularFile(os.Stdin)
 	var logs *logfile.Writer
 	var locked *logfile.LockedError
-	if !replay && !(len(flag.Args()) == 0 && isRegularFile(os.Stdin)) {
+	if !replay && !fileInput {
 		logs, locked = openLogFile(*exclusive)
 	}
 	if logs != nil {
@@ -316,13 +319,7 @@ func main() {
 	var webURL string
 	var srv *http.Server
 	if *webFlag {
-		mode, runStart := store.ModeLive, time.Now()
-		switch {
-		case *historical:
-			mode, runStart = store.ModeHistorical, time.Time{}
-		case ghMode:
-			mode, runStart = store.ModeGHJob, time.Time{}
-		}
+		mode, runStart := webStoreMode(*historical, ghMode, fileInput, time.Now())
 		st = store.New(mode, runStart)
 		if mode == store.ModeLive {
 			if dir, err := logDir(); err == nil {
@@ -338,7 +335,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "loghorn: -web:", err)
 			os.Exit(1)
 		}
-		srv = &http.Server{Handler: web.New(web.Options{Store: st, StartDir: cwd})}
+		srv = &http.Server{
+			Handler:           web.New(web.Options{Store: st, StartDir: cwd}),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
 		go func() { _ = srv.Serve(ln) }()
 		webURL = "http://" + ln.Addr().String() + "/"
 		defer srv.Close()
@@ -458,9 +458,10 @@ func main() {
 				e := parser.ParseLine(line)
 				e.Received = time.Now()
 				if st != nil {
-					// Received stands in for a missing log time only in a live run.
+					// Received stands in for a missing log time only in a live run;
+					// a replay (including `< file`) has no meaningful arrival time.
 					received := e.Received
-					if replay {
+					if replay || fileInput {
 						received = time.Time{}
 					}
 					if r, ok := record.Normalize(e, cfg.Input); ok {
@@ -515,6 +516,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "loghorn: log file stopped:", err)
 	default:
 	}
+}
+
+// webStoreMode picks the web store's mode and run start. Only a live run has a
+// run start (and preloads stored days); -historical, the GitHub flags and
+// stdin redirected from a file (fileInput) all replay a finished log, so they
+// get a historical-style store with a zero run start.
+func webStoreMode(historical, ghMode, fileInput bool, now time.Time) (store.Mode, time.Time) {
+	switch {
+	case ghMode:
+		return store.ModeGHJob, time.Time{}
+	case historical || fileInput:
+		return store.ModeHistorical, time.Time{}
+	}
+	return store.ModeLive, now
 }
 
 // webFlagError rejects -web with -filter: the web view needs the TUI's run.

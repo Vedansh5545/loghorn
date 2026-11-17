@@ -180,6 +180,22 @@ func TestRangeZeroTimeOnlyUnbounded(t *testing.T) {
 	eq(t, seqs(run(t, recs, s, Query{Range: Range{From: "1h"}})), []int{2})
 }
 
+func TestSearchNonASCII(t *testing.T) {
+	s := sch(schema.Field{Path: "x", Type: schema.TString})
+	recs := []record.Record{rec(1, t0, `{"msg":"ÜBER alles"}`), rec(2, t0, `{"msg":"uber"}`)}
+	eq(t, seqs(run(t, recs, s, Query{Search: "ÜBER"})), []int{1})
+	eq(t, seqs(run(t, recs, s, Query{Search: "über"})), []int{1})
+}
+
+func TestJSONCellIsExactText(t *testing.T) {
+	s := sch(schema.Field{Path: "ids", Type: schema.TJSON})
+	recs := []record.Record{rec(1, t0, "", "ids", []any{json.Number("1763400000123456789"), "x"})}
+	b, _ := json.Marshal(run(t, recs, s, Query{}).Rows[0].Cells)
+	if string(b) != `[{"v":"[1763400000123456789,\"x\"]"}]` {
+		t.Errorf("cells = %s", b)
+	}
+}
+
 func TestSearchRaw(t *testing.T) {
 	s := sch(schema.Field{Path: "x", Type: schema.TString})
 	recs := []record.Record{rec(1, t0, `{"msg":"Hello World"}`), rec(2, t0, `{"msg":"bye"}`)}

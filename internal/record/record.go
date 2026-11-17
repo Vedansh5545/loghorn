@@ -143,11 +143,7 @@ func (n *normalizer) promote(sev entry.Severity) {
 	for _, k := range []string{"labels", "logging.googleapis.com/labels"} {
 		if v, ok := n.obj[k]; ok {
 			n.used[k] = true
-			if m, isMap := v.(map[string]any); isMap {
-				n.set("labels", m)
-			} else {
-				n.set("labels", v)
-			}
+			n.set("labels", v)
 		}
 	}
 	for _, name := range []string{"trace", "spanId"} {

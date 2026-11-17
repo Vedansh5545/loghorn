@@ -110,8 +110,13 @@ func LoadSaved(dir, stream string) (*Schema, error) {
 	if err := toml.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	for _, f := range s.Fields {
-		if err := validateField(f); err != nil {
+	for i := range s.Fields {
+		// A hand-edited file may leave the visualizer out; use the default
+		// for the field's type rather than locking out the whole stream.
+		if f := &s.Fields[i]; f.Visualizer == "" {
+			f.Visualizer = DefaultVisualizer(f.Path, f.Type)
+		}
+		if err := validateField(s.Fields[i]); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}

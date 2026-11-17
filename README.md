@@ -206,8 +206,8 @@ The server listens on loopback only and refuses requests for any other Host,
 and writes that do not come from its own origin.
 
 It lists the streams found in the log (database lines, HTTP lines, and so on),
-and for each one a table with typed filters, a time range, text search and
-sorting. Fields get types by inference (int, float, bool, string, timestamp,
+and for each one a table, newest first, with typed filters, a time range and
+text search. Fields get types by inference (int, float, bool, string, timestamp,
 duration); a value that does not fit its type is shown raw and flagged, and is
 left out of comparisons. Live runs also load the stored days from `.loghorn`;
 `-historical`, `-gh-job` and `-gh-run` feed it their replay.
