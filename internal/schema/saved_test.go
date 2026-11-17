@@ -262,3 +262,51 @@ func TestFindConfigDirOutsideGitIgnoresAncestors(t *testing.T) {
 		t.Fatalf("got %q %v %v", dir, found, err)
 	}
 }
+
+func TestSavedWidthRoundTrip(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	s := sampleSchema()
+	s.Fields[0].Width = 140
+	if _, err := SaveSchema(dir, s); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSaved(dir, "pino")
+	if err != nil || got == nil || got.Fields[0].Width != 140 {
+		t.Fatalf("got %+v %v", got, err)
+	}
+	eff := Effective(s, got)
+	if eff.Fields[0].Width != 140 {
+		t.Fatalf("effective width %d", eff.Fields[0].Width)
+	}
+}
+
+func TestLoadSavedWithoutWidth(t *testing.T) {
+	dir := evalDir(t)
+	mkdirs(t, filepath.Join(dir, "schemas"))
+	body := "stream = \"x\"\n[[field]]\npath = \"a\"\ntype = \"string\"\nvisualizer = \"raw\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "schemas", "x.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSaved(dir, "x")
+	if err != nil || got.Fields[0].Width != 0 {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
+func TestValidateRejectsNegativeWidth(t *testing.T) {
+	s := sampleSchema()
+	s.Fields[0].Width = -1
+	if _, err := SaveSchema(evalDir(t), s); err == nil {
+		t.Fatal("negative width accepted")
+	}
+}
+
+func TestPlainAndLinkVisualizersValid(t *testing.T) {
+	for _, v := range []string{VPlain, VLink} {
+		s := sampleSchema()
+		s.Fields[0].Visualizer = v
+		if _, err := SaveSchema(evalDir(t), s); err != nil {
+			t.Errorf("%s rejected: %v", v, err)
+		}
+	}
+}

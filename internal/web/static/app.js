@@ -131,10 +131,69 @@ function severityClass(v) {
   return SEV_NAMES[String(v).toUpperCase()] || "debug";
 }
 
+// URL_RE finds http(s) URLs; it stops at whitespace and at characters that
+// cannot belong to a URL in prose or markup.
+const URL_RE = /https?:\/\/[^\s<>"'`]+/g;
+const URL_TRAIL = /[).,\]\u201d;:!?]+$/;
+
+// safeURL returns href when it parses as an http(s) URL, else "".
+function safeURL(href) {
+  try {
+    const u = new URL(href);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function linkNode(href, shown) {
+  const a = el("a", "", shown);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.addEventListener("click", (e) => e.stopPropagation());
+  return a;
+}
+
+// linkify returns a <span> of text nodes and <a>s for the http(s) URLs in
+// text. With max, only the first max characters are shown (ending in an
+// ellipsis, full text in the title); a clipped URL still links to its full
+// address. Log data only ever reaches the DOM as text or as an href that
+// safeURL accepted.
+export function linkify(text, max) {
+  const out = el("span");
+  let budget = max === undefined ? Infinity : max;
+  const clip = max !== undefined && text.length > max;
+  if (clip) budget = max - 1;
+  const add = (node, len) => {
+    if (budget <= 0) return;
+    out.append(node);
+    budget -= len;
+  };
+  const piece = (str, href) => {
+    if (budget <= 0) return;
+    const shown = str.length > budget ? str.slice(0, budget) : str;
+    add(href ? linkNode(href, shown) : document.createTextNode(shown), shown.length);
+  };
+  let pos = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    const url = m[0].replace(URL_TRAIL, "");
+    const href = url ? safeURL(url) : "";
+    if (!href) continue;
+    piece(text.slice(pos, m.index));
+    piece(url, href);
+    pos = m.index + url.length;
+  }
+  piece(text.slice(pos));
+  if (clip) {
+    out.append(document.createTextNode("…"));
+    out.title = text;
+  }
+  return out;
+}
+
 function truncated(s, n) {
-  const e = el("span", "", s.length > n ? s.slice(0, n - 1) + "…" : s);
-  if (s.length > n) e.title = s;
-  return e;
+  return linkify(s, n);
 }
 
 function asText(v) {
@@ -164,6 +223,16 @@ export function visualize(cell, column) {
     case "duration":
       if (typeof v === "number") return el("span", "", formatDuration(v, column.unit));
       return el("span", "", asText(v));
+    case "plain":
+      return el("span", "", String(v));
+    case "link": {
+      const text = asText(v);
+      const href = /^https?:\/\//.test(text) ? safeURL(text) : "";
+      if (!href) return truncated(text, 120);
+      const a = linkNode(href, text.length > 120 ? text.slice(0, 119) + "…" : text);
+      if (text.length > 120) a.title = text;
+      return a;
+    }
     case "number":
       if (typeof v === "number") return el("span", "", v.toLocaleString());
       return el("span", "", groupDigits(String(v)));
@@ -183,7 +252,13 @@ export function visualize(cell, column) {
 // ---- URL state ----
 
 function saveURL() {
-  const q = "?q=" + encodeURIComponent(JSON.stringify(state));
+  // stream and columns are written explicitly so a shared URL does not depend
+  // on the receiver's defaults.
+  const full = Object.assign({}, state, {
+    stream: state.stream,
+    columns: state.columns.length ? state.columns : currentColumns(),
+  });
+  const q = "?q=" + encodeURIComponent(JSON.stringify(full));
   if (location.search !== q) history.replaceState(null, "", q);
 }
 
@@ -363,7 +438,7 @@ async function loadSession() {
   renderHeader();
   renderStreams();
   if (streams.length && !streams.some((s) => s.name === state.stream)) {
-    state.stream = streams[0].name;
+    state.stream = streams.reduce((a, b) => (b.count > a.count ? b : a)).name;
     state.columns = [];
     state.filters = [];
     state.groupBy = [];
@@ -652,6 +727,13 @@ function renderRestore() {
   $("col-restore").hidden = !state.columns.length && !Object.keys(loadWidths()).length;
 }
 
+// preOf is a <pre> whose http(s) URLs are links.
+function preOf(text) {
+  const p = el("pre");
+  p.append(linkify(String(text)));
+  return p;
+}
+
 async function toggleDetail(tr, span) {
   const next = tr.nextElementSibling;
   if (next && next.classList.contains("detail")) {
@@ -670,9 +752,9 @@ async function toggleDetail(tr, span) {
     const rec = await api("GET", "/api/record?seq=" + encodeURIComponent(tr.dataset.seq));
     td.replaceChildren();
     for (const path of Object.keys(rec.sql || {}).sort()) {
-      td.append(el("h3", "", path + " (SQL)"), el("pre", "", rec.sql[path]));
+      td.append(el("h3", "", path + " (SQL)"), preOf(rec.sql[path]));
     }
-    td.append(el("h3", "", "record"), el("pre", "", rec.raw));
+    td.append(el("h3", "", "record"), preOf(rec.raw));
   } catch (err) {
     td.replaceChildren(el("span", "bad", err.message));
   }
@@ -1395,12 +1477,18 @@ function wireColumns() {
 // ---- schema panel ----
 
 const TYPES = ["int", "float", "bool", "string", "duration", "timestamp", "json"];
-const VISUALIZERS = ["raw", "number", "local-time", "duration", "severity", "sql", "json"];
+const VISUALIZERS = ["raw", "number", "plain", "link", "local-time", "duration", "severity", "sql", "json"];
 const UNITS = ["", "s", "ms", "us", "ns"];
 const UNIT_TYPES = new Set(["timestamp", "duration"]);
 
+// defaultVisualizer mirrors schema.DefaultVisualizer in Go.
 function defaultVisualizer(path, type) {
+  if (path === "pid" || path === "httpRequest.status") return "plain";
+  if (["insertId", "trace", "spanId", "hostname"].includes(path) || path.startsWith("labels.")) return "raw";
+  if (path === "timestamp" || path === "receiveTimestamp") return "local-time";
   if (path === "severity") return "severity";
+  if (path === "httpRequest.latency") return "duration";
+  if (path === "httpRequest.requestUrl") return "link";
   switch (type) {
     case "int":
     case "float":

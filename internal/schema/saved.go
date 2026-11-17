@@ -27,7 +27,7 @@ var validTypes = map[Type]bool{
 
 var validVisualizers = map[string]bool{
 	VRaw: true, VNumber: true, VLocalTime: true, VDuration: true,
-	VSeverity: true, VSQL: true, VJSON: true,
+	VSeverity: true, VSQL: true, VJSON: true, VPlain: true, VLink: true,
 }
 
 // validateField checks a field's Type, Visualizer and Unit against the
@@ -38,6 +38,9 @@ func validateField(f Field) error {
 	}
 	if !validVisualizers[f.Visualizer] {
 		return fmt.Errorf("field %q: unknown visualizer %q", f.Path, f.Visualizer)
+	}
+	if f.Width < 0 {
+		return fmt.Errorf("field %q: negative width %d", f.Path, f.Width)
 	}
 	if !ValidUnit(f.Type, f.Unit) {
 		return fmt.Errorf("field %q: invalid unit %q for type %s", f.Path, f.Unit, f.Type)
@@ -173,7 +176,7 @@ func SaveSchema(dir string, s Schema) (path string, err error) {
 }
 
 // Effective merges a saved schema over an inferred one. Saved
-// Type/Unit/Visualizer/Label/Hidden win for fields present in both; saved
+// Type/Unit/Visualizer/Label/Hidden/Width win for fields present in both; saved
 // fields not seen in the data are kept with Count 0; inferred fields absent
 // from a non-nil saved schema are flagged New. Hidden fields stay in Fields
 // but are dropped from the columns.
@@ -190,7 +193,7 @@ func Effective(inferred Schema, saved *Schema) Schema {
 			seen[sf.Path] = true
 			if i, ok := byPath[sf.Path]; ok {
 				f := out.Fields[i]
-				f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden
+				f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width
 				f.Saved = true
 				out.Fields[i] = f
 				continue

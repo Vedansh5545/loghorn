@@ -124,3 +124,19 @@ func TestDefaultVisualizer(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultVisualizerLogEntry(t *testing.T) {
+	for p, w := range map[string]string{
+		"pid": VPlain, "httpRequest.status": VPlain,
+		"insertId": VRaw, "trace": VRaw, "spanId": VRaw, "hostname": VRaw, "labels.schema": VRaw,
+		"timestamp": VLocalTime, "receiveTimestamp": VLocalTime, "severity": VSeverity,
+		"httpRequest.latency": VDuration, "httpRequest.requestUrl": VLink,
+	} {
+		if got := DefaultVisualizer(p, TString); got != w {
+			t.Errorf("%s=%s want %s", p, got, w)
+		}
+	}
+	if got := DefaultVisualizer("other", TInt); got != VNumber {
+		t.Errorf("int=%s", got)
+	}
+}

@@ -177,8 +177,19 @@ func defaultColumns(fields []Field) []string {
 
 // DefaultVisualizer picks how an unconfigured field is shown.
 func DefaultVisualizer(path string, t Type) string {
-	if path == "severity" {
+	switch {
+	case path == "pid", path == "httpRequest.status":
+		return VPlain
+	case path == "insertId", path == "trace", path == "spanId", path == "hostname", strings.HasPrefix(path, "labels."):
+		return VRaw
+	case path == "timestamp", path == "receiveTimestamp":
+		return VLocalTime
+	case path == "severity":
 		return VSeverity
+	case path == "httpRequest.latency":
+		return VDuration
+	case path == "httpRequest.requestUrl":
+		return VLink
 	}
 	switch t {
 	case TInt, TFloat:
