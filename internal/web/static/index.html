@@ -11,6 +11,14 @@
 <body>
 <header class="top">
   <h1 id="title">loghorn</h1>
+  <div class="menu-wrap">
+    <button id="fav-button" type="button" aria-haspopup="true" aria-expanded="false">Favorites ▾</button>
+    <div id="fav-menu" class="menu" hidden>
+      <ul id="fav-list" class="fav-list"></ul>
+      <p id="fav-status" class="status"></p>
+      <button id="fav-save-menu" type="button">Save as favorite</button>
+    </div>
+  </div>
 </header>
 <div id="error" class="banner" role="alert" hidden></div>
 <form id="bar" class="bar" autocomplete="off">
@@ -36,6 +44,38 @@
   <label class="grow">Search <input id="search" type="search" placeholder="text in any field; Enter to run"></label>
   <button id="refresh" type="button">Refresh</button>
 </form>
+<div id="filters" class="strip">
+  <span class="strip-label">Filters:</span>
+  <span id="chips" class="chips"></span>
+  <button id="add-filter" type="button">+ filter</button>
+</div>
+<div id="filter-add" class="panel" hidden>
+  <div id="fa-pick">
+    <input id="fa-search" type="search" placeholder="find a field">
+    <ul id="fa-fields" class="field-list"></ul>
+  </div>
+  <div id="fa-form" class="fa-form" hidden>
+    <span id="fa-field" class="fa-field"></span>
+    <select id="fa-op"></select>
+    <span id="fa-value" class="fa-value"></span>
+    <button id="fa-add" type="button">Add</button>
+    <span id="fa-error" class="inline-error" role="alert"></span>
+  </div>
+  <button id="fa-cancel" type="button" class="link">cancel</button>
+</div>
+<div id="columns" class="strip">
+  <span class="strip-label">Columns:</span>
+  <span id="colnames" class="colnames"></span>
+  <button id="edit-columns" type="button">edit</button>
+</div>
+<div id="columns-panel" class="panel" hidden>
+  <ul id="col-list" class="col-list"></ul>
+  <div class="panel-actions">
+    <button id="col-apply" type="button">Apply</button>
+    <button id="col-default" type="button">Default columns</button>
+    <button id="col-cancel" type="button" class="link">cancel</button>
+  </div>
+</div>
 <p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
 <main id="results">
   <table id="table">
@@ -43,6 +83,26 @@
     <tbody id="body"></tbody>
   </table>
 </main>
-<footer id="footer" class="footer"></footer>
+<footer id="footer" class="footer">
+  <span id="footer-text"></span>
+  <span class="footer-actions">
+    <button id="fav-save" type="button">Save as favorite</button>
+    <button id="schema-open" type="button">Schema…</button>
+  </span>
+</footer>
+<dialog id="schema-dialog" class="schema-dialog">
+  <h2 id="schema-title">Schema</h2>
+  <div class="schema-scroll">
+    <table id="schema-table" class="schema-table">
+      <thead><tr><th>path</th><th>inferred</th><th>type</th><th>unit</th><th>visualizer</th><th>label</th><th>hidden</th><th>count</th><th></th></tr></thead>
+      <tbody id="schema-body"></tbody>
+    </table>
+  </div>
+  <p id="schema-status" class="status" role="status"></p>
+  <div class="panel-actions">
+    <button id="schema-save" type="button">Save schema</button>
+    <button id="schema-close" type="button" class="link">close</button>
+  </div>
+</dialog>
 </body>
 </html>
