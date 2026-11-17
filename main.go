@@ -61,8 +61,9 @@ Every record is also appended to .loghorn/loghorn.log in the directory loghorn
 starts in, so each project gets its own logs and its own lock. Each finished day
 is kept as loghorn-YYYY-MM-DD.log, and days before the last three are deleted.
 Input read from a file (loghorn < file) is not recorded — it's already on disk.
-loghorn will not launch a command from inside its own source tree. Read the stored files
-back with -historical: oldest day first, then today, read-only, stopping at the
+loghorn never creates or writes .loghorn inside its own source tree, so
+recording live input there fails; reading a file, -historical and the GitHub
+flags still work. Read the stored files back with -historical: oldest day first, then today, read-only, stopping at the
 end rather than following the live file. -historical refuses piped stdin or
 stdin redirected from a file, so from cron or CI pass </dev/null.
 
@@ -177,21 +178,6 @@ func main() {
 		}
 		fmt.Print(cfg.String())
 		return
-	}
-
-	// Refuse to launch a command from loghorn's own source tree before anything
-	// is launched or written. A launched producer is the project being watched,
-	// and loghorn's own source tree is never that project. Only launching is
-	// refused: reading a pipe, a file, the stored logs or a GitHub Actions log
-	// starts nothing here, so it's fine from any directory. A cwd that can't be
-	// resolved (e.g. it was deleted out from under the process) can't be the
-	// source tree either, so skip the check rather than fail the whole run
-	// over it — the same cwd resolved above for config discovery.
-	if cwdErr == nil && len(flag.Args()) > 0 {
-		if root, ok := logfile.SourceTree(cwd); ok {
-			fmt.Fprintf(os.Stderr, "loghorn: refusing to launch a command inside the loghorn source tree (%s);\nrun it from your project's directory\n", root)
-			os.Exit(1)
-		}
 	}
 
 	// -historical and -gh-job read a finished log, so they reject the two things
@@ -476,6 +462,11 @@ func openLogFile(exclusive bool) (*logfile.Writer, *logfile.LockedError) {
 		os.Exit(1)
 	}
 	w, err := logfile.Open(dir, time.Now, time.Local)
+	var inTree *logfile.SourceTreeError
+	if errors.As(err, &inTree) {
+		fmt.Fprintln(os.Stderr, "loghorn:", err) // not a log-file fault: the wrong directory
+		os.Exit(1)
+	}
 	var locked *logfile.LockedError
 	if errors.As(err, &locked) {
 		if !exclusive {

@@ -48,8 +48,12 @@ type Writer struct {
 // Open creates dir if needed, locks it, archives a loghorn.log left from an
 // earlier day, prunes old archives, and opens today's file. Another loghorn
 // holding dir is reported as *LockedError. clock and loc decide every date, so
-// tests need not wait for midnight.
+// tests need not wait for midnight. A dir inside loghorn's own source tree is
+// refused with *SourceTreeError before anything is created or written there.
 func Open(dir string, clock func() time.Time, loc *time.Location) (*Writer, error) {
+	if root, ok := SourceTree(dir); ok {
+		return nil, &SourceTreeError{Root: root}
+	}
 	// 0o700, owner-only, like every file this package creates: dir holds a log
 	// that can carry a dev server's tokens and auth headers.
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -193,7 +193,9 @@ directory is created owner-only and ignores itself, because a dev server's logs 
 carry tokens and auth headers.
 
 Input read from a file (`loghorn < file`) is not recorded — it is already on disk.
-loghorn refuses to launch a command from inside its own source tree.
+loghorn never creates or writes `.loghorn` inside its own source tree, so recording
+live input there (a launched command or a pipe) fails; reading a file, `-historical`
+and the GitHub flags work there.
 
 ## Flags
 

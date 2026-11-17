@@ -1,9 +1,12 @@
 package logfile
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeGoMod(t *testing.T, dir, module string) {
@@ -140,5 +143,25 @@ func TestSourceTreeModulePathWithTrailingComment(t *testing.T) {
 	writeGoMod(t, root, "github.com/jimbeveridge/loghorn // comment")
 	if _, ok := SourceTree(root); !ok {
 		t.Fatalf("a trailing comment on the module line should still be recognised")
+	}
+}
+
+// Open refuses a log directory inside loghorn's tree and creates nothing there.
+func TestOpenRefusesTheSourceTree(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module github.com/jimbeveridge/loghorn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "sub", ".loghorn")
+	w, err := Open(dir, time.Now, time.Local)
+	var st *SourceTreeError
+	if !errors.As(err, &st) || st.Root != root {
+		if w != nil {
+			w.Close()
+		}
+		t.Fatalf("Open in the source tree: err = %v, want *SourceTreeError at %s", err, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "sub")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Open created something in the source tree: %v", err)
 	}
 }

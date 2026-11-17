@@ -11,6 +11,16 @@ import (
 // loghornModule is the module path that marks loghorn's own source tree.
 const loghornModule = "github.com/jimbeveridge/loghorn"
 
+// SourceTreeError is Open's refusal to create or write a log directory inside
+// loghorn's own source tree.
+type SourceTreeError struct {
+	Root string // the directory holding loghorn's go.mod
+}
+
+func (e *SourceTreeError) Error() string {
+	return "refusing to write logs inside the loghorn source tree (" + e.Root + ");\nrun it from your project's directory"
+}
+
 // SourceTree reports whether dir lies inside loghorn's own source tree, and if
 // so the directory holding its go.mod. It walks up to the nearest go.mod; that
 // file alone decides, so a project nested in loghorn's tree with its own module
@@ -18,8 +28,9 @@ const loghornModule = "github.com/jimbeveridge/loghorn"
 // directory first, since filepath.Dir(".") == "." would otherwise stop the walk
 // after a single step for a relative dir.
 //
-// loghorn refuses to launch a command from its own tree: loghorn is meant to be run from the
-// project it watches, and loghorn's own source tree is never that project.
+// Open refuses a log directory inside loghorn's own tree: loghorn is meant to
+// be run from the project it watches, and loghorn's own source tree is never
+// that project, so it must never collect a .loghorn of its own.
 // Checking go.mod rather than the git remote needs no git, no origin remote,
 // and still fires in a fork.
 func SourceTree(dir string) (root string, ok bool) {
