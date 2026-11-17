@@ -257,7 +257,7 @@ function saveURL() {
   // on the receiver's defaults.
   const full = Object.assign({}, state, {
     stream: state.stream,
-    columns: state.columns.length ? state.columns : currentColumns(),
+    columns: state.columns.length ? state.columns : defaultColumns(),
   });
   const q = "?q=" + encodeURIComponent(JSON.stringify(full));
   if (location.search !== q) history.replaceState(null, "", q);
@@ -621,7 +621,7 @@ function headerCell(c, count) {
   const del = el("button", "col-del");
   del.type = "button";
   del.title = "hide this column";
-  del.setAttribute("aria-label", "remove column " + c.path);
+  del.setAttribute("aria-label", "hide column " + c.path);
   del.disabled = count <= 1;
   del.append(trashIcon());
   del.addEventListener("click", () => hideColumn(c.path));
@@ -686,6 +686,7 @@ const MIN_COL = 40;
 
 function startResize(e, th) {
   if (e.button !== 0) return;
+  if (lastResultStream !== state.stream) return;
   e.preventDefault();
   const path = th.dataset.path;
   const startX = e.clientX;
@@ -813,6 +814,13 @@ function fieldByPath(path) {
 
 function badge(text, cls) {
   return el("span", "badge" + (cls ? " badge-" + cls : ""), text);
+}
+
+// defaultColumns is the stream's saved default columns, or [] when the loaded
+// schema belongs to another stream.
+function defaultColumns() {
+  const sc = schemaData && schemaData.schema;
+  return sc && sc.stream === state.stream && Array.isArray(sc.columns) ? sc.columns.slice() : [];
 }
 
 // currentColumns is the column paths the table shows now.
@@ -1484,6 +1492,7 @@ function menuRow(label, control) {
 }
 
 function openColumnMenu(path, anchorEl) {
+  if (lastResultStream !== state.stream) return;
   if (menuPath === path && menuAnchor === anchorEl) {
     closeColumnMenu();
     return;
