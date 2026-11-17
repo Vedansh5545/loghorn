@@ -308,36 +308,9 @@ func main() {
 		return
 	}
 
-	// With a command after `--`, loghorn launches it and owns it: stdout and stderr
-	// arrive together, the child is kept off the terminal so it can't steal
-	// keystrokes, and quitting can shut its whole process group down. Without
-	// one, read the pipe as before. -historical replaces this with its own
-	// ordered list of opened files (the -historical guards above already rule
-	// out a command after `--`, so argv is always empty in that case).
-	var sources []io.Reader
-	var child *runner.Runner
-	if *historical {
-		for _, f := range historicalFiles {
-			sources = append(sources, f)
-		}
-	} else if ghMode {
-		sources = []io.Reader{bytes.NewReader(ghLog)}
-	} else {
-		var source io.Reader = os.Stdin
-		if argv := flag.Args(); len(argv) > 0 {
-			r, err := runner.Start(argv)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "loghorn:", err)
-				os.Exit(1)
-			}
-			child, source = r, r.Output()
-			defer child.Close()
-		}
-		sources = []io.Reader{source}
-	}
-
 	// The web view's store. Live mode preloads the stored days before the
-	// producer starts, so the view opens with history; replay modes are fed by
+	// producer starts (and before any child is launched, so a listen failure
+	// cannot orphan it), so the view opens with history; replay modes are fed by
 	// the producer loop below.
 	var st *store.Store
 	var webURL string
@@ -369,6 +342,34 @@ func main() {
 		go func() { _ = srv.Serve(ln) }()
 		webURL = "http://" + ln.Addr().String() + "/"
 		defer srv.Close()
+	}
+
+	// With a command after `--`, loghorn launches it and owns it: stdout and stderr
+	// arrive together, the child is kept off the terminal so it can't steal
+	// keystrokes, and quitting can shut its whole process group down. Without
+	// one, read the pipe as before. -historical replaces this with its own
+	// ordered list of opened files (the -historical guards above already rule
+	// out a command after `--`, so argv is always empty in that case).
+	var sources []io.Reader
+	var child *runner.Runner
+	if *historical {
+		for _, f := range historicalFiles {
+			sources = append(sources, f)
+		}
+	} else if ghMode {
+		sources = []io.Reader{bytes.NewReader(ghLog)}
+	} else {
+		var source io.Reader = os.Stdin
+		if argv := flag.Args(); len(argv) > 0 {
+			r, err := runner.Start(argv)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "loghorn:", err)
+				os.Exit(1)
+			}
+			child, source = r, r.Output()
+			defer child.Close()
+		}
+		sources = []io.Reader{source}
 	}
 
 	ch := make(chan entry.Entry, 1024)
