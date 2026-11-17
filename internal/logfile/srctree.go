@@ -18,7 +18,7 @@ const loghornModule = "github.com/jimbeveridge/loghorn"
 // directory first, since filepath.Dir(".") == "." would otherwise stop the walk
 // after a single step for a relative dir.
 //
-// loghorn refuses to run from its own tree: loghorn is meant to be run from the
+// loghorn refuses to launch a command from its own tree: loghorn is meant to be run from the
 // project it watches, and loghorn's own source tree is never that project.
 // Checking go.mod rather than the git remote needs no git, no origin remote,
 // and still fires in a fork.

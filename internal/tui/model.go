@@ -151,6 +151,11 @@ type Model struct {
 	// see statusBar.
 	historical bool
 
+	// replayMode is the bar's mode word while historical is set, and replayAbout
+	// names what is being read in the help screen. -historical and -gh-job both
+	// replay a finished log, so they share every behaviour but these two words.
+	replayMode, replayAbout string
+
 	// display is the [display] config section. It only ever affects how an entry
 	// is drawn, never what was parsed or stored. NewModel seeds it from
 	// config.Default(), because not every default here is a zero value —
@@ -179,7 +184,17 @@ func LogFileOff(detail string) tea.Msg { return logFileOffMsg{Detail: detail} }
 // rather than watching live input. The shade still works exactly as before —
 // space, G, j from the newest row and clicking the bar all grab the handle —
 // only the bar's mode word changes.
-func (m *Model) SetHistorical() { m.historical = true }
+func (m *Model) SetHistorical() {
+	m.SetReplay("HISTORICAL", "reading stored logs (-historical)")
+}
+
+// SetReplay marks the model as replaying a finished log, like SetHistorical,
+// but names it: mode is the bar's mode word and about the help screen's note
+// on where the lines come from.
+func (m *Model) SetReplay(mode, about string) {
+	m.historical = true
+	m.replayMode, m.replayAbout = mode, about
+}
 
 // SetDisplay applies the [display] config section. A Model without one draws
 // entries the way loghorn did before the section existed.
@@ -651,7 +666,7 @@ func (m Model) helpContent() string {
 	case m.historical:
 		// -historical is a reader, not a launcher — it refuses a command
 		// entirely (main.go) — so the pipe-mode advice below would be wrong.
-		note("reading stored logs (-historical) · f/Q need a launched command")
+		note(m.replayAbout + " · f/Q need a launched command")
 	default:
 		note("reading a pipe · start as loghorn -- <command> for f and Q")
 	}
@@ -1254,7 +1269,7 @@ func (m Model) statusBar() string {
 	if m.historical {
 		// There is no live stream to hold against while replaying stored files,
 		// so LIVE/HELD would be misleading either way the shade sits.
-		mode = "HISTORICAL"
+		mode = m.replayMode
 	}
 	// The handle carries the cursor and the selected-row highlight while it
 	// holds it (live), so every segment below is built with the background

@@ -186,3 +186,18 @@ func TestHistoricalHelpOverlayProducerWording(t *testing.T) {
 		t.Fatalf("historical mode help should mention the stored logs:\n%s", got)
 	}
 }
+
+// SetReplay (-gh-job) behaves like -historical but with its own mode word.
+func TestReplayBarUsesItsModeWord(t *testing.T) {
+	m := NewModel(nil, 100)
+	m.width, m.height = 200, 12
+	m.SetReplay("GH JOB", "reading GitHub Actions job 7")
+	m = imps(m, 5)
+	for _, pos := range []string{"on", "off"} {
+		got := m.statusBar()
+		if !strings.Contains(got, "GH JOB") || strings.Contains(got, "LIVE") || strings.Contains(got, "HELD") || strings.Contains(got, "HISTORICAL") {
+			t.Fatalf("bar %s the handle should read GH JOB only:\n%s", pos, got)
+		}
+		m = press(m, 'k')
+	}
+}

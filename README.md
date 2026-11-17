@@ -56,6 +56,19 @@ and keystrokes get split at random. Launch it instead.
 loghorn -historical
 ```
 
+**Read a GitHub Actions job's log** — by job ID (the number after `/job/` in its
+URL; the run is looked up) or by the whole URL. Or give `-gh-run` a run ID or run
+URL and pick the job from a list at startup; the list opens on the first failed
+job. Both go through the GitHub CLI, so
+`gh` must be installed and logged in; a bare ID uses the repository of the current
+directory.
+
+```sh
+loghorn -gh-job 133607019104
+loghorn -gh-job https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
+loghorn -gh-run https://github.com/owner/repo/actions/runs/43954926722
+```
+
 **Headless, for a script or CI** — prints only the failures to stdout, byte-for-byte
 as they arrived:
 
@@ -180,7 +193,7 @@ directory is created owner-only and ignores itself, because a dev server's logs 
 carry tokens and auth headers.
 
 Input read from a file (`loghorn < file`) is not recorded — it is already on disk.
-loghorn refuses to run from inside its own source tree.
+loghorn refuses to launch a command from inside its own source tree.
 
 ## Flags
 
@@ -188,6 +201,8 @@ loghorn refuses to run from inside its own source tree.
 |---|---|---|
 | `--filter` | off | headless: print only the failures to stdout |
 | `-historical` | off | read the stored files instead of live input |
+| `-gh-job` | | read a GitHub Actions job's log (job ID or URL) instead of live input |
+| `-gh-run` | | pick a job of a GitHub Actions run (run ID or URL), then read its log |
 | `-config` | off | print the config file in effect, then exit |
 | `--scrollback` | `5000` | entries kept in memory |
 | `--notify` | off | desktop notification on fresh errors |

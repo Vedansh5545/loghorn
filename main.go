@@ -19,6 +19,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,6 +37,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/engine"
 	"github.com/jimbeveridge/loghorn/internal/entry"
+	"github.com/jimbeveridge/loghorn/internal/ghjob"
 	"github.com/jimbeveridge/loghorn/internal/headless"
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
@@ -59,7 +61,7 @@ Every record is also appended to .loghorn/loghorn.log in the directory loghorn
 starts in, so each project gets its own logs and its own lock. Each finished day
 is kept as loghorn-YYYY-MM-DD.log, and days before the last three are deleted.
 Input read from a file (loghorn < file) is not recorded — it's already on disk.
-loghorn will not run from inside its own source tree. Read the stored files
+loghorn will not launch a command from inside its own source tree. Read the stored files
 back with -historical: oldest day first, then today, read-only, stopping at the
 end rather than following the live file. -historical refuses piped stdin or
 stdin redirected from a file, so from cron or CI pass </dev/null.
@@ -72,11 +74,23 @@ severities are read (field-naming, severity) — gcloud's snake_case and
 numeric severities are accepted by default. Run with -config to see which
 file is in effect.
 
+-gh-job reads one finished GitHub Actions job's log instead of live input. Give
+it the job ID (the number after /job/ in the job's URL) or the whole URL; the
+run it belongs to is looked up. -gh-run takes a run ID or run URL instead and
+asks at startup which of the run's jobs to show, starting on the first failed
+one. Both fetch through the GitHub
+CLI, so gh must be installed and logged in; with a bare ID the repository is
+the one the current directory's git remote points at (as for gh run view).
+Like -historical they are read-only: nothing is written to .loghorn.
+
 Examples:
   loghorn -- npm run dev
   loghorn --scrollback 20000 -- go test ./...
   kubectl logs -f pod | loghorn
   loghorn -historical
+  loghorn -gh-job 133607019104
+  loghorn -gh-job https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
+  loghorn -gh-run https://github.com/owner/repo/actions/runs/43954926722
 
 Flags:
 `)
@@ -104,6 +118,8 @@ func main() {
 	grace := flag.Duration("shutdown-grace", 5*time.Second, "how long a launched command gets to exit on SIGTERM before SIGKILL")
 	exclusive := flag.Bool("exclusive", false, "exit if another loghorn is already writing the log file, instead of running without one")
 	historical := flag.Bool("historical", false, "show the stored log files (oldest day first, then today) instead of live input")
+	ghRunFlag := flag.String("gh-run", "", "pick one job of a GitHub Actions run, by run ID or run URL, and show its log (needs gh)")
+	ghJobFlag := flag.String("gh-job", "", "show a GitHub Actions job's log, by job ID or job URL, instead of live input (needs gh)")
 	theme := flag.String("theme", "auto", "colours: auto (ask the terminal for its background), light, dark, or the background as #rrggbb")
 	configFlag := flag.Bool("config", false, "print the config file in effect and the settings it resolves to, then exit")
 	flag.Usage = usage
@@ -163,38 +179,76 @@ func main() {
 		return
 	}
 
-	// Refuse to run from loghorn's own source tree before anything is launched or
-	// written. loghorn is meant to be run from the project it watches, and
-	// loghorn's own source tree is never that project. A cwd that can't be
+	// Refuse to launch a command from loghorn's own source tree before anything
+	// is launched or written. A launched producer is the project being watched,
+	// and loghorn's own source tree is never that project. Only launching is
+	// refused: reading a pipe, a file, the stored logs or a GitHub Actions log
+	// starts nothing here, so it's fine from any directory. A cwd that can't be
 	// resolved (e.g. it was deleted out from under the process) can't be the
 	// source tree either, so skip the check rather than fail the whole run
 	// over it — the same cwd resolved above for config discovery.
-	if cwdErr == nil {
+	if cwdErr == nil && len(flag.Args()) > 0 {
 		if root, ok := logfile.SourceTree(cwd); ok {
-			fmt.Fprintf(os.Stderr, "loghorn: refusing to run inside the loghorn source tree (%s);\nrun it from your project's directory\n", root)
+			fmt.Fprintf(os.Stderr, "loghorn: refusing to launch a command inside the loghorn source tree (%s);\nrun it from your project's directory\n", root)
 			os.Exit(1)
 		}
 	}
 
-	// -historical reads what's already on disk, so it rejects the two things
+	// -historical and -gh-job read a finished log, so they reject the two things
 	// that would otherwise compete with that: a command to launch (there is
-	// nothing to launch — it's a reader) and stdin carrying its own stream. A
-	// Stat error is treated as a terminal, i.e. allowed, matching isRegularFile's
-	// convention of failing open rather than closed on an unidentifiable stdin.
+	// nothing to launch — it's a reader) and stdin carrying its own stream; see
+	// refuseOtherInput. The two also exclude each other.
+	if n := countSet(*historical, *ghJobFlag != "", *ghRunFlag != ""); n > 1 {
+		fmt.Fprintln(os.Stderr, "loghorn: use only one of -historical, -gh-job and -gh-run")
+		os.Exit(2)
+	}
+	// replay covers every reader of a finished log: none launches anything,
+	// reads stdin or writes the log file.
+	replay := *historical || *ghJobFlag != "" || *ghRunFlag != ""
 	var historicalFiles []*os.File
 	if *historical {
-		if len(flag.Args()) > 0 {
-			fmt.Fprintln(os.Stderr, "loghorn: -historical can't be combined with a command")
-			os.Exit(2)
-		}
-		if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
-			fmt.Fprintln(os.Stderr, "loghorn: -historical reads the stored logs; it can't also read stdin")
-			os.Exit(2)
-		}
+		refuseOtherInput("-historical reads the stored logs")
 		historicalFiles = openHistoricalFiles()
 		for _, f := range historicalFiles {
 			defer f.Close()
 		}
+	}
+	// The job's log is fetched whole before anything starts, so a missing gh,
+	// a failed login or a wrong ID is reported here rather than inside the TUI.
+	// ghMode is decided by the flags, never by ghLog's content: an empty log
+	// (a skipped job) comes back nil, and testing ghLog would then fall through
+	// to reading stdin — the terminal — as if it were a pipe.
+	ghMode := *ghJobFlag != "" || *ghRunFlag != ""
+	var ghLog []byte
+	var ghAbout string
+	if ghMode {
+		var ref ghjob.Ref
+		if *ghJobFlag != "" {
+			var err error
+			if ref, err = ghjob.Parse(*ghJobFlag); err != nil {
+				fmt.Fprintln(os.Stderr, "loghorn:", err)
+				os.Exit(2)
+			}
+			refuseOtherInput("-gh-job reads a GitHub Actions log")
+		} else {
+			run, err := ghjob.ParseRun(*ghRunFlag)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "loghorn:", err)
+				os.Exit(2)
+			}
+			refuseOtherInput("-gh-run reads a GitHub Actions log")
+			ref = pickRunJob(run)
+		}
+		job, logBytes, err := ghjob.Fetch(ref)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "loghorn:", err)
+			if ref.Repo == "" {
+				fmt.Fprintln(os.Stderr, bareIDHint)
+			}
+			os.Exit(1)
+		}
+		ghLog, ghAbout = logBytes, job.Describe(ref.Job)
+		fmt.Fprintln(os.Stderr, "loghorn:", ghAbout)
 	}
 
 	// The log file opens before --filter dispatch and before a child is launched,
@@ -209,7 +263,7 @@ func main() {
 	// another loghorn is recording, and --exclusive has no effect on it.
 	var logs *logfile.Writer
 	var locked *logfile.LockedError
-	if !*historical && !(len(flag.Args()) == 0 && isRegularFile(os.Stdin)) {
+	if !replay && !(len(flag.Args()) == 0 && isRegularFile(os.Stdin)) {
 		logs, locked = openLogFile(*exclusive)
 	}
 	if logs != nil {
@@ -228,6 +282,13 @@ func main() {
 					fmt.Fprintln(os.Stderr, "loghorn:", err)
 					os.Exit(1)
 				}
+			}
+			return
+		}
+		if ghMode {
+			if err := headless.Run(bytes.NewReader(ghLog), os.Stdout, cfg.Input, recordSink(nil, nil)); err != nil {
+				fmt.Fprintln(os.Stderr, "loghorn:", err)
+				os.Exit(1)
 			}
 			return
 		}
@@ -256,6 +317,8 @@ func main() {
 		for _, f := range historicalFiles {
 			sources = append(sources, f)
 		}
+	} else if ghMode {
+		sources = []io.Reader{bytes.NewReader(ghLog)}
 	} else {
 		var source io.Reader = os.Stdin
 		if argv := flag.Args(); len(argv) > 0 {
@@ -301,7 +364,7 @@ func main() {
 		defer tty.Close()
 		opts = append(opts, tea.WithInput(tty))
 	}
-	model := tui.NewModel(ch, scrollbackFor(*historical, explicitScrollback, *capacity))
+	model := tui.NewModel(ch, scrollbackFor(replay, explicitScrollback, *capacity))
 	model.SetDisplay(cfg.Display)
 	if child != nil {
 		model.SetChild(childControl{r: child, grace: *grace})
@@ -311,6 +374,9 @@ func main() {
 	}
 	if *historical {
 		model.SetHistorical()
+	}
+	if ghMode {
+		model.SetReplay("GH JOB", "reading GitHub Actions "+ghAbout)
 	}
 	p := tea.NewProgram(model, opts...)
 
@@ -428,6 +494,88 @@ func openLogFile(exclusive bool) (*logfile.Writer, *logfile.LockedError) {
 		os.Exit(1)
 	}
 	return w, nil
+}
+
+// countSet counts the true values.
+func countSet(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
+}
+
+// bareIDHint follows a gh failure when no repository was named, since the
+// usual cause is running outside the repository's checkout.
+const bareIDHint = "loghorn: a bare ID is looked up in this directory's GitHub repository; pass the URL to name another"
+
+// pickRunJob lists the run's jobs and asks which one to show. A run with a
+// single job needs no question. The picker starts on the first failed job,
+// the one usually wanted. The picker reads keys from /dev/tty and
+// draws on stderr, so it works under --filter too; without a terminal to ask
+// on, it lists the jobs and exits, since -gh-job can name one directly.
+func pickRunJob(run ghjob.RunRef) ghjob.Ref {
+	jobs, err := ghjob.Jobs(run)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn:", err)
+		if run.Repo == "" {
+			fmt.Fprintln(os.Stderr, bareIDHint)
+		}
+		os.Exit(1)
+	}
+	if len(jobs) == 1 {
+		return run.JobRef(jobs[0].ID)
+	}
+	items := jobItems(jobs)
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loghorn: run %s has %d jobs and there is no terminal to choose on; pick one with -gh-job:\n", run.Run, len(jobs))
+		for i, j := range jobs {
+			fmt.Fprintf(os.Stderr, "  %d  %s\n", j.ID, items[i])
+		}
+		os.Exit(2)
+	}
+	defer tty.Close()
+	i, ok, err := tui.Pick(fmt.Sprintf("Run %s has %d jobs — which log?", run.Run, len(jobs)), items, ghjob.FirstFailed(jobs), tty, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn:", err)
+		os.Exit(1)
+	}
+	if !ok {
+		os.Exit(0) // cancelled: nothing to show, nothing went wrong
+	}
+	return run.JobRef(jobs[i].ID)
+}
+
+// jobItems lines the jobs up as "name  outcome" with the names padded to one
+// width, for the picker.
+func jobItems(jobs []ghjob.Job) []string {
+	w := 0
+	for _, j := range jobs {
+		w = max(w, len(j.Name))
+	}
+	items := make([]string, len(jobs))
+	for i, j := range jobs {
+		items[i] = fmt.Sprintf("%-*s  %s", w, j.Name, j.Outcome())
+	}
+	return items
+}
+
+// refuseOtherInput exits with a usage error if a replay flag (-historical,
+// -gh-job, -gh-run) was given a command to launch or a stdin carrying its own stream. A
+// Stat error is treated as a terminal, i.e. allowed, matching isRegularFile's
+// convention of failing open rather than closed on an unidentifiable stdin.
+func refuseOtherInput(what string) {
+	if len(flag.Args()) > 0 {
+		fmt.Fprintf(os.Stderr, "loghorn: %s; it can't be combined with a command\n", what)
+		os.Exit(2)
+	}
+	if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
+		fmt.Fprintf(os.Stderr, "loghorn: %s; it can't also read stdin\n", what)
+		os.Exit(2)
+	}
 }
 
 // isRegularFile reports whether f is a plain file rather than a pipe, socket,
