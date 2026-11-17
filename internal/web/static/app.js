@@ -281,6 +281,7 @@ function wireBar() {
     state.filters = [];
     state.sort = { field: "", desc: true };
     closeColumns();
+    clearTriples();
     loadSchema().then(() => {
       rebuildTriples();
       runQuery();
@@ -315,6 +316,8 @@ function syncView() {
   for (const s of document.querySelectorAll("[data-views]")) {
     s.hidden = !s.dataset.views.split(" ").includes(state.view);
   }
+  $("table").hidden = state.view === "graph";
+  $("graph").hidden = state.view !== "graph";
 }
 
 function setView(v) {
@@ -797,6 +800,9 @@ function tagInput(box, tags, path, onChange) {
       if (tags.includes(v) || (q && !v.toLowerCase().includes(q))) continue;
       const b = el("button", "suggestion", v);
       b.type = "button";
+      // Keep focus in the input, so its blur doesn't add the typed text as a
+      // tag and redraw this button away before the click lands.
+      b.addEventListener("mousedown", (e) => e.preventDefault());
       b.addEventListener("click", () => addTag(v));
       sugg.append(b);
     }
@@ -844,6 +850,13 @@ function newTriple(f) {
     if (field && field.type === "timestamp") t.value = localInputValue(t.value) || t.value;
   }
   return t;
+}
+
+// clearTriples drops every row at once, so no in-flight commit can write an
+// old stream's filter back while the new schema loads.
+function clearTriples() {
+  triples = [];
+  $("triples").replaceChildren();
 }
 
 function syncFilters() {
@@ -949,6 +962,10 @@ function removeTriple(t) {
 }
 
 function pickTripleField(t, path) {
+  if (!path && t !== triples[triples.length - 1]) {
+    removeTriple(t); // keep exactly one empty triple, at the end
+    return;
+  }
   const had = !!t.filter;
   t.path = path;
   t.tags = [];
@@ -1339,6 +1356,7 @@ async function loadFavorite(f) {
   closeColumns();
   syncBar();
   syncView();
+  clearTriples();
   if (state.stream !== before || !schemaData) await loadSchema();
   rebuildTriples();
   runQuery();
