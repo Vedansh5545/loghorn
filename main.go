@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -41,8 +42,11 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/headless"
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
+	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/runner"
+	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/tui"
+	"github.com/jimbeveridge/loghorn/internal/web"
 )
 
 func usage() {
@@ -84,6 +88,12 @@ CLI, so gh must be installed and logged in; with a bare ID the repository is
 the one the current directory's git remote points at (as for gh run view).
 Like -historical they are read-only: nothing is written to .loghorn.
 
+-web serves a query view of this run on 127.0.0.1 (loopback only; -web-port
+picks the port, default a free one). It lists the streams of structured
+records, with typed filters, a time range, search and sort, saved schemas and
+favorite queries (under .config/loghorn in the repo). The URL is shown in the
+status bar. It cannot be combined with -filter.
+
 Examples:
   loghorn -- npm run dev
   loghorn --scrollback 20000 -- go test ./...
@@ -123,8 +133,15 @@ func main() {
 	ghJobFlag := flag.String("gh-job", "", "show a GitHub Actions job's log, by job ID or job URL, instead of live input (needs gh)")
 	theme := flag.String("theme", "auto", "colours: auto (ask the terminal for its background), light, dark, or the background as #rrggbb")
 	configFlag := flag.Bool("config", false, "print the config file in effect and the settings it resolves to, then exit")
+	webFlag := flag.Bool("web", false, "serve the web query view on 127.0.0.1 while loghorn runs")
+	webPort := flag.Int("web-port", 0, "port for -web (0 picks a free one)")
 	flag.Usage = usage
 	flag.Parse()
+
+	if err := webFlagError(*webFlag, *filterMode); err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn:", err)
+		os.Exit(2)
+	}
 
 	// scrollbackFor needs to know whether --scrollback was passed explicitly,
 	// as opposed to just holding its default value, so Visit (which only
@@ -319,6 +336,41 @@ func main() {
 		sources = []io.Reader{source}
 	}
 
+	// The web view's store. Live mode preloads the stored days before the
+	// producer starts, so the view opens with history; replay modes are fed by
+	// the producer loop below.
+	var st *store.Store
+	var webURL string
+	var srv *http.Server
+	if *webFlag {
+		mode, runStart := store.ModeLive, time.Now()
+		switch {
+		case *historical:
+			mode, runStart = store.ModeHistorical, time.Time{}
+		case ghMode:
+			mode, runStart = store.ModeGHJob, time.Time{}
+		}
+		st = store.New(mode, runStart)
+		if mode == store.ModeLive {
+			if dir, err := logDir(); err == nil {
+				if paths, err := logfile.HistoricalFiles(dir); err == nil {
+					if err := store.Preload(st, paths, cfg.Input); err != nil {
+						fmt.Fprintln(os.Stderr, "loghorn: -web: preload:", err)
+					}
+				}
+			}
+		}
+		ln, err := web.Listen(*webPort)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "loghorn: -web:", err)
+			os.Exit(1)
+		}
+		srv = &http.Server{Handler: web.New(web.Options{Store: st, StartDir: cwd})}
+		go func() { _ = srv.Serve(ln) }()
+		webURL = "http://" + ln.Addr().String() + "/"
+		defer srv.Close()
+	}
+
 	ch := make(chan entry.Entry, 1024)
 
 	var coalescer *alert.Coalescer
@@ -354,6 +406,9 @@ func main() {
 	model.SetDisplay(cfg.Display)
 	if child != nil {
 		model.SetChild(childControl{r: child, grace: *grace})
+	}
+	if webURL != "" {
+		model.SetWebURL(webURL)
 	}
 	if locked != nil {
 		model.SetLogFileOff(locked.Holder() + " has it")
@@ -401,6 +456,16 @@ func main() {
 				sink(line)
 				e := parser.ParseLine(line)
 				e.Received = time.Now()
+				if st != nil {
+					// Received stands in for a missing log time only in a live run.
+					received := e.Received
+					if replay {
+						received = time.Time{}
+					}
+					if r, ok := record.Normalize(e, cfg.Input); ok {
+						st.Add(r, received)
+					}
+				}
 				e.Important = engine.IsImportant(e)
 				if coalescer != nil && e.Important {
 					if fire, title, body := coalescer.Observe(e); fire {
@@ -430,6 +495,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "loghorn:", runErr)
 		os.Exit(1)
 	}
+	if srv != nil {
+		srv.Close()
+		fmt.Fprintln(os.Stderr, "loghorn: web view was at", webURL)
+	}
 	// The producer may still be running if the TUI quit before stdin was
 	// fully drained (e.g. the user pressed 'q'); don't block exit waiting
 	// for it. Only report an error that was already available.
@@ -445,6 +514,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "loghorn: log file stopped:", err)
 	default:
 	}
+}
+
+// webFlagError rejects -web with -filter: the web view needs the TUI's run.
+func webFlagError(web, filter bool) error {
+	if web && filter {
+		return errors.New("-web cannot be used with -filter")
+	}
+	return nil
 }
 
 // openLogFile opens the always-on log file in .loghorn under the directory

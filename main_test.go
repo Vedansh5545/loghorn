@@ -199,3 +199,13 @@ func TestScrollbackFor(t *testing.T) {
 		})
 	}
 }
+
+func TestWebRejectsFilter(t *testing.T) {
+	err := webFlagError(true, true)
+	if err == nil || err.Error() != "-web cannot be used with -filter" {
+		t.Fatalf("webFlagError(web, filter) = %v", err)
+	}
+	if webFlagError(true, false) != nil || webFlagError(false, true) != nil {
+		t.Fatal("-web alone and -filter alone must be accepted")
+	}
+}

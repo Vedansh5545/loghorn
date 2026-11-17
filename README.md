@@ -197,6 +197,26 @@ loghorn never creates or writes `.loghorn` inside its own source tree, so record
 live input there (a launched command or a pipe) fails; reading a file, `-historical`
 and the GitHub flags work there.
 
+## Web query view
+
+`loghorn -web` also serves a browser view of the run's structured records at
+`http://127.0.0.1:<port>/` (the URL is in the status bar and is printed again
+when the TUI exits). Pick the port with `-web-port`; the default is a free one.
+The server listens on loopback only and refuses requests for any other Host,
+and writes that do not come from its own origin.
+
+It lists the streams found in the log (database lines, HTTP lines, and so on),
+and for each one a table with typed filters, a time range, text search and
+sorting. Fields get types by inference (int, float, bool, string, timestamp,
+duration); a value that does not fit its type is shown raw and flagged, and is
+left out of comparisons. Live runs also load the stored days from `.loghorn`;
+`-historical`, `-gh-job` and `-gh-run` feed it their replay.
+
+Schemas (field types and display) and favorite queries are saved as TOML in
+the repo's `.config/loghorn/`: `schemas/<stream>.toml` and `queries.toml`.
+Nothing is written under your home directory. `-web` cannot be combined with
+`-filter`.
+
 ## Flags
 
 | Flag | Default | |
@@ -205,6 +225,8 @@ and the GitHub flags work there.
 | `-historical` | off | read the stored files instead of live input |
 | `-gh-job` | | read a GitHub Actions job's log (job ID or URL) instead of live input |
 | `-gh-run` | | pick a job of a GitHub Actions run (run ID or URL), then read its log |
+| `-web` | off | serve the web query view on 127.0.0.1 while loghorn runs |
+| `-web-port` | `0` | port for `-web` (0 picks a free one) |
 | `-config` | off | print the config file in effect, then exit |
 | `--scrollback` | `5000` | entries kept in memory |
 | `--notify` | off | desktop notification on fresh errors |

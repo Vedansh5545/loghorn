@@ -145,6 +145,9 @@ type Model struct {
 	// keystroke must not erase the fact that nothing is being kept.
 	logFileOff string
 
+	// webURL is where the -web query view listens, or empty without -web.
+	webURL string
+
 	// historical is set for -historical, which is replaying stored files rather
 	// than watching a live stream. LIVE/HELD would be misleading — there is
 	// nothing "live" to hold against — so the bar says HISTORICAL throughout;
@@ -172,6 +175,9 @@ func (m *Model) SetChild(c Child) { m.child = c }
 
 // ChildExited reports the producer's exit into the update loop.
 func ChildExited(code int) tea.Msg { return childExitMsg{Code: code} }
+
+// SetWebURL records where the -web query view listens; the status bar shows it.
+func (m *Model) SetWebURL(url string) { m.webURL = url }
 
 // SetLogFileOff marks the log file as off from the start, as when another
 // loghorn holds it. detail is shown in parentheses on the bar.
@@ -1328,6 +1334,10 @@ func (m Model) statusBar() string {
 	// Say so only when records aren't reaching the log file.
 	if m.logFileOff != "" {
 		more += mo.Render(" · no log file (" + m.logFileOff + ")")
+	}
+
+	if m.webURL != "" {
+		more += mo.Render(" · web " + m.webURL)
 	}
 
 	if m.notice != "" {
