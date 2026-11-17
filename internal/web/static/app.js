@@ -14,7 +14,14 @@ export const state = {
   columns: [],
   sort: { field: "", desc: true },
   limit: 0,
+  view: "samples",
+  groupBy: [],
+  aggregates: [],
+  plot: { op: "count" },
+  bucket: "auto",
 };
+
+const VIEWS = ["samples", "table", "graph"];
 
 let session = null;
 let streams = [];
@@ -189,6 +196,11 @@ function applyQuery(q) {
   state.sort = Object.assign({ field: "", desc: true }, q.sort || {});
   state.filters = Array.isArray(q.filters) ? q.filters : [];
   state.columns = Array.isArray(q.columns) ? q.columns : [];
+  state.view = VIEWS.includes(q.view) ? q.view : "samples";
+  state.groupBy = Array.isArray(q.groupBy) ? q.groupBy : [];
+  state.aggregates = Array.isArray(q.aggregates) ? q.aggregates : [];
+  state.plot = q.plot && typeof q.plot === "object" && q.plot.op ? q.plot : { op: "count" };
+  state.bucket = typeof q.bucket === "string" && q.bucket ? q.bucket : "auto";
 }
 
 function loadURL() {
@@ -268,9 +280,11 @@ function wireBar() {
     state.columns = [];
     state.filters = [];
     state.sort = { field: "", desc: true };
-    closeFilterAdd();
     closeColumns();
-    loadSchema().then(runQuery);
+    loadSchema().then(() => {
+      rebuildTriples();
+      runQuery();
+    });
   });
   $("from").addEventListener("change", () => rangeChanged("from"));
   $("to").addEventListener("change", () => rangeChanged("to"));
@@ -283,6 +297,31 @@ function wireBar() {
     runQuery();
   });
   $("refresh").addEventListener("click", () => refresh());
+  for (const b of document.querySelectorAll("#sb-view [data-view]")) {
+    b.addEventListener("click", () => setView(b.dataset.view));
+  }
+}
+
+// ---- view tabs ----
+
+// syncView marks the current tab and shows only the sidebar sections whose
+// data-views list the current view.
+function syncView() {
+  for (const b of document.querySelectorAll("#sb-view [data-view]")) {
+    const on = b.dataset.view === state.view;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  }
+  for (const s of document.querySelectorAll("[data-views]")) {
+    s.hidden = !s.dataset.views.split(" ").includes(state.view);
+  }
+}
+
+function setView(v) {
+  if (!VIEWS.includes(v) || v === state.view) return;
+  state.view = v;
+  syncView();
+  runQuery();
 }
 
 // ---- header ----
@@ -334,6 +373,48 @@ function cellNode(row, cell, col) {
     return e;
   }
   return visualize(cell, col);
+}
+
+// renderResult shows a query result in the view it was run for.
+function renderResult(result) {
+  const view = result.view || "samples";
+  $("table").hidden = view === "graph";
+  $("graph").hidden = view !== "graph";
+  if (view === "table") renderTable(result);
+  else if (view === "graph") renderGraph(result);
+  else render(result);
+}
+
+// renderTable is a plain placeholder until the Table view is built.
+function renderTable(result) {
+  const table = $("table");
+  table.classList.remove("fixed");
+  table.style.width = "";
+  $("head").replaceChildren(...result.columns.map((c) => {
+    const th = el("th");
+    th.append(breakable(c.label || c.path));
+    return th;
+  }));
+  const body = $("body");
+  body.replaceChildren();
+  for (const row of result.rows) {
+    const tr = el("tr");
+    result.columns.forEach((c, i) => {
+      const td = el("td", NUMERIC.has(c.type) ? "num" : "");
+      td.append(visualize(row.cells[i], c));
+      tr.append(td);
+    });
+    body.append(tr);
+  }
+  let foot = (result.groups || 0).toLocaleString() + " groups · " + result.matched.toLocaleString() + " records match";
+  if (result.truncated) foot += " · limit reached";
+  $("footer-text").textContent = foot;
+}
+
+// renderGraph is a placeholder until the Graph view is built.
+function renderGraph(result) {
+  $("graph").replaceChildren(el("p", "empty", "The graph view is not built yet."));
+  $("footer-text").textContent = result.matched.toLocaleString() + " records match";
 }
 
 export function render(result) {
@@ -548,14 +629,13 @@ let querySeq = 0;
 
 export async function runQuery() {
   saveURL();
-  renderChips();
   if (!state.stream) return;
   const mine = ++querySeq;
   try {
     const result = await api("POST", "/api/query", state);
     if (mine !== querySeq) return; // a newer query superseded this one
     clearError();
-    render(result);
+    renderResult(result);
   } catch (err) {
     if (mine === querySeq) showError(err.message);
   }
@@ -583,6 +663,7 @@ async function loadSchema() {
   } catch (err) {
     showError(err.message);
   }
+  fillFieldPaths();
 }
 
 function schemaFields() {
@@ -616,36 +697,43 @@ function renderColumnNames() {
   });
 }
 
-// ---- filter chips ----
+// ---- field picker ----
 
-function filterText(f) {
-  if (f.op === "empty" || f.op === "not-empty") return f.field + " " + f.op;
-  if (f.op === "in" || f.op === "not-in") return f.field + " " + f.op + " (" + (f.values || []).join(", ") + ")";
-  return f.field + " " + f.op + " " + ((f.values || [])[0] ?? "");
+// fillFieldPaths lists the stream's field paths in the shared datalist that
+// every field picker offers.
+function fillFieldPaths() {
+  const list = $("field-paths");
+  list.replaceChildren();
+  for (const f of schemaFields()) {
+    const o = el("option", "", (f.label ? f.label + " · " : "") + f.type);
+    o.value = f.path;
+    list.append(o);
+  }
 }
 
-function renderChips() {
-  const box = $("chips");
-  box.replaceChildren();
-  state.filters.forEach((f, i) => {
-    const chip = el("span", "chip" + (i === adder.editIndex ? " editing" : ""));
-    chip.title = "double-click to edit";
-    chip.addEventListener("dblclick", (e) => {
-      if (!e.target.closest(".chip-x")) editFilter(i);
-    });
-    chip.append(el("span", "", filterText(f)));
-    const x = el("button", "chip-x", "×");
-    x.type = "button";
-    x.title = "remove this filter";
-    x.setAttribute("aria-label", "remove filter " + filterText(f));
-    x.addEventListener("click", () => {
-      closeFilterAdd();
-      state.filters.splice(i, 1);
-      runQuery();
-    });
-    chip.append(x);
-    box.append(chip);
+// fieldPicker returns a text input offering the stream's field paths. onPick
+// gets the trimmed path when the user commits one (change, or choosing a
+// suggestion), and "" when the input is cleared.
+function fieldPicker(path, onPick) {
+  const input = el("input", "field-pick");
+  input.type = "text";
+  input.setAttribute("list", "field-paths");
+  input.placeholder = "field";
+  input.spellcheck = false;
+  input.value = path;
+  let last = path;
+  const fire = () => {
+    const v = input.value.trim();
+    if (v === last) return;
+    last = v;
+    onPick(v);
+  };
+  input.addEventListener("change", fire);
+  input.addEventListener("input", (e) => {
+    // A datalist choice arrives as an input event with no typing inputType.
+    if ((!e.inputType || e.inputType === "insertReplacementText") && fieldByPath(input.value.trim())) fire();
   });
+  return input;
 }
 
 // distinctValues lists up to 50 distinct values of path in the current result.
@@ -667,172 +755,46 @@ function distinctValues(path) {
   return out.sort();
 }
 
-// editIndex is the filter being edited, or -1 when adding a new one.
-const adder = { field: null, tags: [], editIndex: -1 };
-
-function openFilterAdd() {
-  closeColumns();
-  setEditIndex(-1);
-  $("filter-add").hidden = false;
-  $("fa-pick").hidden = false;
-  $("fa-form").hidden = true;
-  $("fa-error").textContent = "";
-  $("fa-search").value = "";
-  renderFieldList();
-  $("fa-search").focus();
-}
-
-function closeFilterAdd() {
-  $("filter-add").hidden = true;
-  adder.field = null;
-  adder.tags = [];
-  setEditIndex(-1);
-}
-
-function setEditIndex(i) {
-  const changed = adder.editIndex !== i;
-  adder.editIndex = i;
-  $("fa-add").textContent = i >= 0 ? "Update" : "Add";
-  if (changed) renderChips();
-}
-
-// editFilter opens the filter builder filled in from filter i; Update
-// replaces it in place.
-function editFilter(i) {
-  const f = state.filters[i];
-  if (!f) return;
-  const field = fieldByPath(f.field) || { path: f.field, type: "string" };
-  openFilterAdd();
-  pickField(field);
-  setEditIndex(i);
-  const opSel = $("fa-op");
-  if (!Array.from(opSel.options).some((o) => o.value === f.op)) {
-    const o = el("option", "", f.op);
-    o.value = f.op;
-    opSel.append(o);
-  }
-  opSel.value = f.op;
-  const vals = Array.isArray(f.values) ? f.values : [];
-  if (f.op === "in" || f.op === "not-in") adder.tags = vals.map(String);
-  renderValueInput();
-  const input = $("fa-input");
-  if (input && f.op !== "in" && f.op !== "not-in" && vals.length) {
-    input.value = field.type === "timestamp" ? localInputValue(vals[0]) || String(vals[0]) : String(vals[0]);
-  }
-}
-
-function renderFieldList() {
-  const q = $("fa-search").value.trim().toLowerCase();
-  const list = $("fa-fields");
-  list.replaceChildren();
-  for (const f of schemaFields()) {
-    if (q && !f.path.toLowerCase().includes(q) && !(f.label || "").toLowerCase().includes(q)) continue;
-    const li = el("li");
-    const b = el("button", "field-item");
-    b.type = "button";
-    b.dataset.path = f.path;
-    b.append(el("span", "fpath", f.path));
-    if (f.label) b.append(el("span", "flabel", f.label));
-    b.append(badge(f.type, "type"));
-    if (f.new) b.append(badge("new", "new"));
-    b.addEventListener("click", () => pickField(f));
-    li.append(b);
-    list.append(li);
-  }
-  if (!list.children.length) list.append(el("li", "muted", "no matching fields"));
-}
-
-function pickField(f) {
-  adder.field = f;
-  adder.tags = [];
-  $("fa-pick").hidden = true;
-  $("fa-form").hidden = false;
-  $("fa-error").textContent = "";
-  $("fa-field").replaceChildren(el("span", "fpath", f.path), badge(f.type, "type"));
-  const op = $("fa-op");
-  op.replaceChildren();
-  const ops = (schemaData && schemaData.ops && schemaData.ops[f.type]) || [];
-  for (const o of ops) {
-    const opt = el("option", "", o);
-    opt.value = o;
-    op.append(opt);
-  }
-  renderValueInput();
-  op.focus();
-}
-
-function renderValueInput() {
-  const f = adder.field;
-  const op = $("fa-op").value;
-  const box = $("fa-value");
-  box.replaceChildren();
-  if (op === "empty" || op === "not-empty") return;
-  if (op === "in" || op === "not-in") {
-    renderTagInput(box);
-    return;
-  }
-  let input;
-  if (f.type === "bool") {
-    input = el("select");
-    for (const v of ["true", "false"]) {
-      const o = el("option", "", v);
-      o.value = v;
-      input.append(o);
-    }
-  } else if (f.type === "timestamp") {
-    input = el("input");
-    input.type = "datetime-local";
-    input.step = "0.001";
-  } else {
-    input = el("input");
-    input.type = "text";
-    input.placeholder = f.type === "duration" ? "e.g. 50ms" : "value";
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        addFilter();
-      }
-    });
-  }
-  input.id = "fa-input";
-  box.append(input);
-  input.focus();
-}
-
-function renderTagInput(box) {
-  const tags = el("span", "tags");
+// tagInput fills box with an editable list of values (tags, changed in
+// place) plus suggestions from the current result's values of path, and
+// calls onChange after each add or remove.
+function tagInput(box, tags, path, onChange) {
+  const list = el("span", "tags");
   const input = el("input");
   input.type = "text";
-  input.id = "fa-input";
   input.placeholder = "value, Enter to add";
   const sugg = el("div", "suggestions");
-  const all = distinctValues(adder.field.path);
+  const all = distinctValues(path);
 
   const addTag = (v) => {
     v = v.trim();
-    if (v && !adder.tags.includes(v)) adder.tags.push(v);
     input.value = "";
+    if (v && !tags.includes(v)) {
+      tags.push(v);
+      onChange();
+    }
     draw();
     input.focus();
   };
   const draw = () => {
-    tags.replaceChildren();
-    adder.tags.forEach((t, i) => {
+    list.replaceChildren();
+    tags.forEach((t, i) => {
       const tag = el("span", "tag", t);
       const x = el("button", "chip-x", "×");
       x.type = "button";
       x.setAttribute("aria-label", "remove " + t);
       x.addEventListener("click", () => {
-        adder.tags.splice(i, 1);
+        tags.splice(i, 1);
         draw();
+        onChange();
       });
       tag.append(x);
-      tags.append(tag);
+      list.append(tag);
     });
     sugg.replaceChildren();
     const q = input.value.trim().toLowerCase();
     for (const v of all) {
-      if (adder.tags.includes(v) || (q && !v.toLowerCase().includes(q))) continue;
+      if (tags.includes(v) || (q && !v.toLowerCase().includes(q))) continue;
       const b = el("button", "suggestion", v);
       b.type = "button";
       b.addEventListener("click", () => addTag(v));
@@ -841,79 +803,256 @@ function renderTagInput(box) {
   };
   input.addEventListener("input", draw);
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === ",") {
+    if ((e.key === "Enter" || e.key === ",") && input.value.trim()) {
       e.preventDefault();
-      if (input.value.trim()) addTag(input.value);
-      else if (e.key === "Enter") addFilter();
-    } else if (e.key === "Backspace" && !input.value && adder.tags.length) {
-      adder.tags.pop();
+      addTag(input.value);
+    } else if (e.key === "Backspace" && !input.value && tags.length) {
+      tags.pop();
       draw();
+      onChange();
     }
   });
-  box.append(tags, input, sugg);
+  input.addEventListener("change", () => {
+    if (input.value.trim()) addTag(input.value);
+  });
+  box.append(list, input, sugg);
   draw();
-  input.focus();
 }
 
-// filterValues reads the value input for the chosen operator.
-function filterValues(f, op) {
-  if (op === "empty" || op === "not-empty") return [];
-  const input = $("fa-input");
-  if (op === "in" || op === "not-in") {
-    const vals = adder.tags.slice();
-    const pending = input ? input.value.trim() : "";
-    if (pending && !vals.includes(pending)) vals.push(pending);
-    return vals;
+// ---- filter triples ----
+// Each sidebar row is a triple {path, op, tags, value}. Its filter is set
+// once the server has accepted it, and state.filters is exactly those
+// filters, in row order. A triple the server rejects shows the message on
+// its row and stays out of the query. The last row is always empty.
+
+let triples = [];
+
+const isMulti = (op) => op === "in" || op === "not-in";
+const noValue = (op) => op === "empty" || op === "not-empty";
+
+function newTriple(f) {
+  const t = { path: "", op: "", tags: [], value: "", filter: null, error: "", row: null };
+  if (!f) return t;
+  t.path = f.field;
+  t.op = f.op;
+  t.filter = f;
+  const vals = Array.isArray(f.values) ? f.values.map(String) : [];
+  if (isMulti(f.op)) t.tags = vals;
+  else {
+    t.value = vals[0] ?? "";
+    const field = fieldByPath(f.field);
+    if (field && field.type === "timestamp") t.value = localInputValue(t.value) || t.value;
   }
-  const v = input ? input.value : "";
-  if (f.type === "timestamp") {
-    if (!v) return [""];
+  return t;
+}
+
+function syncFilters() {
+  state.filters = triples.filter((t) => t.filter).map((t) => t.filter);
+}
+
+// rebuildTriples redraws the rows from state.filters; call it once the
+// stream's schema is loaded.
+function rebuildTriples() {
+  triples = state.filters.map(newTriple);
+  $("triples").replaceChildren(...triples.map(tripleRow));
+  ensureEmptyTriple();
+}
+
+function ensureEmptyTriple() {
+  const last = triples[triples.length - 1];
+  if (last && !last.path) return;
+  const t = newTriple();
+  triples.push(t);
+  $("triples").append(tripleRow(t));
+}
+
+// candidate is the filter t describes, or null while it is incomplete.
+function candidate(t) {
+  if (!t.path || !t.op) return null;
+  if (noValue(t.op)) return { field: t.path, op: t.op, values: [] };
+  if (isMulti(t.op)) return t.tags.length ? { field: t.path, op: t.op, values: t.tags.slice() } : null;
+  let v = t.value;
+  if (v === "") return null;
+  const field = fieldByPath(t.path);
+  if (field && field.type === "timestamp") {
     const d = new Date(v); // datetime-local is local time
-    return [isNaN(d.getTime()) ? v : d.toISOString()];
+    if (!isNaN(d.getTime())) v = d.toISOString();
   }
-  return [v];
+  return { field: t.path, op: t.op, values: [v] };
 }
 
-async function addFilter() {
-  const f = adder.field;
-  if (!f) return;
-  const op = $("fa-op").value;
-  const filter = { field: f.path, op, values: filterValues(f, op) };
-  const filters = state.filters.slice();
-  if (adder.editIndex >= 0 && adder.editIndex < filters.length) filters[adder.editIndex] = filter;
-  else filters.push(filter);
+function sameFilter(a, b) {
+  return !!a && !!b && JSON.stringify(a) === JSON.stringify(b);
+}
+
+function setTripleError(t, msg) {
+  t.error = msg;
+  const e = t.row.querySelector(".t-error");
+  e.textContent = msg;
+  e.hidden = !msg;
+  t.row.classList.toggle("rejected", !!msg);
+}
+
+// commitTriple brings t's filter in line with its inputs: it validates a
+// complete triple by running the query with it, and drops an incomplete one.
+async function commitTriple(t) {
+  const f = candidate(t);
+  if (!f) {
+    setTripleError(t, "");
+    if (t.filter) {
+      t.filter = null;
+      syncFilters();
+      runQuery();
+    }
+    return;
+  }
+  if (sameFilter(t.filter, f)) return;
+  const filters = triples.map((x) => (x === t ? f : x.filter)).filter(Boolean);
   const q = Object.assign({}, state, { filters });
   const mine = ++querySeq;
-  $("fa-error").textContent = "";
+  let result;
   try {
-    const result = await api("POST", "/api/query", q);
-    state.filters = q.filters;
-    closeFilterAdd();
-    saveURL();
-    renderChips();
-    if (mine !== querySeq) return;
-    clearError();
-    render(result);
+    result = await api("POST", "/api/query", q);
   } catch (err) {
-    $("fa-error").textContent = err.detail || err.message;
+    if (!triples.includes(t) || !sameFilter(candidate(t), f)) return; // edited meanwhile
+    const had = !!t.filter;
+    t.filter = null;
+    syncFilters();
+    setTripleError(t, err.detail || err.message);
+    if (had) runQuery();
+    else saveURL();
+    return;
+  }
+  if (!triples.includes(t) || !sameFilter(candidate(t), f)) return;
+  t.filter = f;
+  setTripleError(t, "");
+  syncFilters();
+  if (mine !== querySeq) {
+    runQuery(); // a newer query ran without this filter
+    return;
+  }
+  saveURL();
+  clearError();
+  renderResult(result);
+}
+
+function removeTriple(t) {
+  const i = triples.indexOf(t);
+  if (i < 0) return;
+  triples.splice(i, 1);
+  t.row.remove();
+  ensureEmptyTriple();
+  if (t.filter) {
+    syncFilters();
+    runQuery();
   }
 }
 
-function wireFilters() {
-  $("add-filter").addEventListener("click", () => {
-    if ($("filter-add").hidden || adder.editIndex >= 0) openFilterAdd();
-    else closeFilterAdd();
+function pickTripleField(t, path) {
+  const had = !!t.filter;
+  t.path = path;
+  t.tags = [];
+  t.value = "";
+  t.filter = null;
+  const field = fieldByPath(path);
+  const ops = field && schemaData && schemaData.ops ? schemaData.ops[field.type] || [] : [];
+  t.op = ops[0] || "";
+  drawTripleControls(t);
+  setTripleError(t, path && !field ? "no field " + path + " in " + state.stream : "");
+  if (path) ensureEmptyTriple();
+  if (had) {
+    syncFilters();
+    runQuery();
+  }
+  if (field) t.row.querySelector(".t-op").focus();
+}
+
+function tripleRow(t) {
+  const row = el("div", "triple");
+  t.row = row;
+  const x = el("button", "chip-x t-x", "×");
+  x.type = "button";
+  x.title = "remove this filter";
+  x.setAttribute("aria-label", "remove filter");
+  x.addEventListener("click", () => removeTriple(t));
+  const op = el("select", "t-op");
+  op.setAttribute("aria-label", "operator");
+  op.addEventListener("change", () => {
+    const was = t.op;
+    t.op = op.value;
+    if (isMulti(t.op) && !isMulti(was)) t.tags = t.value ? [t.value] : [];
+    else if (!isMulti(t.op) && isMulti(was)) t.value = t.tags[0] || "";
+    drawValue(t);
+    commitTriple(t);
   });
-  $("fa-cancel").addEventListener("click", closeFilterAdd);
-  $("fa-search").addEventListener("input", renderFieldList);
-  $("fa-op").addEventListener("change", () => {
-    $("fa-error").textContent = "";
-    renderValueInput();
+  const err = el("span", "inline-error t-error");
+  err.setAttribute("role", "alert");
+  err.hidden = true;
+  row.append(fieldPicker(t.path, (p) => pickTripleField(t, p)), x, op, el("span", "t-value"), err);
+  drawTripleControls(t);
+  if (t.error) setTripleError(t, t.error);
+  return row;
+}
+
+// drawTripleControls fills the operator select and value input for t's field.
+function drawTripleControls(t) {
+  const row = t.row;
+  row.querySelector(".t-x").hidden = !t.path;
+  const op = row.querySelector(".t-op");
+  op.replaceChildren();
+  const field = fieldByPath(t.path);
+  const ops = field && schemaData && schemaData.ops ? (schemaData.ops[field.type] || []).slice() : [];
+  if (t.op && !ops.includes(t.op)) ops.push(t.op);
+  for (const o of ops) {
+    const opt = el("option", "", o);
+    opt.value = o;
+    op.append(opt);
+  }
+  op.value = t.op;
+  op.hidden = !ops.length;
+  drawValue(t);
+}
+
+function drawValue(t) {
+  const box = t.row.querySelector(".t-value");
+  box.replaceChildren();
+  if (!t.op || noValue(t.op)) return;
+  const field = fieldByPath(t.path) || { path: t.path, type: "string" };
+  if (isMulti(t.op)) {
+    tagInput(box, t.tags, t.path, () => commitTriple(t));
+    return;
+  }
+  let input;
+  if (field.type === "bool") {
+    input = el("select");
+    for (const v of ["", "true", "false"]) {
+      const o = el("option", "", v || "value");
+      o.value = v;
+      input.append(o);
+    }
+  } else {
+    input = el("input");
+    if (field.type === "timestamp") {
+      input.type = "datetime-local";
+      input.step = "0.001";
+    } else {
+      input.type = "text";
+      input.placeholder = field.type === "duration" ? "e.g. 50ms" : "value";
+    }
+  }
+  input.value = t.value;
+  input.setAttribute("aria-label", "value");
+  input.addEventListener("change", () => {
+    t.value = input.value;
+    commitTriple(t);
   });
-  $("fa-add").addEventListener("click", addFilter);
-  $("filter-add").addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeFilterAdd();
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    t.value = input.value;
+    commitTriple(t);
   });
+  box.append(input);
 }
 
 // ---- column editor ----
@@ -921,7 +1060,6 @@ function wireFilters() {
 let colDraft = []; // [{path, label, on}]
 
 function openColumns() {
-  closeFilterAdd();
   const shown = currentColumns();
   const fields = schemaFields();
   colDraft = shown.map((p) => ({ path: p, label: (fieldByPath(p) || {}).label || "", on: true }));
@@ -1198,10 +1336,11 @@ async function loadFavorite(f) {
   const before = state.stream;
   applyQuery(JSON.parse(JSON.stringify(f.query || {})));
   if (!state.stream) state.stream = before;
-  closeFilterAdd();
   closeColumns();
   syncBar();
+  syncView();
   if (state.stream !== before || !schemaData) await loadSchema();
+  rebuildTriples();
   runQuery();
 }
 
@@ -1257,11 +1396,12 @@ function wireFavorites() {
 async function init() {
   loadURL();
   wireBar();
-  wireFilters();
+  syncView();
   wireColumns();
   wireSchema();
   wireFavorites();
   await refresh();
+  rebuildTriples();
 }
 
 init();

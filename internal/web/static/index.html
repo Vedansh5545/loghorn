@@ -21,68 +21,82 @@
   </div>
 </header>
 <div id="error" class="banner" role="alert" hidden></div>
+<p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
+<div class="layout">
+<aside id="sidebar" class="sidebar">
+  <section id="sb-view" class="sb tabs" role="tablist" aria-label="view">
+    <button type="button" class="tab" role="tab" data-view="samples">Samples</button>
+    <button type="button" class="tab" role="tab" data-view="table">Table</button>
+    <button type="button" class="tab" role="tab" data-view="graph">Graph</button>
+  </section>
+  <section id="sb-stream" class="sb">
+    <label>Stream <select id="stream"></select></label>
+  </section>
+  <section id="sb-range" class="sb">
+    <label>From
+      <select id="from">
+        <option value="this-run">this run</option>
+        <option value="15m">last 15m</option>
+        <option value="1h">last 1h</option>
+        <option value="24h">last 24h</option>
+        <option value="all">all</option>
+        <option value="custom">custom…</option>
+      </select>
+      <input id="from-custom" type="datetime-local" step="0.001" hidden>
+    </label>
+    <label>To
+      <select id="to">
+        <option value="now">now</option>
+        <option value="custom">custom…</option>
+      </select>
+      <input id="to-custom" type="datetime-local" step="0.001" hidden>
+    </label>
+  </section>
+  <section id="sb-filters" class="sb">
+    <h2>Filters</h2>
+    <div id="triples" class="triples"></div>
+    <datalist id="field-paths"></datalist>
+  </section>
+  <section id="sb-group" class="sb" data-views="table graph">
+    <h2>Group by</h2>
+  </section>
+  <section id="sb-metrics" class="sb" data-views="table graph">
+    <h2>Metrics</h2>
+  </section>
+  <section id="sb-plot" class="sb" data-views="graph">
+    <h2>Plot</h2>
+  </section>
+  <section id="sb-bucket" class="sb" data-views="graph">
+    <h2>Granularity</h2>
+  </section>
+  <section id="sb-columns" class="sb" data-views="samples">
+    <h2>Columns</h2>
+    <div id="columns" class="sb-row">
+      <span id="colnames" class="colnames"></span>
+      <button id="edit-columns" type="button">edit</button>
+      <button id="col-restore" type="button" title="show the default columns at their natural widths" hidden>restore defaults</button>
+    </div>
+    <div id="columns-panel" class="panel" hidden>
+      <ul id="col-list" class="col-list"></ul>
+      <div class="panel-actions">
+        <button id="col-apply" type="button">Apply</button>
+        <button id="col-default" type="button">Default columns</button>
+        <button id="col-cancel" type="button" class="link">cancel</button>
+      </div>
+    </div>
+  </section>
+</aside>
+<div class="content">
 <form id="bar" class="bar" autocomplete="off">
-  <label>Stream <select id="stream"></select></label>
-  <label>From
-    <select id="from">
-      <option value="this-run">this run</option>
-      <option value="15m">last 15m</option>
-      <option value="1h">last 1h</option>
-      <option value="24h">last 24h</option>
-      <option value="all">all</option>
-      <option value="custom">custom…</option>
-    </select>
-    <input id="from-custom" type="datetime-local" step="0.001" hidden>
-  </label>
-  <label>To
-    <select id="to">
-      <option value="now">now</option>
-      <option value="custom">custom…</option>
-    </select>
-    <input id="to-custom" type="datetime-local" step="0.001" hidden>
-  </label>
   <label class="grow">Search <input id="search" type="search" placeholder="text in any field; Enter to run"></label>
   <button id="refresh" type="button">Refresh</button>
 </form>
-<div id="filters" class="strip">
-  <span class="strip-label">Filters:</span>
-  <span id="chips" class="chips"></span>
-  <button id="add-filter" type="button">+ filter</button>
-</div>
-<div id="filter-add" class="panel" hidden>
-  <div id="fa-pick">
-    <input id="fa-search" type="search" placeholder="find a field">
-    <ul id="fa-fields" class="field-list"></ul>
-  </div>
-  <div id="fa-form" class="fa-form" hidden>
-    <span id="fa-field" class="fa-field"></span>
-    <select id="fa-op"></select>
-    <span id="fa-value" class="fa-value"></span>
-    <button id="fa-add" type="button">Add</button>
-    <span id="fa-error" class="inline-error" role="alert"></span>
-  </div>
-  <button id="fa-cancel" type="button" class="link">cancel</button>
-</div>
-<div id="columns" class="strip">
-  <span class="strip-label">Columns:</span>
-  <span id="colnames" class="colnames"></span>
-  <button id="edit-columns" type="button">edit</button>
-  <button id="col-restore" type="button" title="show the default columns at their natural widths" hidden>restore defaults</button>
-</div>
-<div id="columns-panel" class="panel" hidden>
-  <ul id="col-list" class="col-list"></ul>
-  <div class="panel-actions">
-    <button id="col-apply" type="button">Apply</button>
-    <button id="col-default" type="button">Default columns</button>
-    <button id="col-cancel" type="button" class="link">cancel</button>
-  </div>
-</div>
-<p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
 <main id="results">
   <table id="table">
     <thead><tr id="head"></tr></thead>
     <tbody id="body"></tbody>
   </table>
+  <div id="graph" hidden></div>
 </main>
 <footer id="footer" class="footer">
   <span id="footer-text"></span>
@@ -91,6 +105,8 @@
     <button id="schema-open" type="button">Schema…</button>
   </span>
 </footer>
+</div>
+</div>
 <dialog id="schema-dialog" class="schema-dialog">
   <h2 id="schema-title">Schema</h2>
   <div class="schema-scroll">
