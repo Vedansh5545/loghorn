@@ -68,7 +68,9 @@ type Field struct {
 	Hidden     bool   `toml:"hidden,omitempty" json:"hidden,omitempty"`
 	// Width is in pixels; 0 = automatic. BurntSushi/toml's omitempty does not
 	// drop a zero int, so omitzero is what keeps `width = 0` out of saved files.
-	Width    int  `toml:"width,omitempty,omitzero" json:"width,omitempty"`
+	Width int `toml:"width,omitempty,omitzero" json:"width,omitempty"`
+	// Wrap shows the column's long values on several lines; false crops them.
+	Wrap     bool `toml:"wrap,omitempty" json:"wrap,omitempty"`
 	Inferred Type `toml:"-" json:"inferred"`
 	Count    int  `toml:"-" json:"count"`
 	New      bool `toml:"-" json:"new"`

@@ -193,6 +193,10 @@ export function linkify(text, max) {
   return out;
 }
 
+// WRAP_MAX is the cell clip for a column set to wrap: wrapping is for
+// reading long values, but one huge value should not fill the page.
+const WRAP_MAX = 2000;
+
 function truncated(s, n) {
   return linkify(s, n);
 }
@@ -213,6 +217,8 @@ export function visualize(cell, column) {
     return e;
   }
   if (v === null || v === undefined) return el("span");
+  const wrap = !!(fieldByPath(column.path) || {}).wrap;
+  const clip = (n) => (wrap ? WRAP_MAX : n);
   switch (column.visualizer) {
     case "local-time": {
       const d = toDate(v);
@@ -229,9 +235,10 @@ export function visualize(cell, column) {
     case "link": {
       const text = asText(v);
       const href = /^https?:\/\//.test(text) ? safeURL(text) : "";
-      if (!href) return truncated(text, 120);
-      const a = linkNode(href, text.length > 120 ? text.slice(0, 119) + "…" : text);
-      if (text.length > 120) a.title = text;
+      if (!href) return truncated(text, clip(120));
+      const n = clip(120);
+      const a = linkNode(href, text.length > n ? text.slice(0, n - 1) + "…" : text);
+      if (text.length > n) a.title = text;
       return a;
     }
     case "number":
@@ -242,11 +249,11 @@ export function visualize(cell, column) {
     case "json":
       // The server sends JSON cells as text; never re-parse it, because
       // JSON.parse rounds integers above 2^53.
-      return truncated(asText(v), 80);
+      return truncated(asText(v), clip(80));
     case "sql":
     case "raw":
     default:
-      return truncated(asText(v), 120);
+      return truncated(asText(v), clip(120));
   }
 }
 
@@ -659,12 +666,23 @@ function savedWidths() {
   return Object.assign(w, tempWidths);
 }
 
+// applyWraps marks the cells of columns set to wrap; the others crop.
+function applyWraps(ths) {
+  const wrap = ths.map((th) => !th.dataset.temp && !!(fieldByPath(th.dataset.path) || {}).wrap);
+  for (const tr of $("body").children) {
+    if (tr.classList.contains("detail")) continue;
+    Array.from(tr.children).forEach((td, i) => td.classList.toggle("wrap", !!wrap[i]));
+  }
+}
+
 // applyWidths lays the table out from its content, then, if any column has a
 // dragged width, freezes every column at its width (dragged or natural) with
-// a fixed table layout so a column can be narrower than its content.
+// a fixed table layout so a column can be narrower than its content. It sets
+// each column's crop or wrap first, since that changes the natural widths.
 function applyWidths(extra) {
   const table = $("table");
   const ths = Array.from($("head").children);
+  applyWraps(ths);
   const w = Object.assign(savedWidths(), extra || {});
   table.classList.remove("fixed");
   table.style.width = "";
@@ -1506,7 +1524,9 @@ function openColumnMenu(path, anchorEl) {
   const menu = $("col-menu");
   const f = colInfo(path);
   const shown = currentColumns();
-  menu.append(el("div", "menu-title fpath", path));
+  const title = el("div", "menu-title fpath");
+  title.append(breakable(path));
+  menu.append(title);
   const vis = selectOf(VISUALIZERS, f.visualizer || defaultVisualizer(path, f.type), (v) => saveFieldFormat(path, { visualizer: v }));
   menu.append(menuRow("visualizer", vis));
   if (UNIT_TYPES.has(f.type)) {
@@ -1530,6 +1550,7 @@ function openColumnMenu(path, anchorEl) {
   });
   label.addEventListener("blur", () => labelCommit && labelCommit());
   menu.append(menuRow("label", label));
+  menu.append(menuRow("long text", selectOf(["crop", "wrap"], f.wrap ? "wrap" : "crop", (v) => saveFieldFormat(path, { wrap: v === "wrap" }))));
   menu.append(el("hr"));
   const hide = menuButton("Hide", () => hideColumn(path), shown.length <= 1 || !shown.includes(path));
   if (hide.disabled) hide.title = "the last column cannot be hidden";
@@ -1614,7 +1635,7 @@ let formatSaves = Promise.resolve();
 async function saveFieldFormat(path, patch) {
   const stream = state.stream;
   if (!stream || !schemaData || !schemaData.schema || schemaData.schema.stream !== stream) return;
-  if (!fieldByPath(path) && Object.keys(patch).length === 1 && patch.width === 0) return;
+  if (!fieldByPath(path) && Object.keys(patch).length === 1 && (patch.width === 0 || patch.wrap === false)) return;
   // Apply locally first so the page shows the change before the reload, and
   // again when the save runs: an earlier save's reload replaces schemaData.
   const apply = () => {
@@ -1629,7 +1650,8 @@ async function saveFieldFormat(path, patch) {
   };
   apply();
   // Headers and cells are formatted by the server, so a visual change shows
-  // once the save lands; a width shows now.
+  // once the save lands; a width shows now. Wrap is visual: it changes how
+  // much of each value a cell shows.
   const visual = Object.keys(patch).some((k) => k !== "width");
   if (!visual) applyWidths();
   const run = async () => {
@@ -1666,6 +1688,7 @@ function schemaFieldBody(f) {
   return {
     path: f.path, type: f.type, unit: UNIT_TYPES.has(f.type) ? f.unit || "" : "",
     visualizer: f.visualizer, label: f.label || "", hidden: !!f.hidden, width: f.width || 0,
+    wrap: !!f.wrap,
   };
 }
 

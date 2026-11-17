@@ -328,3 +328,29 @@ func TestPlainAndLinkVisualizersValid(t *testing.T) {
 		}
 	}
 }
+
+// A column set to wrap keeps that setting through save, load and merge;
+// crop (the default) is not written.
+func TestSavedWrapRoundTrip(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	s := sampleSchema()
+	s.Fields[0].Wrap = true
+	path, err := SaveSchema(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "wrap") != 1 {
+		t.Fatalf("want one wrap line:\n%s", data)
+	}
+	got, err := LoadSaved(dir, "pino")
+	if err != nil || got == nil || !got.Fields[0].Wrap {
+		t.Fatalf("got %+v %v", got, err)
+	}
+	if eff := Effective(sampleSchema(), got); !eff.Fields[0].Wrap {
+		t.Fatal("effective schema lost wrap")
+	}
+}

@@ -96,6 +96,7 @@ th:hover .col-del, .col-del:focus-visible { opacity: 1; }
 .col-resize:hover, .resizing .col-resize:active { border-right: 2px solid var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; }
 td { padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+td.wrap { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 8em; }
 tbody tr.row { cursor: pointer; }
 tbody tr.row:hover { background: var(--row-hover); }
 tbody tr.row.open { background: var(--panel); }
@@ -208,6 +209,7 @@ td .muted { color: var(--muted); }
 .col-menu hr { width: 100%; border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .col-sub { flex-direction: row; align-items: flex-start; gap: 10px; max-width: 600px; max-height: 60vh; }
 .menu-title { color: var(--muted); font-size: 12px; padding: 0 4px 4px; }
+.col-menu > .menu-title { color: var(--fg); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 4px 6px; margin-bottom: 2px; }
 .menu-row { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); align-items: center; gap: 6px; color: var(--muted); padding: 1px 4px; }
 .menu-row select, .menu-row input { min-width: 0; }
 .menu-item { text-align: left; border-color: transparent; background: transparent; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

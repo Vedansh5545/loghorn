@@ -176,7 +176,7 @@ func SaveSchema(dir string, s Schema) (path string, err error) {
 }
 
 // Effective merges a saved schema over an inferred one. Saved
-// Type/Unit/Visualizer/Label/Hidden/Width win for fields present in both; saved
+// Type/Unit/Visualizer/Label/Hidden/Width/Wrap win for fields present in both; saved
 // fields not seen in the data are kept with Count 0; inferred fields absent
 // from a non-nil saved schema are flagged New. Hidden fields stay in Fields
 // but are dropped from the columns.
@@ -193,7 +193,7 @@ func Effective(inferred Schema, saved *Schema) Schema {
 			seen[sf.Path] = true
 			if i, ok := byPath[sf.Path]; ok {
 				f := out.Fields[i]
-				f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width
+				f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width, f.Wrap = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width, sf.Wrap
 				f.Saved = true
 				out.Fields[i] = f
 				continue
