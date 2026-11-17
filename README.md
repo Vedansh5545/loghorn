@@ -212,6 +212,25 @@ duration); a value that does not fit its type is shown raw and flagged, and is
 left out of comparisons. Live runs also load the stored days from `.loghorn`;
 `-historical`, `-gh-job` and `-gh-run` feed it their replay.
 
+The sidebar holds the whole query: the mode tabs, the stream, the time range,
+and the filters, one row per field / operator / value (a bad value is flagged on
+its own row and the other filters keep working). Three modes share it:
+
+- **Samples** — the matching records themselves; click a row for the full
+  record. Pick and order the columns under *Columns*.
+- **Table** — one row per group. *Group by* takes one or more fields (records
+  with an empty or bad value group as `(empty)`); *Metrics* always includes
+  `count` and adds `sum`, `avg`, `min`, `max`, `p50`, `p95` or `p99` of a
+  number field (int, float or duration).
+- **Graph** — a line over time per group: the top 10 groups by count, the
+  rest folded into `other`. *Plot* picks the metric drawn (`count` or one of
+  the metrics); *Granularity* sets the time bucket (`1s` to `1d`), or `auto`,
+  which aims for about 100 buckets and shows the size it chose. A range that
+  would need more than 2,000 buckets asks for a coarser granularity. Hover
+  for each group's value in a bucket.
+
+The URL carries the query, and a favorite saves the mode with it.
+
 Schemas (field types and display) and favorite queries are saved as TOML in
 the repo's `.config/loghorn/`: `schemas/<stream>.toml` and `queries.toml`.
 Nothing is written under your home directory. `-web` cannot be combined with

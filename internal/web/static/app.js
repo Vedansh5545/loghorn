@@ -1,6 +1,8 @@
 // loghorn web query view. Every piece of log data reaches the DOM through
 // textContent or attributes, never innerHTML.
 
+import { drawGraph } from "./graph.js";
+
 const $ = (id) => document.getElementById(id);
 
 const DEFAULT_FROM = "this-run";
@@ -448,10 +450,24 @@ function renderTable(result) {
   applyWidths();
 }
 
-// renderGraph is a placeholder until the Graph view is built.
+// metricFormat returns a labeller for values of a metric column: durations in
+// the column's unit, other numbers grouped with at most three decimals.
+function metricFormat(col) {
+  if (col && col.type === "duration") return (v) => formatDuration(v, col.unit);
+  return (v) => v.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+// renderGraph draws the time series of a graph result.
 function renderGraph(result) {
-  $("graph").replaceChildren(el("p", "empty", "The graph view is not built yet."));
-  $("footer-text").textContent = result.matched.toLocaleString() + " records match";
+  const g = result.graph || { series: [], starts: [] };
+  autoBucket = g.bucket || "";
+  drawBucket();
+  drawGraph($("graph"), g, metricFormat(g.metric));
+  const n = (g.series || []).length;
+  let foot = result.matched.toLocaleString() + " records match";
+  if (g.bucket && (g.starts || []).length) foot += " · " + g.starts.length.toLocaleString() + " buckets of " + g.bucket;
+  if (n) foot += " · " + n + " series";
+  $("footer-text").textContent = foot;
 }
 
 export function render(result) {
@@ -1119,6 +1135,7 @@ function clearExplore() {
   metricRows = [];
   $("sb-group-body").replaceChildren();
   $("sb-metrics-body").replaceChildren();
+  $("sb-plot-body").replaceChildren();
 }
 
 function rebuildExplore() {
@@ -1126,6 +1143,8 @@ function rebuildExplore() {
   metricRows = state.aggregates.map((a) => ({ op: a.op, field: a.field || "" }));
   drawGroupBy();
   drawMetrics();
+  drawPlot();
+  drawBucket();
 }
 
 function drawGroupBy() {
@@ -1169,6 +1188,55 @@ function syncAggregates() {
   if (p && p.op !== "count" && !state.aggregates.some((a) => a.op === p.op && a.field === p.field)) {
     state.plot = { op: "count" };
   }
+  drawPlot();
+}
+
+const BUCKETS = ["auto", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "1h", "6h", "1d"];
+
+// autoBucket is the size the server chose for "auto" in the last graph.
+let autoBucket = "";
+
+const plotKey = (a) => (a && a.op !== "count" ? a.op + "\u0000" + a.field : "count");
+
+// drawPlot fills the Plot select: count and each aggregate.
+function drawPlot() {
+  const box = $("sb-plot-body");
+  const sel = el("select");
+  sel.setAttribute("aria-label", "plotted metric");
+  for (const a of [{ op: "count" }, ...state.aggregates]) {
+    const o = el("option", "", metricLabel(a));
+    o.value = plotKey(a);
+    if (a.field) o.title = a.op + " " + a.field;
+    sel.append(o);
+  }
+  sel.value = plotKey(state.plot);
+  sel.addEventListener("change", () => {
+    const a = state.aggregates.find((x) => plotKey(x) === sel.value);
+    state.plot = a ? { op: a.op, field: a.field } : { op: "count" };
+    runQuery();
+  });
+  box.replaceChildren(sel);
+}
+
+// drawBucket fills the Granularity select; "auto" shows the size it chose.
+function drawBucket() {
+  const box = $("sb-bucket-body");
+  const sel = el("select");
+  sel.setAttribute("aria-label", "time bucket size");
+  const list = BUCKETS.includes(state.bucket) ? BUCKETS : [...BUCKETS, state.bucket];
+  for (const b of list) {
+    const o = el("option", "", b === "auto" && autoBucket ? "auto (" + autoBucket + ")" : b);
+    o.value = b;
+    sel.append(o);
+  }
+  sel.value = state.bucket;
+  sel.addEventListener("change", () => {
+    state.bucket = sel.value;
+    autoBucket = "";
+    drawBucket();
+    runQuery();
+  });
+  box.replaceChildren(sel);
 }
 
 function numericFields() {
