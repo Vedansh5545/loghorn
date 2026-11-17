@@ -25,6 +25,11 @@ after launch leaves it running.
   `preventDefault` on `mousedown`, or the redraw swallows the click.
 - The server requires `plot` to be count or one of `aggregates`, so any edit
   of the metrics list in the page must also reconcile `state.plot`.
+- Saved TOML: BurntSushi/toml's `omitempty` keeps a zero int; add `omitzero`
+  to any optional int field (see `schema.Field.Width`).
+- Schema edits from the page queue one after another; each must re-apply its
+  patch when it runs, because the previous save's reload replaces
+  `schemaData` (see `saveFieldFormat`).
 
 ## Config lookups that walk up the tree
 

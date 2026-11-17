@@ -709,7 +709,9 @@ function startResize(e, th) {
     grip.removeEventListener("pointercancel", up);
     document.body.classList.remove("resizing");
     if (width === startW) {
-      applyWidths(); // a click, not a drag
+      // A press and release with no movement is a click (a double-click on
+      // the grip delivers two): never save a width for it.
+      applyWidths();
     } else if (th.dataset.temp) {
       tempWidths[path] = width;
     } else {

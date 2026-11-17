@@ -66,11 +66,13 @@ type Field struct {
 	Visualizer string `toml:"visualizer" json:"visualizer"`
 	Label      string `toml:"label,omitempty" json:"label,omitempty"`
 	Hidden     bool   `toml:"hidden,omitempty" json:"hidden,omitempty"`
-	Width      int    `toml:"width,omitempty,omitzero" json:"width,omitempty"` // pixels; 0 = automatic
-	Inferred   Type   `toml:"-" json:"inferred"`
-	Count      int    `toml:"-" json:"count"`
-	New        bool   `toml:"-" json:"new"`
-	Saved      bool   `toml:"-" json:"saved"`
+	// Width is in pixels; 0 = automatic. BurntSushi/toml's omitempty does not
+	// drop a zero int, so omitzero is what keeps `width = 0` out of saved files.
+	Width    int  `toml:"width,omitempty,omitzero" json:"width,omitempty"`
+	Inferred Type `toml:"-" json:"inferred"`
+	Count    int  `toml:"-" json:"count"`
+	New      bool `toml:"-" json:"new"`
+	Saved    bool `toml:"-" json:"saved"`
 }
 
 // Schema is the field list and default columns of one stream.
