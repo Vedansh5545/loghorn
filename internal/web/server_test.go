@@ -411,3 +411,27 @@ func TestListenLoopback(t *testing.T) {
 		t.Fatalf("addr = %s", l.Addr())
 	}
 }
+
+func TestStaticAssetsServed(t *testing.T) {
+	f := newFixture(t)
+	for _, c := range []struct{ path, ctype, want string }{
+		{"/static/app.js", "javascript", "function visualize("},
+		{"/static/app.css", "text/css", "prefers-color-scheme"},
+	} {
+		resp, err := f.srv.Client().Get(f.srv.URL + c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("GET %s = %d", c.path, resp.StatusCode)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, c.ctype) {
+			t.Fatalf("GET %s Content-Type = %q; want %s", c.path, ct, c.ctype)
+		}
+		if !bytes.Contains(b, []byte(c.want)) {
+			t.Fatalf("GET %s body lacks %q", c.path, c.want)
+		}
+	}
+}

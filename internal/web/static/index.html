@@ -4,8 +4,45 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>loghorn</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/app.js"></script>
 </head>
 <body>
-<p>loghorn web query view: the page is not built yet. The JSON API is under <code>/api/</code>.</p>
+<header class="top">
+  <h1 id="title">loghorn</h1>
+</header>
+<div id="error" class="banner" role="alert" hidden></div>
+<form id="bar" class="bar" autocomplete="off">
+  <label>Stream <select id="stream"></select></label>
+  <label>From
+    <select id="from">
+      <option value="this-run">this run</option>
+      <option value="15m">last 15m</option>
+      <option value="1h">last 1h</option>
+      <option value="24h">last 24h</option>
+      <option value="all">all</option>
+      <option value="custom">custom…</option>
+    </select>
+    <input id="from-custom" type="datetime-local" step="0.001" hidden>
+  </label>
+  <label>To
+    <select id="to">
+      <option value="now">now</option>
+      <option value="custom">custom…</option>
+    </select>
+    <input id="to-custom" type="datetime-local" step="0.001" hidden>
+  </label>
+  <label class="grow">Search <input id="search" type="search" placeholder="text in any field; Enter to run"></label>
+  <button id="refresh" type="button">Refresh</button>
+</form>
+<p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
+<main id="results">
+  <table id="table">
+    <thead><tr id="head"></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+</main>
+<footer id="footer" class="footer"></footer>
 </body>
 </html>
