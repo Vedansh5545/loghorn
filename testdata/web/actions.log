@@ -1,0 +1,7 @@
+2026-11-17T17:00:30.1000000Z Current runner version: '2.329.0'
+2026-11-17T17:00:30.2000000Z ##[group]Run npm test
+2026-11-17T17:00:30.3000000Z > app@1.0.0 test
+2026-11-17T17:00:30.3832868Z {"severity":"INFO","time":"2026-11-17T17:00:31.500Z","logging.googleapis.com/labels":{"schema":"db"},"message":"query ok","databaseContext":{"metadata":{"operation":"SELECT","rowsAffected":2}}}
+2026-11-17T17:00:32.4000000Z {"severity":"WARNING","logging.googleapis.com/labels":{"schema":"server"},"message":"no own time"}
+2026-11-17T17:00:33.5000000Z {"severity":"ERROR","time":"2026-11-17T17:00:33.000Z","logging.googleapis.com/labels":{"schema":"auth"},"message":"denied"}
+2026-11-17T17:00:34.0000000Z ##[endgroup]

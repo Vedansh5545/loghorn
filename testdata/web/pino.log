@@ -1,0 +1,8 @@
+{"severity":"INFO","time":"2026-11-17T17:00:01.123Z","logging.googleapis.com/labels":{"schema":"db"},"message":"query ok","databaseContext":{"metadata":{"operation":"CREATE","query":"CREATE TABLE users (id INT PRIMARY KEY, name TEXT)","rowsAffected":0}},"latency":"0.4ms"}
+{"severity":"INFO","time":"2026-11-17T17:00:02.250Z","logging.googleapis.com/labels":{"schema":"db"},"message":"query ok","databaseContext":{"metadata":{"operation":"SELECT","query":"select id, name from users where id = 7 and active = true order by name","rowsAffected":1}},"latency":"3.2ms"}
+{"severity":"WARNING","time":"2026-11-17T17:00:03.500Z","logging.googleapis.com/labels":{"schema":"db"},"message":"slow query","databaseContext":{"metadata":{"operation":"UPDATE","query":"update users set name = 'x' where id in (select user_id from sessions)","rowsAffected":42}},"latency":"87ms"}
+{"severity":"INFO","time":"2026-11-17T17:00:04.000Z","logging.googleapis.com/labels":{"schema":"api"},"message":"request","httpRequest":{"requestMethod":"GET","status":200},"requestId":1763400000123456789,"tags":["a","b"]}
+{"severity":"ERROR","time":"2026-11-17T17:00:05.750Z","logging.googleapis.com/labels":{"schema":"api"},"message":"upstream failed","httpRequest":{"requestMethod":"POST","status":503},"requestId":1763400000123456790}
+{"severity":"INFO","time":"2026-11-17T17:00:06.000Z","logging.googleapis.com/labels":{"schema":"server"},"message":"listening","port":8080,"logging.googleapis.com/trace":"projects/p/traces/abc","logging.googleapis.com/spanId":"def"}
+{"severity":"INFO","logging.googleapis.com/labels":{"schema":"server"},"message":"no timestamp on this line"}
+> app@1.0.0 start
