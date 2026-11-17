@@ -340,11 +340,7 @@ export function render(result) {
   lastResult = result;
   const head = $("head");
   head.replaceChildren();
-  for (const c of result.columns) {
-    const th = el("th", "", c.label || c.path);
-    th.title = c.path + " : " + c.type;
-    head.append(th);
-  }
+  for (const c of result.columns) head.append(headerCell(c, result.columns.length));
   const body = $("body");
   body.replaceChildren();
   for (const row of result.rows) {
@@ -363,6 +359,163 @@ export function render(result) {
   if (result.truncated) foot += " · limit reached";
   $("footer-text").textContent = foot;
   renderColumnNames();
+  applyWidths();
+}
+
+// breakable renders text with a line-break opportunity after each period, so
+// a long dotted path wraps instead of setting the column's minimum width.
+function breakable(text) {
+  const s = el("span", "th-label");
+  text.split(".").forEach((part, i, all) => {
+    s.append(document.createTextNode(part + (i < all.length - 1 ? "." : "")));
+    if (i < all.length - 1) s.append(document.createElement("wbr"));
+  });
+  return s;
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+
+function trashIcon() {
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "13");
+  svg.setAttribute("height", "13");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of ["M2.5 4h11", "M6 4V2.5h4V4", "M4 4l.8 9.5h6.4L12 4", "M6.8 6.5v5", "M9.2 6.5v5"]) {
+    const p = document.createElementNS(SVG, "path");
+    p.setAttribute("d", d);
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", "currentColor");
+    p.setAttribute("stroke-width", "1.3");
+    p.setAttribute("stroke-linecap", "round");
+    p.setAttribute("stroke-linejoin", "round");
+    svg.append(p);
+  }
+  return svg;
+}
+
+function headerCell(c, count) {
+  const th = el("th");
+  th.dataset.path = c.path;
+  th.title = c.path + " : " + c.type;
+  const inner = el("div", "th-inner");
+  inner.append(breakable(c.label || c.path));
+  const del = el("button", "col-del");
+  del.type = "button";
+  del.title = "remove this column (restore from Columns)";
+  del.setAttribute("aria-label", "remove column " + c.path);
+  del.disabled = count <= 1;
+  del.append(trashIcon());
+  del.addEventListener("click", () => removeColumn(c.path));
+  inner.append(del);
+  const grip = el("span", "col-resize");
+  grip.title = "drag to resize · double-click to fit";
+  grip.addEventListener("pointerdown", (e) => startResize(e, th));
+  grip.addEventListener("dblclick", () => {
+    const w = loadWidths();
+    delete w[c.path];
+    saveWidths(w);
+    applyWidths();
+  });
+  th.append(inner, grip);
+  return th;
+}
+
+function removeColumn(path) {
+  const cols = currentColumns().filter((p) => p !== path);
+  if (!cols.length) return;
+  state.columns = cols;
+  closeColumns();
+  runQuery();
+}
+
+// ---- column widths ----
+// Widths the user dragged are kept per stream in this browser only.
+
+function widthsKey() {
+  return "loghorn.widths." + state.stream;
+}
+
+function loadWidths() {
+  try {
+    const w = JSON.parse(localStorage.getItem(widthsKey()) || "{}");
+    return w && typeof w === "object" ? w : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWidths(w) {
+  try {
+    if (Object.keys(w).length) localStorage.setItem(widthsKey(), JSON.stringify(w));
+    else localStorage.removeItem(widthsKey());
+  } catch {
+    // storage unavailable: widths last until reload
+  }
+}
+
+// applyWidths lays the table out from its content, then, if any column has a
+// dragged width, freezes every column at its width (dragged or natural) with
+// a fixed table layout so a column can be narrower than its content.
+function applyWidths(extra) {
+  const table = $("table");
+  const ths = Array.from($("head").children);
+  const w = Object.assign(loadWidths(), extra || {});
+  table.classList.remove("fixed");
+  table.style.width = "";
+  for (const th of ths) th.style.width = "";
+  renderRestore();
+  if (!ths.some((th) => th.dataset.path in w)) return;
+  const natural = ths.map((th) => th.getBoundingClientRect().width);
+  let total = 0;
+  ths.forEach((th, i) => {
+    const px = th.dataset.path in w ? w[th.dataset.path] : natural[i];
+    th.style.width = px + "px";
+    total += px;
+  });
+  table.style.width = total + "px";
+  table.classList.add("fixed");
+}
+
+const MIN_COL = 40;
+
+function startResize(e, th) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const path = th.dataset.path;
+  const startX = e.clientX;
+  const startW = th.getBoundingClientRect().width;
+  applyWidths({ [path]: startW });
+  const table = $("table");
+  const tableW = parseFloat(table.style.width);
+  const grip = e.currentTarget;
+  grip.setPointerCapture(e.pointerId);
+  document.body.classList.add("resizing");
+  let width = startW;
+  const move = (ev) => {
+    width = Math.max(MIN_COL, Math.round(startW + ev.clientX - startX));
+    th.style.width = width + "px";
+    table.style.width = tableW - startW + width + "px";
+  };
+  const up = () => {
+    grip.removeEventListener("pointermove", move);
+    grip.removeEventListener("pointerup", up);
+    grip.removeEventListener("pointercancel", up);
+    document.body.classList.remove("resizing");
+    const w = loadWidths();
+    w[path] = width;
+    saveWidths(w);
+    renderRestore();
+  };
+  grip.addEventListener("pointermove", move);
+  grip.addEventListener("pointerup", up);
+  grip.addEventListener("pointercancel", up);
+}
+
+// renderRestore shows the restore button while the columns or their widths
+// differ from the defaults.
+function renderRestore() {
+  $("col-restore").hidden = !state.columns.length && !Object.keys(loadWidths()).length;
 }
 
 async function toggleDetail(tr, span) {
@@ -475,13 +628,18 @@ function renderChips() {
   const box = $("chips");
   box.replaceChildren();
   state.filters.forEach((f, i) => {
-    const chip = el("span", "chip");
+    const chip = el("span", "chip" + (i === adder.editIndex ? " editing" : ""));
+    chip.title = "double-click to edit";
+    chip.addEventListener("dblclick", (e) => {
+      if (!e.target.closest(".chip-x")) editFilter(i);
+    });
     chip.append(el("span", "", filterText(f)));
     const x = el("button", "chip-x", "×");
     x.type = "button";
     x.title = "remove this filter";
     x.setAttribute("aria-label", "remove filter " + filterText(f));
     x.addEventListener("click", () => {
+      closeFilterAdd();
       state.filters.splice(i, 1);
       runQuery();
     });
@@ -509,10 +667,12 @@ function distinctValues(path) {
   return out.sort();
 }
 
-const adder = { field: null, tags: [] };
+// editIndex is the filter being edited, or -1 when adding a new one.
+const adder = { field: null, tags: [], editIndex: -1 };
 
 function openFilterAdd() {
   closeColumns();
+  setEditIndex(-1);
   $("filter-add").hidden = false;
   $("fa-pick").hidden = false;
   $("fa-form").hidden = true;
@@ -526,6 +686,39 @@ function closeFilterAdd() {
   $("filter-add").hidden = true;
   adder.field = null;
   adder.tags = [];
+  setEditIndex(-1);
+}
+
+function setEditIndex(i) {
+  const changed = adder.editIndex !== i;
+  adder.editIndex = i;
+  $("fa-add").textContent = i >= 0 ? "Update" : "Add";
+  if (changed) renderChips();
+}
+
+// editFilter opens the filter builder filled in from filter i; Update
+// replaces it in place.
+function editFilter(i) {
+  const f = state.filters[i];
+  if (!f) return;
+  const field = fieldByPath(f.field) || { path: f.field, type: "string" };
+  openFilterAdd();
+  pickField(field);
+  setEditIndex(i);
+  const opSel = $("fa-op");
+  if (!Array.from(opSel.options).some((o) => o.value === f.op)) {
+    const o = el("option", "", f.op);
+    o.value = f.op;
+    opSel.append(o);
+  }
+  opSel.value = f.op;
+  const vals = Array.isArray(f.values) ? f.values : [];
+  if (f.op === "in" || f.op === "not-in") adder.tags = vals.map(String);
+  renderValueInput();
+  const input = $("fa-input");
+  if (input && f.op !== "in" && f.op !== "not-in" && vals.length) {
+    input.value = field.type === "timestamp" ? localInputValue(vals[0]) || String(vals[0]) : String(vals[0]);
+  }
 }
 
 function renderFieldList() {
@@ -686,7 +879,10 @@ async function addFilter() {
   if (!f) return;
   const op = $("fa-op").value;
   const filter = { field: f.path, op, values: filterValues(f, op) };
-  const q = Object.assign({}, state, { filters: state.filters.concat([filter]) });
+  const filters = state.filters.slice();
+  if (adder.editIndex >= 0 && adder.editIndex < filters.length) filters[adder.editIndex] = filter;
+  else filters.push(filter);
+  const q = Object.assign({}, state, { filters });
   const mine = ++querySeq;
   $("fa-error").textContent = "";
   try {
@@ -705,7 +901,7 @@ async function addFilter() {
 
 function wireFilters() {
   $("add-filter").addEventListener("click", () => {
-    if ($("filter-add").hidden) openFilterAdd();
+    if ($("filter-add").hidden || adder.editIndex >= 0) openFilterAdd();
     else closeFilterAdd();
   });
   $("fa-cancel").addEventListener("click", closeFilterAdd);
@@ -804,6 +1000,12 @@ function wireColumns() {
   });
   $("col-default").addEventListener("click", () => {
     state.columns = [];
+    closeColumns();
+    runQuery();
+  });
+  $("col-restore").addEventListener("click", () => {
+    state.columns = [];
+    saveWidths({});
     closeColumns();
     runQuery();
   });
