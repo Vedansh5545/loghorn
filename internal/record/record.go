@@ -26,8 +26,16 @@ type Record struct {
 	Raw           []byte         // the line as searched/shown; GitHub prefix stripped
 }
 
+// HTTPRequestStream is the stream of a LogEntry that has an httpRequest object
+// but no labels.schema, such as a Cloud Run request log
+// (run.googleapis.com/requests), which carries no payload at all. Without it
+// those records would be skipped and their httpRequest.* fields never get a
+// schema.
+const HTTPRequestStream = "http-request"
+
 // Normalize builds the canonical record for e. It returns false when the
-// record has no JSON object or no labels.schema stream label.
+// record has no JSON object, or has neither a labels.schema stream label nor
+// an httpRequest object (see HTTPRequestStream).
 func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	raw := bytes.TrimSpace(e.Raw)
 
@@ -59,6 +67,9 @@ func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	n.payload()
 
 	stream, _ := n.fields["labels.schema"].(string)
+	if stream == "" && n.httpRequest {
+		stream = HTTPRequestStream
+	}
 	if stream == "" {
 		return Record{}, false
 	}
@@ -82,6 +93,8 @@ type normalizer struct {
 	fields map[string]any
 	used   map[string]bool // root keys consumed by promotion
 	top    map[string]bool // first path segments written by promotion
+
+	httpRequest bool // the LogEntry has an httpRequest object
 }
 
 // lookup finds the LogEntry key camel under the configured spelling, as
@@ -150,6 +163,9 @@ func (n *normalizer) promote(sev entry.Severity) {
 		if k, v, ok := n.lookup(name); ok {
 			n.used[k] = true
 			n.set(name, v)
+			if name == "httpRequest" {
+				_, n.httpRequest = v.(map[string]any)
+			}
 		}
 	}
 	if k, v, ok := n.lookup("textPayload"); ok {

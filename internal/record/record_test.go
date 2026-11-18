@@ -238,3 +238,72 @@ func TestNormalizeNoObject(t *testing.T) {
 		t.Error("plain text must not normalize")
 	}
 }
+
+// A Cloud Run request log has an httpRequest and nothing else: no payload and
+// no labels.schema. It goes to the http-request stream rather than being
+// skipped, in either key spelling.
+func TestNormalizeHTTPRequestStream(t *testing.T) {
+	for _, line := range []string{
+		`{"insertId":"r1","timestamp":"2026-11-17T17:00:00Z","severity":"INFO","logName":"projects/p/logs/run.googleapis.com%2Frequests","httpRequest":{"requestMethod":"GET","requestUrl":"https://x.run.app/a?b=1","status":200,"latency":"0.0025s"}}`,
+		`{"insert_id":"r1","timestamp":"2026-11-17T17:00:00Z","severity":"INFO","log_name":"projects/p/logs/run.googleapis.com%2Frequests","http_request":{"requestMethod":"GET","requestUrl":"https://x.run.app/a?b=1","status":200,"latency":"0.0025s"}}`,
+	} {
+		r, ok := norm(t, line, auto)
+		if !ok {
+			t.Fatalf("not ok: %s", line)
+		}
+		if r.Stream != HTTPRequestStream {
+			t.Errorf("Stream = %q", r.Stream)
+		}
+		if r.Fields["httpRequest.status"] != json.Number("200") || r.Fields["httpRequest.requestMethod"] != "GET" {
+			t.Errorf("fields = %v", r.Fields)
+		}
+	}
+}
+
+// labels.schema wins over the httpRequest fallback.
+func TestNormalizeHTTPRequestLabelledKeepsStream(t *testing.T) {
+	r, ok := norm(t, fixture(t, "gcloud.json")[1], auto)
+	if !ok || r.Stream != "api" {
+		t.Fatalf("ok=%v Stream=%q", ok, r.Stream)
+	}
+}
+
+// An httpRequest that is not an object does not make a request record.
+func TestNormalizeHTTPRequestNotObject(t *testing.T) {
+	if _, ok := norm(t, `{"httpRequest":"GET /"}`, auto); ok {
+		t.Error("ok for a non-object httpRequest")
+	}
+}
+
+// The api request line as pino writes it locally (httpRequest at the root of
+// the line) and as Cloud Logging stores it (promoted to LogEntry.httpRequest,
+// beside jsonPayload) gives the same httpRequest.* fields, in the line's own
+// stream; the flat latency stays a separate payload field.
+func TestNormalizeHTTPRequestLocalAndCloudSame(t *testing.T) {
+	hr := `{"requestMethod":"POST","requestUrl":"http://localhost:3000/api/v1/bids","requestSize":42,"status":201,"responseSize":17,"userAgent":"ua","remoteIp":"","latency":"0.012s"}`
+	local := `{"severity":"INFO","time":"2026-11-18T01:05:42.142Z","pid":5978,"hostname":"h","logging.googleapis.com/labels":{"schema":"api"},"message":"API request: POST /api/v1/bids returned 201 in 0.012s","latency":"0.012s","requestId":"r","httpRequest":` + hr + `,"api":{"methodName":"POST /api/v1/bids"}}`
+	cloud := `{"insertId":"i","timestamp":"2026-11-18T01:05:42.142Z","severity":"INFO","labels":{"schema":"api","instanceId":"x"},"httpRequest":` + hr + `,"jsonPayload":{"pid":5978,"hostname":"h","message":"API request: POST /api/v1/bids returned 201 in 0.012s","latency":"0.012s","requestId":"r","api":{"methodName":"POST /api/v1/bids"}}}`
+	pick := func(r Record) map[string]any {
+		out := map[string]any{}
+		for k, v := range r.Fields {
+			if strings.HasPrefix(k, "httpRequest.") || k == "latency" || k == "api.methodName" {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	var got []map[string]any
+	for _, line := range []string{local, cloud} {
+		r, ok := norm(t, line, auto)
+		if !ok || r.Stream != "api" {
+			t.Fatalf("ok=%v Stream=%q", ok, r.Stream)
+		}
+		got = append(got, pick(r))
+	}
+	if !reflect.DeepEqual(got[0], got[1]) {
+		t.Errorf("local %v\ncloud %v", got[0], got[1])
+	}
+	if len(got[0]) != 10 || got[0]["httpRequest.status"] != json.Number("201") || got[0]["latency"] != "0.012s" {
+		t.Errorf("fields = %v", got[0])
+	}
+}

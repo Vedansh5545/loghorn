@@ -165,14 +165,16 @@ field set before inference or querying:
   never renamed.
 - Nested objects flatten to dotted paths. Arrays are not flattened: an array
   is a single field of type `json`, shown as JSON and searchable as text.
-- The stream is `labels.schema`.
+- The stream is `labels.schema`. A LogEntry with an `httpRequest` object but
+  no `labels.schema` (a Cloud Run request log, `run.googleapis.com/requests`,
+  which has no payload) goes to the `http-request` stream.
 
 Normalisation is a **separate step** that runs on an `entry.Entry` after the
 existing adapters, used only by the web view in v1. The adapters and the TUI
 are not changed. It covers JSON LogEntry and gcloud YAML records alike (both
 already decode to the same map), and honours the `[input]` settings exactly
 as the adapters do: `field-naming = camel` reads only camelCase LogEntry keys,
-`auto` reads either. Records without a stream label are skipped.
+`auto` reads either. Other records without a stream label are skipped.
 
 ### Inferred schema
 
