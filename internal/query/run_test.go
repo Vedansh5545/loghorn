@@ -316,7 +316,7 @@ func TestRun50kUnder200ms(t *testing.T) {
 	}
 	start := time.Now()
 	res := run(t, recs, s, q)
-	if d := time.Since(start); d > 200*time.Millisecond {
+	if d := time.Since(start); d > 200*time.Millisecond && !raceEnabled {
 		t.Errorf("took %v", d)
 	}
 	if res.Matched == 0 {
