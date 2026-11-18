@@ -1,3 +1,5 @@
+<img src="images/logo.svg" alt="Alt text" width="300">
+
 # loghorn
 
 Watch a dev server's logs and surface the failures.
