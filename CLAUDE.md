@@ -23,8 +23,19 @@ after launch leaves it running.
   rejects plain `float64`/`int64` as the wrong type.
 - A button inside a control that redraws on its input's blur/change must
   `preventDefault` on `mousedown`, or the redraw swallows the click.
-- The server requires `plot` to be count or one of `aggregates`, so any edit
-  of the metrics list in the page must also reconcile `state.plot`.
+- The server requires `plot` and `order` to be count or one of `aggregates`,
+  so any edit of the metrics list in the page must also reconcile
+  `state.plot` and `state.order` (see `syncAggregates`).
+- Sidebar controls are `.sb-field` rows: a `.sb-l` label in the fixed label
+  column, then a `.sb-body`. A new control must use that row shape (with
+  `data-views` on the row) or its box won't line up with the others.
+- `go:embed` can't reach the repo's `images/`, so
+  `internal/web/static/favicon.svg` is a copy of `images/favicon.svg`. Edit
+  both, or copy after editing.
+- Before checking a page in the browser, make sure the server you start is
+  the one listening: a demo left on the port makes the new one exit with
+  "address already in use" while the browser keeps showing the old build.
+  Find it with `lsof -nP -iTCP:<port> -sTCP:LISTEN` and kill it by PID.
 - Saved TOML: BurntSushi/toml's `omitempty` keeps a zero int; add `omitzero`
   to any optional int field (see `schema.Field.Width`).
 - Schema edits from the page queue one after another; each must re-apply its
