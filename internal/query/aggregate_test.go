@@ -22,6 +22,7 @@ func TestValidateExploreFields(t *testing.T) {
 		"nofield":  {Aggregates: []Aggregate{{Op: "sum"}}},
 		"string":   {Aggregates: []Aggregate{{Op: "sum", Field: "route"}}},
 		"bucket":   {Bucket: "7m"},
+		"chart":    {Chart: "pie"},
 		"plot":     {Plot: &Aggregate{Op: "sum", Field: "lat"}},
 		"emptygrp": {GroupBy: []string{""}},
 	}
@@ -31,7 +32,7 @@ func TestValidateExploreFields(t *testing.T) {
 		}
 	}
 	ok := Query{
-		View: "graph", GroupBy: []string{"route"}, Bucket: "5m",
+		View: "graph", GroupBy: []string{"route"}, Bucket: "5m", Chart: "stacked",
 		Aggregates: []Aggregate{{Op: "p95", Field: "lat"}},
 		Plot:       &Aggregate{Op: "p95", Field: "lat"},
 	}

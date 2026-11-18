@@ -17,7 +17,9 @@ type Graph struct {
 	BucketSeconds float64     `json:"bucketSeconds"`
 	Starts        []time.Time `json:"starts"` // bucket start times, ascending
 	Metric        Column      `json:"metric"`
-	Series        []Series    `json:"series"` // by count desc; "other" last
+	Groups        int         `json:"groups"` // groups before the top cut
+	Top           int         `json:"top"`    // groups drawn on their own (the cut)
+	Series        []Series    `json:"series"` // in group order (count desc by default); "other" last
 }
 
 // Series is one line of a graph.
@@ -30,7 +32,6 @@ type Series struct {
 }
 
 const (
-	maxGraphSeries  = 10
 	autoBucketLimit = 100
 	maxGraphBuckets = 2000
 )
@@ -139,7 +140,8 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 		}
 	}
 
-	// Group the records, then rank groups by count over the whole range.
+	// Group the records, then rank groups by the order metric (count by
+	// default) over the whole range.
 	gfields := make([]schema.Field, len(q.GroupBy))
 	for i, p := range q.GroupBy {
 		gfields[i] = lookupField(s, p)
@@ -164,12 +166,7 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 		}
 		x.recs = append(x.recs, r)
 	}
-	sort.SliceStable(groups, func(a, b int) bool {
-		if len(groups[a].recs) != len(groups[b].recs) {
-			return len(groups[a].recs) > len(groups[b].recs)
-		}
-		return groups[a].key < groups[b].key
-	})
+	rankGroups(groups, func(x *grp) ([]*record.Record, string) { return x.recs, x.key }, q.Order, s)
 
 	var plotField schema.Field
 	if plot.Op != "count" {
@@ -207,15 +204,21 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 		}
 		return g, nil
 	}
+	top := q.Top
+	if top <= 0 {
+		top = DefaultTop
+	}
+	top = min(top, MaxGraphTop)
+	g.Groups, g.Top = len(groups), top
 	for i, x := range groups {
-		if i >= maxGraphSeries {
+		if i >= top {
 			break
 		}
 		g.Series = append(g.Series, build(strings.Join(x.labels, " · "), x.labels, false, x.recs))
 	}
-	if len(groups) > maxGraphSeries {
+	if len(groups) > top {
 		var rest []*record.Record
-		for _, x := range groups[maxGraphSeries:] {
+		for _, x := range groups[top:] {
 			rest = append(rest, x.recs...)
 		}
 		g.Series = append(g.Series, build("other", nil, true, rest))

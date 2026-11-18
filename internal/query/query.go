@@ -17,6 +17,13 @@ const (
 	MaxLimit     = 10000
 )
 
+// Group limits (Top): how many groups the table shows and the graph draws
+// before the rest fold into "other".
+const (
+	DefaultTop  = 10
+	MaxGraphTop = 50
+)
+
 // Range is the time window of a query.
 type Range struct {
 	From string `json:"from" toml:"from"`
@@ -60,6 +67,25 @@ type Query struct {
 	Bucket     string      `json:"bucket,omitempty" toml:"bucket,omitempty"`
 	View       string      `json:"view,omitempty" toml:"view,omitempty"`
 	Plot       *Aggregate  `json:"plot,omitempty" toml:"plot,omitempty"`
+	Order      *Order      `json:"order,omitempty" toml:"order,omitempty"`
+	// Chart is how the page draws a graph: "line" (the default) or
+	// "stacked". The server only checks it, so favorites keep it.
+	Chart string `json:"chart,omitempty" toml:"chart,omitempty"`
+	// Top is how many groups the table and graph keep, ranked by Order;
+	// 0 means DefaultTop. The table falls back to Limit when Top is 0 and
+	// Limit is set. The graph keeps at most MaxGraphTop.
+	Top int `json:"top,omitempty" toml:"top,omitempty,omitzero"`
+}
+
+// Charts are the graph styles the page can draw.
+var Charts = []string{"line", "stacked"}
+
+// Order ranks the groups of the table and graph by a metric: count or one of
+// the aggregates. Groups with no value for the metric always come last.
+type Order struct {
+	Op    string `json:"op" toml:"op"`
+	Field string `json:"field,omitempty" toml:"field,omitempty"`
+	Asc   bool   `json:"asc,omitempty" toml:"asc,omitempty"`
 }
 
 // OpsFor lists the operators valid for a field type.
@@ -209,6 +235,12 @@ func (q Query) validateExplore(s schema.Schema) error {
 			return fmt.Errorf("aggregate %q needs a numeric field; %q is %s", a.Op, a.Field, t)
 		}
 	}
+	if q.Top < 0 || q.Top > MaxLimit {
+		return fmt.Errorf("top %d: want 1 to %d", q.Top, MaxLimit)
+	}
+	if q.Chart != "" && !inList(Charts, q.Chart) {
+		return fmt.Errorf("chart %q: want one of %s", q.Chart, strings.Join(Charts, ", "))
+	}
 	if q.Bucket != "" && !inList(Buckets, q.Bucket) {
 		return fmt.Errorf("bucket %q: want one of %s", q.Bucket, strings.Join(Buckets, ", "))
 	}
@@ -221,6 +253,17 @@ func (q Query) validateExplore(s schema.Schema) error {
 		}
 		if !found {
 			return fmt.Errorf("plot %s(%s) must be count or one of the aggregates", p.Op, p.Field)
+		}
+	}
+	if o := q.Order; o != nil && !(o.Op == "count" && o.Field == "") {
+		found := false
+		for _, a := range q.Aggregates {
+			if a == (Aggregate{Op: o.Op, Field: o.Field}) {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("order %s(%s) must be count or one of the aggregates", o.Op, o.Field)
 		}
 	}
 	return nil

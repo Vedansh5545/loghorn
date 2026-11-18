@@ -212,18 +212,16 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 			}
 			g.recs = append(g.recs, r)
 		}
-		sort.SliceStable(groups, func(a, b int) bool {
-			if len(groups[a].recs) != len(groups[b].recs) {
-				return len(groups[a].recs) > len(groups[b].recs)
-			}
-			return groups[a].key < groups[b].key
-		})
+		rankGroups(groups, func(g *group) ([]*record.Record, string) { return g.recs, g.key }, q.Order, s)
 	}
 	res.Groups = len(groups)
 
-	limit := q.Limit
+	limit := q.Top
 	if limit <= 0 {
-		limit = DefaultLimit
+		limit = q.Limit
+	}
+	if limit <= 0 {
+		limit = DefaultTop
 	}
 	if limit > MaxLimit {
 		limit = MaxLimit
@@ -262,5 +260,58 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 			cells = append(cells, metricCell(v, ok, col.Type))
 		}
 		res.Rows = append(res.Rows, Row{Cells: cells})
+	}
+}
+
+// rankGroups orders groups by q.Order (count, descending, when nil). A group
+// with no value for the metric sorts last in either direction; ties fall back
+// to count descending, then key.
+func rankGroups[G any](groups []G, of func(G) ([]*record.Record, string), o *Order, s schema.Schema) {
+	type ranked struct {
+		g   G
+		key string
+		n   int
+		v   float64
+		ok  bool
+	}
+	by := Order{Op: "count"}
+	if o != nil {
+		by = *o
+	}
+	agg := Aggregate{Op: by.Op, Field: by.Field}
+	var f schema.Field
+	if by.Op != "count" {
+		f = lookupField(s, by.Field)
+	}
+	rs := make([]ranked, len(groups))
+	for i, g := range groups {
+		recs, key := of(g)
+		r := ranked{g: g, key: key, n: len(recs)}
+		if by.Op == "count" {
+			r.v, r.ok = float64(len(recs)), true
+		} else {
+			r.v, r.ok = metricValue(recs, agg, f)
+			r.ok = r.ok && !math.IsNaN(r.v)
+		}
+		rs[i] = r
+	}
+	sort.SliceStable(rs, func(a, b int) bool {
+		x, y := rs[a], rs[b]
+		if x.ok != y.ok {
+			return x.ok
+		}
+		if x.ok && x.v != y.v {
+			if by.Asc {
+				return x.v < y.v
+			}
+			return x.v > y.v
+		}
+		if x.n != y.n {
+			return x.n > y.n
+		}
+		return x.key < y.key
+	})
+	for i, r := range rs {
+		groups[i] = r.g
 	}
 }

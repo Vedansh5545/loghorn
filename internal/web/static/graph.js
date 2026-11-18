@@ -1,4 +1,4 @@
-// Graph view: an SVG line chart of a query's time series. Every label reaches
+// Graph view: an SVG line or stacked-area chart of a query's time series. Every label reaches
 // the DOM through textContent or attributes, never innerHTML.
 
 const SVG = "http://www.w3.org/2000/svg";
@@ -104,9 +104,24 @@ function fullTime(d) {
   return s;
 }
 
+// stackSeries returns each series' lower and upper edges when stacked in
+// order, the first at the bottom. A gap (null) adds nothing.
+export function stackSeries(series, n) {
+  const base = new Array(n).fill(0);
+  return series.map((s) => {
+    const lower = base.slice();
+    for (let j = 0; j < n; j++) {
+      const v = s.values[j];
+      if (v !== null && v !== undefined) base[j] += v;
+    }
+    return { lower, upper: base.slice() };
+  });
+}
+
 // drawGraph renders graph (the server's Graph JSON) into container. format(v)
-// labels a metric value. It redraws itself when the container is resized.
-export function drawGraph(container, graph, format) {
+// labels a metric value; stacked draws stacked areas instead of lines. It
+// redraws itself when the container is resized.
+export function drawGraph(container, graph, format, stacked) {
   const old = observers.get(container);
   if (old) old.disconnect();
   observers.delete(container);
@@ -135,7 +150,7 @@ export function drawGraph(container, graph, format) {
     const width = Math.floor(chart.clientWidth);
     if (width <= 0 || width === lastWidth) return;
     lastWidth = width;
-    plot(chart, width, starts, series, format, graph.metric && graph.metric.type === "int");
+    plot(chart, width, starts, series, format, graph.metric && graph.metric.type === "int", !!stacked);
   };
   const ro = new ResizeObserver(draw);
   ro.observe(chart);
@@ -143,14 +158,19 @@ export function drawGraph(container, graph, format) {
   draw();
 }
 
-function plot(chart, width, starts, series, format, integer) {
+function plot(chart, width, starts, series, format, integer, stacked) {
   chart.replaceChildren();
+  const stack = stacked ? stackSeries(series, starts.length) : null;
   let lo = 0, hi = -Infinity;
-  for (const s of series) {
-    for (const v of s.values) {
-      if (v === null || v === undefined) continue;
-      if (v > hi) hi = v;
-      if (v < lo) lo = v;
+  if (stack) {
+    for (const v of stack[stack.length - 1].upper) if (v > hi) hi = v;
+  } else {
+    for (const s of series) {
+      for (const v of s.values) {
+        if (v === null || v === undefined) continue;
+        if (v > hi) hi = v;
+        if (v < lo) lo = v;
+      }
     }
   }
   if (!isFinite(hi)) hi = 1;
@@ -166,7 +186,7 @@ function plot(chart, width, starts, series, format, integer) {
   const y = (v) => PAD.top + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
 
   const svg = svgEl("svg", { width, height: HEIGHT, viewBox: "0 0 " + width + " " + HEIGHT, role: "img" });
-  svg.setAttribute("aria-label", "graph of " + series.length + " series over " + starts.length + " time buckets");
+  svg.setAttribute("aria-label", (stack ? "stacked area graph of " : "graph of ") + series.length + " series over " + starts.length + " time buckets");
 
   const grid = svgEl("g", { class: "graph-grid" });
   ticks.forEach((v, i) => {
@@ -185,8 +205,9 @@ function plot(chart, width, starts, series, format, integer) {
   }
   svg.append(grid);
 
+  if (stack) drawStack(svg, starts, series, stack, x, y);
   // Draw "other" first and the largest series last, so the top series is on top.
-  const order = series.map((s, i) => i).reverse();
+  const order = stack ? [] : series.map((s, i) => i).reverse();
   for (const i of order) {
     const s = series[i];
     const g = svgEl("g", { class: "graph-series" });
@@ -244,6 +265,11 @@ function plot(chart, width, starts, series, format, integer) {
         div("graph-tip-value", v === null || v === undefined ? "—" : format(v)));
       box.append(line);
     });
+    if (stack) {
+      const line = div("graph-tip-row graph-tip-total");
+      line.append(div(""), div("graph-tip-label", "total"), div("graph-tip-value", format(stack[stack.length - 1].upper[j])));
+      box.append(line);
+    }
     box.hidden = false;
     // Keep the box inside the chart: right of the rule, or left when near the edge.
     const bw = box.offsetWidth;
@@ -253,5 +279,28 @@ function plot(chart, width, starts, series, format, integer) {
   hit.addEventListener("pointerleave", () => {
     rule.setAttribute("visibility", "hidden");
     box.hidden = true;
+  });
+}
+
+// drawStack draws each series as the band between its lower and upper edges,
+// with a line along its top. One bucket has no width, so it gets dots.
+function drawStack(svg, starts, series, stack, x, y) {
+  const n = starts.length;
+  series.forEach((s, i) => {
+    const g = svgEl("g", { class: "graph-series" });
+    g.style.stroke = seriesColor(s, i);
+    g.style.fill = seriesColor(s, i);
+    const { lower, upper } = stack[i];
+    if (n === 1) {
+      g.append(svgEl("circle", { cx: x(starts[0]).toFixed(1), cy: y(upper[0]).toFixed(1), r: 2.5, class: "graph-dot" }));
+      svg.append(g);
+      return;
+    }
+    let top = "";
+    for (let j = 0; j < n; j++) top += (j ? "L" : "M") + x(starts[j]).toFixed(1) + " " + y(upper[j]).toFixed(1);
+    let area = top;
+    for (let j = n - 1; j >= 0; j--) area += "L" + x(starts[j]).toFixed(1) + " " + y(lower[j]).toFixed(1);
+    g.append(svgEl("path", { d: area + "Z", class: "graph-area" }), svgEl("path", { d: top, class: "graph-line graph-edge" }));
+    svg.append(g);
   });
 }

@@ -20,10 +20,21 @@ export const state = {
   groupBy: [],
   aggregates: [],
   plot: { op: "count" },
+  order: { op: "count" },
+  chart: "line",
+  top: 10,
   bucket: "auto",
 };
 
 const VIEWS = ["samples", "table", "graph"];
+const CHARTS = ["line", "stacked"];
+const DEFAULT_TOP = 10;
+const TOPS = [5, 10, 20, 50, 100, 500, 1000];
+const MAX_GRAPH_TOP = 50; // the server draws at most this many series
+
+// stackable: only metrics that add up across groups can be stacked; a stack
+// of averages or percentiles has a meaningless total.
+const stackable = (plot) => !plot || plot.op === "count" || plot.op === "sum";
 
 let session = null;
 let streams = [];
@@ -285,7 +296,10 @@ function applyQuery(q) {
   state.groupBy = Array.isArray(q.groupBy) ? q.groupBy : [];
   state.aggregates = Array.isArray(q.aggregates) ? q.aggregates : [];
   state.plot = q.plot && typeof q.plot === "object" && q.plot.op ? q.plot : { op: "count" };
+  state.order = q.order && typeof q.order === "object" && q.order.op ? q.order : { op: "count" };
   state.bucket = typeof q.bucket === "string" && q.bucket ? q.bucket : "auto";
+  state.chart = CHARTS.includes(q.chart) ? q.chart : "line";
+  state.top = Number.isInteger(q.top) && q.top > 0 ? q.top : DEFAULT_TOP;
 }
 
 function loadURL() {
@@ -368,6 +382,7 @@ function wireBar() {
     state.groupBy = [];
     state.aggregates = [];
     state.plot = { op: "count" };
+    state.order = { op: "count" };
     closeColumnMenu();
     hiddenThisQuery = [];
     tempWidths = {};
@@ -382,10 +397,28 @@ function wireBar() {
   $("from-custom").addEventListener("change", () => customChanged("from"));
   $("to-custom").addEventListener("change", () => customChanged("to"));
   $("search").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      // Esc clears the box and the search at once; only Chrome and Safari
+      // clear a search input on Esc themselves.
+      e.preventDefault();
+      $("search").value = "";
+      if (state.search) {
+        state.search = "";
+        runQuery();
+      }
+      return;
+    }
     if (e.key !== "Enter") return;
     e.preventDefault();
     state.search = $("search").value;
     runQuery();
+  });
+  // The box's own clear (×) button empties it without a key press.
+  $("search").addEventListener("input", () => {
+    if ($("search").value === "" && state.search) {
+      state.search = "";
+      runQuery();
+    }
   });
   $("refresh").addEventListener("click", () => refresh());
   for (const b of document.querySelectorAll("#sb-view [data-view]")) {
@@ -454,6 +487,7 @@ async function loadSession() {
     state.groupBy = [];
     state.aggregates = [];
     state.plot = { op: "count" };
+    state.order = { op: "count" };
   }
 }
 
@@ -524,7 +558,7 @@ function renderTable(result) {
   }
   const n = result.groups || 0;
   let foot = n.toLocaleString() + " " + (n === 1 ? "group" : "groups") + " · " + result.matched.toLocaleString() + " records match";
-  if (result.truncated) foot += " · limit reached";
+  if (result.truncated) foot += " · showing the top " + result.rows.length.toLocaleString();
   $("footer-text").textContent = foot;
   applyWidths();
 }
@@ -541,11 +575,15 @@ function renderGraph(result) {
   const g = result.graph || { series: [], starts: [] };
   autoBucket = state.bucket === "auto" ? g.bucket || "" : "";
   drawBucket();
-  drawGraph($("graph"), g, metricFormat(g.metric));
+  drawGraph($("graph"), g, metricFormat(g.metric), state.chart === "stacked" && stackable(state.plot));
   const n = (g.series || []).length;
   let foot = result.matched.toLocaleString() + " records match";
   if (g.bucket && (g.starts || []).length) foot += " · " + g.starts.length.toLocaleString() + " buckets of " + g.bucket;
   if (n) foot += " · " + n + " series";
+  if (g.groups > g.top) {
+    foot += " · top " + g.top + " of " + g.groups.toLocaleString() + " groups, the rest in other";
+    if (state.top > g.top) foot += " (the graph draws at most " + g.top + ")";
+  }
   $("footer-text").textContent = foot;
 }
 
@@ -1243,6 +1281,7 @@ function clearExplore() {
   $("sb-group-body").replaceChildren();
   $("sb-metrics-body").replaceChildren();
   $("sb-plot-body").replaceChildren();
+  $("sb-order-body").replaceChildren();
 }
 
 function rebuildExplore() {
@@ -1251,6 +1290,8 @@ function rebuildExplore() {
   drawGroupBy();
   drawMetrics();
   drawPlot();
+  drawOrder();
+  drawTop();
   drawBucket();
 }
 
@@ -1295,7 +1336,13 @@ function syncAggregates() {
   if (p && p.op !== "count" && !state.aggregates.some((a) => a.op === p.op && a.field === p.field)) {
     state.plot = { op: "count" };
   }
+  // Likewise the order metric; its direction survives the fallback.
+  const o = state.order;
+  if (o && o.op !== "count" && !state.aggregates.some((a) => a.op === o.op && a.field === o.field)) {
+    state.order = o.asc ? { op: "count", asc: true } : { op: "count" };
+  }
   drawPlot();
+  drawOrder();
 }
 
 const BUCKETS = ["auto", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "1h", "6h", "1d"];
@@ -1320,9 +1367,95 @@ function drawPlot() {
   sel.addEventListener("change", () => {
     const a = state.aggregates.find((x) => plotKey(x) === sel.value);
     state.plot = a ? { op: a.op, field: a.field } : { op: "count" };
+    drawChart();
     runQuery();
   });
   box.replaceChildren(sel);
+  drawChart();
+}
+
+// drawChart fills the Chart select: lines, or stacked areas when the plotted
+// metric can be added up. Otherwise stacked is disabled and lines are drawn,
+// but the choice is kept for when a stackable metric is plotted again.
+function drawChart() {
+  const box = $("sb-chart-body");
+  const sel = el("select");
+  sel.id = "chart";
+  const ok = stackable(state.plot);
+  for (const [v, text] of [["line", "line"], ["stacked", "stacked area"]]) {
+    const o = el("option", "", text);
+    o.value = v;
+    if (v === "stacked" && !ok) {
+      o.disabled = true;
+      o.textContent = "stacked area (count or sum only)";
+    }
+    sel.append(o);
+  }
+  sel.value = ok ? state.chart : "line";
+  sel.addEventListener("change", () => {
+    state.chart = sel.value;
+    runQuery();
+  });
+  box.replaceChildren(sel);
+}
+
+// drawTop fills the Top select: how many groups the table shows and the graph
+// draws before the rest fold into "other".
+function drawTop() {
+  const box = $("sb-top-body");
+  const sel = el("select");
+  sel.id = "top";
+  sel.title = "groups shown, ranked by Order by; the graph draws at most " + MAX_GRAPH_TOP;
+  const list = TOPS.includes(state.top) ? TOPS : [...TOPS, state.top].sort((a, b) => a - b);
+  for (const n of list) {
+    const o = el("option", "", String(n));
+    o.value = String(n);
+    sel.append(o);
+  }
+  sel.value = String(state.top);
+  sel.addEventListener("change", () => {
+    state.top = Number(sel.value);
+    runQuery();
+  });
+  box.replaceChildren(sel);
+}
+
+// drawOrder fills the Order by control: a metric (count or an aggregate) that
+// ranks the groups, and a direction toggle. Groups with no value sort last.
+function drawOrder() {
+  const box = $("sb-order-body");
+  const row = el("div", "metric");
+  const sel = el("select", "m-field");
+  sel.setAttribute("aria-label", "order groups by");
+  for (const a of [{ op: "count" }, ...state.aggregates]) {
+    const o = el("option", "", metricLabel(a));
+    o.value = plotKey(a);
+    if (a.field) o.title = a.op + " " + a.field;
+    sel.append(o);
+  }
+  sel.value = plotKey(state.order);
+  const asc = !!(state.order && state.order.asc);
+  sel.addEventListener("change", () => {
+    const a = state.aggregates.find((x) => plotKey(x) === sel.value);
+    const o = a ? { op: a.op, field: a.field } : { op: "count" };
+    if (asc) o.asc = true;
+    state.order = o;
+    runQuery();
+  });
+  const dir = el("button", "order-dir", asc ? "↑ asc" : "↓ desc");
+  dir.type = "button";
+  dir.title = asc ? "smallest first; click for largest first" : "largest first; click for smallest first";
+  dir.setAttribute("aria-label", asc ? "ascending; switch to descending" : "descending; switch to ascending");
+  dir.addEventListener("click", () => {
+    const o = Object.assign({}, state.order);
+    if (o.asc) delete o.asc;
+    else o.asc = true;
+    state.order = o;
+    drawOrder();
+    runQuery();
+  });
+  row.append(sel, dir);
+  box.replaceChildren(row);
 }
 
 // drawBucket fills the Granularity select; "auto" shows the size it chose.

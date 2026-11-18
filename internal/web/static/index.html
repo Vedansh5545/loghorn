@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>loghorn</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/app.css">
 <script type="module" src="/static/app.js"></script>
 </head>
@@ -29,49 +29,68 @@
     <button type="button" class="tab" role="tab" data-view="table">Table</button>
     <button type="button" class="tab" role="tab" data-view="graph">Graph</button>
   </section>
-  <section id="sb-stream" class="sb">
-    <label>Stream <select id="stream"></select></label>
-  </section>
-  <section id="sb-range" class="sb">
-    <label>From
-      <select id="from">
-        <option value="this-run">this run</option>
-        <option value="15m">last 15m</option>
-        <option value="1h">last 1h</option>
-        <option value="24h">last 24h</option>
-        <option value="all">all</option>
-        <option value="custom">custom…</option>
-      </select>
-      <input id="from-custom" type="datetime-local" step="0.001" hidden>
-    </label>
-    <label>To
-      <select id="to">
-        <option value="now">now</option>
-        <option value="custom">custom…</option>
-      </select>
-      <input id="to-custom" type="datetime-local" step="0.001" hidden>
-    </label>
-  </section>
+  <div class="sb-form">
+    <div id="sb-stream" class="sb-field">
+      <label class="sb-l" for="stream">Stream</label>
+      <div class="sb-body"><select id="stream"></select></div>
+    </div>
+    <div id="sb-from" class="sb-field">
+      <label class="sb-l" for="from">From</label>
+      <div class="sb-body">
+        <select id="from">
+          <option value="this-run">this run</option>
+          <option value="15m">last 15m</option>
+          <option value="1h">last 1h</option>
+          <option value="24h">last 24h</option>
+          <option value="all">all</option>
+          <option value="custom">custom…</option>
+        </select>
+        <input id="from-custom" type="datetime-local" step="0.001" aria-label="from time" hidden>
+      </div>
+    </div>
+    <div id="sb-to" class="sb-field">
+      <label class="sb-l" for="to">To</label>
+      <div class="sb-body">
+        <select id="to">
+          <option value="now">now</option>
+          <option value="custom">custom…</option>
+        </select>
+        <input id="to-custom" type="datetime-local" step="0.001" aria-label="to time" hidden>
+      </div>
+    </div>
+    <div id="sb-group" class="sb-field" data-views="table graph">
+      <span class="sb-l" id="sb-group-label">Group by</span>
+      <div id="sb-group-body" class="sb-body" role="group" aria-labelledby="sb-group-label"></div>
+    </div>
+    <div id="sb-order" class="sb-field" data-views="table graph">
+      <span class="sb-l" id="sb-order-label">Order by</span>
+      <div id="sb-order-body" class="sb-body" role="group" aria-labelledby="sb-order-label"></div>
+    </div>
+    <div id="sb-metrics" class="sb-field" data-views="table graph">
+      <span class="sb-l" id="sb-metrics-label">Metrics</span>
+      <div id="sb-metrics-body" class="sb-body" role="group" aria-labelledby="sb-metrics-label"></div>
+    </div>
+    <div id="sb-top" class="sb-field" data-views="table graph">
+      <label class="sb-l" for="top">Top</label>
+      <div id="sb-top-body" class="sb-body"></div>
+    </div>
+    <div id="sb-plot" class="sb-field" data-views="graph">
+      <span class="sb-l" id="sb-plot-label">Plot</span>
+      <div id="sb-plot-body" class="sb-body" role="group" aria-labelledby="sb-plot-label"></div>
+    </div>
+    <div id="sb-chart" class="sb-field" data-views="graph">
+      <label class="sb-l" for="chart">Chart</label>
+      <div id="sb-chart-body" class="sb-body"></div>
+    </div>
+    <div id="sb-bucket" class="sb-field" data-views="graph">
+      <span class="sb-l" id="sb-bucket-label">Granularity</span>
+      <div id="sb-bucket-body" class="sb-body" role="group" aria-labelledby="sb-bucket-label"></div>
+    </div>
+  </div>
   <section id="sb-filters" class="sb">
     <h2>Filters</h2>
     <div id="triples" class="triples"></div>
     <datalist id="field-paths"></datalist>
-  </section>
-  <section id="sb-group" class="sb" data-views="table graph">
-    <h2>Group by</h2>
-    <div id="sb-group-body" class="sb-body"></div>
-  </section>
-  <section id="sb-metrics" class="sb" data-views="table graph">
-    <h2>Metrics</h2>
-    <div id="sb-metrics-body" class="sb-body"></div>
-  </section>
-  <section id="sb-plot" class="sb" data-views="graph">
-    <h2>Plot</h2>
-    <div id="sb-plot-body" class="sb-body"></div>
-  </section>
-  <section id="sb-bucket" class="sb" data-views="graph">
-    <h2>Granularity</h2>
-    <div id="sb-bucket-body" class="sb-body"></div>
   </section>
   <section id="sb-columns" class="sb" data-views="samples">
     <h2>Columns</h2>
