@@ -15,7 +15,7 @@ import (
 // name under .config/loghorn/schemas.
 var ErrUnsavableStream = errors.New("stream name cannot be saved")
 
-var streamRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+var streamRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 // ValidStream reports whether stream may be saved.
 func ValidStream(stream string) bool { return streamRe.MatchString(stream) }

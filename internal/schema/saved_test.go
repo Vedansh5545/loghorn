@@ -354,3 +354,24 @@ func TestSavedWrapRoundTrip(t *testing.T) {
 		t.Fatal("effective schema lost wrap")
 	}
 }
+
+func TestValidStreamAllowsDots(t *testing.T) {
+	for _, s := range []string{"auction.db", "a..b", "0x", "a-b_c"} {
+		if !ValidStream(s) {
+			t.Errorf("ValidStream(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{".hidden", "..", ".", "a/b", "UPPER", "", "-a"} {
+		if ValidStream(s) {
+			t.Errorf("ValidStream(%q) = true, want false", s)
+		}
+	}
+	dir := t.TempDir()
+	if _, err := SaveSchema(dir, Schema{Stream: "auction.db", Columns: []string{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSaved(dir, "auction.db")
+	if err != nil || got == nil || got.Stream != "auction.db" {
+		t.Fatalf("LoadSaved = %+v, %v", got, err)
+	}
+}
