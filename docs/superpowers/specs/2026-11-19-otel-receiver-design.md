@@ -40,7 +40,9 @@ as if loghorn weren't there.
 ## Non-goals
 
 - `loghorn serve`, DuckDB, Parquet — later.
-- Storing traces or metrics. They are accepted and discarded.
+- Storing metrics. They are accepted and discarded.
+- Showing spans in the web view, or joining them to log records in a query.
+  This pass only stores them (see "Spans").
 - OTLP/gRPC. HTTP only (protobuf and JSON).
 - `-otel` without a command (a standalone receiver) — that is `serve`.
 - Moving alerts into the web view (decision 37) — later.
@@ -65,6 +67,9 @@ loghorn adds to the child's environment (grandchildren inherit it):
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `http://127.0.0.1:<port>/v1/logs` | always set; overrides the app's own logs endpoint |
 | `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL` | `http/protobuf` | always set |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://127.0.0.1:<port>/v1/traces` | always set; overrides the app's own traces endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `http/protobuf` | always set |
+| `OTEL_TRACES_EXPORTER` | `otlp` | always set |
 | `OTEL_LOGS_EXPORTER` | `otlp` | always set |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://127.0.0.1:<port>` | only if unset, so traces/metrics don't fail against the default `localhost:4318` |
 | `OTEL_RESOURCE_ATTRIBUTES` | existing value + `loghorn.run.id=<id>` | run identity |
@@ -79,8 +84,11 @@ The run id is `<UTC start time, compact>-<4 random hex>`, e.g.
   JSON encoding), optionally `Content-Encoding: gzip`. Replies with an empty
   `ExportLogsServiceResponse` in the request's encoding. Bodies over 16 MB
   get 413.
-- `POST /v1/traces`, `POST /v1/metrics`: decoded enough to validate, then
-  discarded; reply success so SDKs don't log export errors.
+- `POST /v1/traces`: same encodings, limits and reply as `/v1/logs`
+  (an empty `ExportTraceServiceResponse`); every span is stored (see
+  "Spans").
+- `POST /v1/metrics`: decoded enough to validate, then discarded; replies
+  success so SDKs don't log export errors.
 - Anything else: 404. Listens on loopback only.
 - Uses the OTLP protobuf types (`go.opentelemetry.io/proto/otlp`) and
   `protojson`; no collector dependency.
@@ -120,6 +128,50 @@ the instrumentation scope name; else `otel`. auction should set
 
 Saved schemas currently accept only stream names matching `[a-z0-9_-]+`.
 Event names contain dots, so the rule widens to `[a-z0-9][a-z0-9._-]*`.
+
+### Spans
+
+Spans are stored, one JSON line per span, in their own file:
+`.loghorn/loghorn-spans.log`. They don't go into `loghorn.log` because a span
+is not a log record: it has a start and end, a parent and a status, and
+mixed into `loghorn.log` every span would show up in the web view, `-filter`
+and `-historical` as a log line.
+
+- **Rotation and retention** match `loghorn.log`: at midnight the file moves
+  to `loghorn-spans-YYYY-MM-DD.log`, and archives older than the retention
+  period are pruned. `logfile.Writer` takes the base name as a parameter
+  (`loghorn` and `loghorn-spans`). The existing name matching already
+  ignores the other writer's files: `loghorn-spans.log` and
+  `loghorn-spans-<date>.log` don't parse as `loghorn-<date>.log`, so the
+  log writer's pruning and `-historical` skip them, and the span writer
+  matches only its own prefix.
+- **Locking:** both writers live under the one `loghorn.lock` the log
+  writer already holds; the span writer takes no lock of its own. If the
+  lock is held elsewhere (running without a log file), spans aren't stored
+  either.
+- **The span file is created on the first span**, so a run with no traces
+  leaves no empty file.
+
+Each `Span`, with its `Resource` and `InstrumentationScope`, becomes:
+
+| stored key | from |
+|---|---|
+| `trace_id`, `span_id` | hex |
+| `parent_span_id` | hex; omitted for a root span |
+| `name` | span name |
+| `kind` | `internal`, `server`, `client`, `producer`, `consumer` (omitted if unspecified) |
+| `start`, `end` | `start_time_unix_nano`, `end_time_unix_nano`, RFC 3339 nano UTC |
+| `duration_ms` | `end − start` in milliseconds, as a float |
+| `status` | `ok`, `error` or omitted when unset; `status_message` when non-empty |
+| `attributes` | span attributes as an object, keys verbatim |
+| `events` | each event as `{time, name, attributes}`; exception events (`exception.type`, `exception.message`, `exception.stacktrace`) kept whole |
+| `links` | each link as `{trace_id, span_id, attributes}` |
+| `service.name`, `loghorn.run.id` | resource attributes, promoted |
+| `otel.resource` | the other resource attributes |
+| `otel.scope.name`, `otel.scope.version` | the instrumentation scope |
+
+Attribute values map to JSON as for log records. Spans are written in
+arrival order.
 
 ### The child's stdout
 
@@ -207,7 +259,7 @@ does not apply to OTLP records (they always have a time).
   severity text vs number, zero vs set trace ids, key collisions, each stream
   fallback, `event_name` field vs attribute.
 - Receiver tests through `httptest.NewServer`: protobuf, JSON, gzip, 413,
-  traces/metrics accepted, unknown path 404.
+  traces stored, metrics accepted and discarded, unknown path 404.
 - An end-to-end test runs a small child (a Go test helper using the OTEL Go
   SDK's OTLP/HTTP log exporter) under `-otel` and checks the `.loghorn/`
   lines, the run id, the stdout dedupe switch-over, and the no-OTLP warning.
@@ -230,6 +282,8 @@ does not apply to OTLP records (they always have a time).
   stdout lines (option (a)).
 - Claude chooses the stream mapping following OTEL practice.
 - Remove the TUI in this spec.
+- Store spans in a log file; metrics stay discarded. If spans need their
+  own file, name it `loghorn-spans.log`.
 
 ## Claude's calls (correct any of these)
 
@@ -240,7 +294,7 @@ does not apply to OTLP records (they always have a time).
 - Run id format and `LOGHORN_RUN_ID`.
 - JSON stdout is stored until the first OTLP record arrives, and a warning
   is printed if none ever does.
-- Traces and metrics accepted and discarded.
+- Metrics accepted and discarded.
 - HTTP only; 16 MB body limit; 500 ms idle / 3 s max drain after exit.
 - Stored key names (`trace_id`, `span_id`, `otel.resource`, `otel.scope.*`,
   `loghorn.source`).
