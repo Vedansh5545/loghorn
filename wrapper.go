@@ -17,6 +17,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/entry"
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
+	"github.com/jimbeveridge/loghorn/internal/otlp"
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 	"github.com/jimbeveridge/loghorn/internal/runner"
 	"github.com/jimbeveridge/loghorn/internal/store"
@@ -32,11 +33,34 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 	ws := startLiveWeb(o, cfg, cwd)
 	rec := liveRecorder(o, cfg, logs, ws.store())
 
+	// The receiver is bound before the child starts: a failure exits here,
+	// with nothing launched.
+	var rcv *otlp.Receiver
+	var childEnv []string
+	if o.otel {
+		ln, err := otlp.Listen()
+		if err != nil {
+			ws.close()
+			closeLog(logs)
+			fmt.Fprintln(os.Stderr, "loghorn: -otel:", err)
+			return 1
+		}
+		id := otlp.NewRunID(time.Now())
+		endpoint := "http://" + ln.Addr().String()
+		rcv = otlp.NewReceiver(rec.OTLP, nil)
+		rcv.Serve(ln)
+		fmt.Fprintf(os.Stderr, "loghorn: -otel: receiving OTLP at %s (run %s)\n", endpoint, id)
+		childEnv = otlp.ChildEnv(os.Environ(), endpoint, id)
+	}
+
 	sigs, stop := wrap.NotifySignals()
 	usePTY := term.IsTerminal(int(os.Stdout.Fd()))
-	child, err := runner.StartChild(o.args, runner.Options{PTY: usePTY})
+	child, err := runner.StartChild(o.args, runner.Options{PTY: usePTY, Env: childEnv})
 	if err != nil {
 		stop()
+		if rcv != nil {
+			rcv.Drain(0, 0)
+		}
 		ws.close()
 		closeLog(logs)
 		fmt.Fprintln(os.Stderr, "loghorn:", err)
@@ -61,9 +85,16 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		Terminal:  terminal,
 	})
 	stop()
+	if rcv != nil {
+		// Deliveries must finish before the web server and log file close.
+		rcv.Drain(500*time.Millisecond, 3*time.Second)
+	}
 	ws.close()
 	child.Close()
 	closeLog(logs)
+	if rcv != nil && !rec.SawOTLP() {
+		fmt.Fprintln(os.Stderr, "loghorn: -otel: no OTLP logs received; stdout was recorded instead")
+	}
 	return status
 }
 
@@ -126,6 +157,8 @@ func liveRecorder(o opts, cfg config.Config, logs *logfile.Writer, st *store.Sto
 		Input: cfg.Input,
 		Live:  true,
 		Alert: notifier(o),
+
+		DedupeAfterOTLP: o.otel,
 	})
 }
 

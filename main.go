@@ -67,6 +67,10 @@ through the gh CLI, so gh must be installed and logged in; with a bare ID the
 repository is the one the current directory's git remote points at. Replay
 flags refuse a command or piped stdin, so from cron or CI pass </dev/null.
 
+-otel (with a command) also starts an OTLP/HTTP receiver on 127.0.0.1 and
+points the command's OpenTelemetry SDK at it through OTEL_* environment
+variables; the records it receives are stored with the command's output.
+
 -web serves a query view on 127.0.0.1 (loopback only; -web-port picks the
 port, default a free one) and prints its URL to stderr. It lists the streams
 of structured records, with typed filters, a time range, search and sort,
@@ -108,6 +112,7 @@ type opts struct {
 	ghJob        string
 	config       bool
 	web          bool
+	otel         bool
 	webPort      int
 	args         []string
 }
@@ -125,6 +130,7 @@ func parseFlags() opts {
 	flag.StringVar(&o.ghRun, "gh-run", "", "replay the first failed job of a GitHub Actions run, by run ID or run URL (needs gh, and -web or -filter)")
 	flag.StringVar(&o.ghJob, "gh-job", "", "replay a GitHub Actions job's log, by job ID or job URL (needs gh, and -web or -filter)")
 	flag.BoolVar(&o.config, "config", false, "print the config file in effect and the settings it resolves to, then exit")
+	flag.BoolVar(&o.otel, "otel", false, "receive the command's OTLP/HTTP logs on 127.0.0.1 and record them (needs -- <command>)")
 	flag.BoolVar(&o.web, "web", false, "serve the web query view on 127.0.0.1 and print its URL to stderr")
 	flag.IntVar(&o.webPort, "web-port", 0, "port for -web (0 picks a free one)")
 	flag.Usage = usage
@@ -146,7 +152,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "loghorn: use only one of -historical, -gh-job and -gh-run")
 		os.Exit(2)
 	}
-	m := mode{kind: detectInput(o.args, os.Stdin, o.historical, o.ghJob, o.ghRun), web: o.web, filter: o.filter}
+	m := mode{kind: detectInput(o.args, os.Stdin, o.historical, o.ghJob, o.ghRun), web: o.web, filter: o.filter, otel: o.otel}
 	// -config reads nothing, so it is exempt from the input check.
 	if !o.config {
 		if err := m.check(); err != nil {

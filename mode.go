@@ -43,6 +43,23 @@ func (k inputKind) String() string {
 	return fmt.Sprintf("inputKind(%d)", int(k))
 }
 
+// describe names the input in an error about a flag that can't go with it.
+func (k inputKind) describe() string {
+	switch k {
+	case kindPipe:
+		return "piped input"
+	case kindFile:
+		return "a file on stdin"
+	case kindHistorical:
+		return "-historical"
+	case kindGHJob:
+		return "-gh-job"
+	case kindGHRun:
+		return "-gh-run"
+	}
+	return k.String()
+}
+
 // mode is the input plus the output flags that decide what a run does.
 type mode struct {
 	kind              inputKind
@@ -53,6 +70,15 @@ type mode struct {
 // log file, so without -web or -filter it would read its input for nothing.
 func (m mode) check() error {
 	shown := m.web || m.filter
+	if m.otel {
+		switch m.kind {
+		case kindCommand:
+		case kindNone:
+			return errors.New("-otel needs a command after --")
+		default:
+			return fmt.Errorf("-otel needs a command after --; it can't be used with %s", m.kind.describe())
+		}
+	}
 	switch m.kind {
 	case kindNone:
 		if !m.web {

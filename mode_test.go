@@ -147,3 +147,28 @@ func TestDescribeJobs(t *testing.T) {
 		t.Errorf("describeJobs (none failed) =\n%s\nwant\n%s", b.String(), want)
 	}
 }
+
+func TestModeCheckOtel(t *testing.T) {
+	for _, tc := range []struct {
+		m    mode
+		want string
+	}{
+		{mode{kind: kindNone, otel: true}, "-otel needs a command after --"},
+		{mode{kind: kindNone, otel: true, web: true}, "-otel needs a command after --"},
+		{mode{kind: kindPipe, otel: true}, "-otel needs a command after --; it can't be used with piped input"},
+		{mode{kind: kindFile, otel: true, web: true}, "-otel needs a command after --; it can't be used with a file on stdin"},
+		{mode{kind: kindHistorical, otel: true, web: true}, "-otel needs a command after --; it can't be used with -historical"},
+		{mode{kind: kindGHJob, otel: true, web: true}, "-otel needs a command after --; it can't be used with -gh-job"},
+		{mode{kind: kindGHRun, otel: true, web: true}, "-otel needs a command after --; it can't be used with -gh-run"},
+		{mode{kind: kindCommand, otel: true}, ""},
+		{mode{kind: kindCommand, otel: true, web: true, filter: true}, ""},
+	} {
+		got := ""
+		if err := tc.m.check(); err != nil {
+			got = err.Error()
+		}
+		if got != tc.want {
+			t.Errorf("%+v.check() = %q, want %q", tc.m, got, tc.want)
+		}
+	}
+}

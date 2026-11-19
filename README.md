@@ -76,6 +76,31 @@ loghorn -web -- npm run dev
 loghorn -web
 ```
 
+**Receiving OTEL logs (`-otel`)** — for a command that exports OpenTelemetry logs,
+`-otel` starts an OTLP/HTTP receiver on `127.0.0.1` (a free port) and points the
+command at it:
+
+```sh
+loghorn -otel -- node server.js
+```
+
+loghorn sets `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (`http://127.0.0.1:<port>/v1/logs`),
+`OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf`, `OTEL_LOGS_EXPORTER=otlp`,
+`OTEL_EXPORTER_OTLP_ENDPOINT` (only when you hadn't set it), `OTEL_RESOURCE_ATTRIBUTES`
+(yours plus `loghorn.run.id=<id>`) and `LOGHORN_RUN_ID` for the command, and prints the
+endpoint and run id to stderr. Received records are appended to `.loghorn/loghorn.log`
+as JSON lines (and shown in `-web`, and counted by `-notify`); they are not printed by
+`-filter`, which shows the command's own output. Each record's stream is its
+`event.name`, else its instrumentation scope name, else `otel`, so `-web` lists it
+under that name. The body, attributes, `service.name`, `trace_id`, `span_id` and the
+run id are stored as fields, and `loghorn.source` is `otlp`.
+
+Once the first OTLP record arrives, the command's stdout lines that are JSON objects
+are no longer stored, since they are most likely the same events logged twice; other
+lines are still stored, and everything is still printed. If the command sends no OTLP
+logs at all, loghorn says `-otel: no OTLP logs received; stdout was recorded instead`
+on exit. `-otel` needs a command after `--`; it combines with `-web` and `-filter`.
+
 **Replays** read a finished log. They never write the log file, so they need `-web`
 or `-filter` to show anything:
 
@@ -228,6 +253,7 @@ Nothing is written under your home directory.
 | `-historical` | off | replay the stored files (needs `-web` or `-filter`) |
 | `-gh-job` | | replay a GitHub Actions job's log, by job ID or URL (needs `-web` or `-filter`) |
 | `-gh-run` | | replay the first failed job of a GitHub Actions run, by run ID or URL (needs `-web` or `-filter`) |
+| `--otel` | off | receive the command's OTLP/HTTP logs on 127.0.0.1 and record them (needs `-- <command>`) |
 | `-web` | off | serve the web query view on 127.0.0.1 and print its URL to stderr |
 | `-web-port` | `0` | port for `-web` (0 picks a free one) |
 | `-config` | off | print the config file in effect, then exit |

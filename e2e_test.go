@@ -30,6 +30,10 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// The test binary doubles as a helper child for the -otel tests.
+	if h := os.Getenv("LOGHORN_TEST_HELPER"); h != "" {
+		os.Exit(runHelper(h))
+	}
 	code := m.Run()
 	if buildDir != "" {
 		os.RemoveAll(buildDir)
