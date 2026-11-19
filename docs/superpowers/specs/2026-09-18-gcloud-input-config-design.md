@@ -30,9 +30,9 @@ renders with severity DEFAULT, no HTTP status, and a compact-JSON dump for its m
 because no field matches. Severity colouring, importance filtering and error alerting are
 all dead on real gcloud output.
 
-Reference samples (outside this repo, 2026-09-18): `../auction/x` is a Ctrl-C'd
+Reference samples (outside this repo, 2026-09-18): `../app/x` is a Ctrl-C'd
 `gcloud beta logging tail --json` (2,820 lines, no closing `]`, final object truncated);
-`../auction/y` is `--format=yaml` (4,690 lines, 110 records). Their top-level key sets are
+`../app/y` is `--format=yaml` (4,690 lines, 110 records). Their top-level key sets are
 identical, so one normalization serves both.
 
 ## Goals
@@ -341,7 +341,7 @@ out-of-ladder value; string severity unchanged; correlation id from `span_id`; a
 → `Writer.Write` → re-read through `Records` as one equivalent record, which is the
 regression this section exists to prevent.
 
-Fixtures: trimmed excerpts of `../auction/x` and `../auction/y` committed under `testdata/`
+Fixtures: trimmed excerpts of `../app/x` and `../app/y` committed under `testdata/`
 — a handful of records each, including `x`'s truncated tail — so the real shapes are covered
 without carrying 7,500 lines.
 

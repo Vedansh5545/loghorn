@@ -45,7 +45,7 @@ LLM's interface to it.
 - **People [user]:** use the web explorer. Its speed matters (see the 1.1×
   bar below).
 - **Scale [user]:** the only reason to "scale" is very large local logs. One
-  auction integration-test run produces ~0.5–1 GB of logs.
+  integration-test run of the app under test produces ~0.5–1 GB of logs.
 
 ## Decisions
 
@@ -89,7 +89,7 @@ LLM's interface to it.
      recommended matching the exporter schema so loghorn could sit on top of
      ClickStack/SigNoz; that argument no longer applies — see superseded.)
    - **[user] DuckDB is the only engine; there is no separate scaling
-     mode.** Spike 2 showed one embedded DuckDB handles auction-scale data
+     mode.** Spike 2 showed one embedded DuckDB handles data at the scale of the app under test
      (1–17 ms for browser and investigation queries on a ~1 GB, two-run
      dataset) and spike 3 showed the hot + Parquet layout keeps that. Costs
      accepted: ~+58 MB binary, cgo builds per platform. The SQL dialect is
@@ -116,7 +116,7 @@ LLM's interface to it.
    config sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>`, so
    apps report to loghorn however they were started (by an LLM, a person, a
    test harness). Exporters already tolerate the receiver being down; loghorn
-   should report gaps (e.g. "nothing from `auction-backend` in the last run").
+   should report gaps (e.g. "nothing from `app-backend` in the last run").
 9. **`loghorn -- <cmd>` becomes a transparent wrapper [proposed]** for apps
    that only write to stdout (e.g. pino): stdout/stderr pass through
    unchanged, exit code kept, output captured on the side. An LLM sees normal
@@ -136,7 +136,7 @@ LLM's interface to it.
       the wrapper could target any OTLP endpoint.
 
    Needed changes and decisions:
-   - **`service.name`:** a flag (`-service auction-backend`), a field in the
+   - **`service.name`:** a flag (`-service app-backend`), a field in the
      line (pino `name`, Cloud Logging `serviceContext`), or repo name +
      command as a fallback. Run id: open question 4.
    - **Runner:** today it uses a pty (merges stdout/stderr; the child thinks
@@ -302,7 +302,7 @@ LLM's interface to it.
     practice; user delegated]. Spec:
     `2026-11-19-otel-receiver-design.md`, which also removes the TUI
     [user] and makes `loghorn -- <cmd>` a transparent wrapper. Motivation:
-    auction is adding OTEL now.
+    the app under test is adding OTEL now.
 
 ### SQL interface (CLI, for LLMs)
 
@@ -352,7 +352,7 @@ LLM's interface to it.
 33. **Browser latency bar [user]:** originally ≤ ~1.1× of today's native
     engine (2× too slow). With native retired (decision 35) the bar becomes
     absolute; spike 3 measured < 30 ms for the browser views over 7 days of
-    auction-scale data [proposed target: keep them under ~50 ms].
+    data at the scale of the app under test [proposed target: keep them under ~50 ms].
 34. **One converter in Go [proposed]:** `Query` ↔ SQL. Display settings SQL
     can't carry go in a trailing `-- loghorn: view=graph chart=stacked
     bucket=auto` comment. Converting SQL → `Query` accepts the shapes the
@@ -363,7 +363,7 @@ LLM's interface to it.
 35. **Browser queries run through DuckDB; `query.Run` is retired [user].**
     The browser's `Query` is converted to SQL and executed by DuckDB via
     `serve`: one set of semantics for people and LLMs. Native was both slower
-    at auction scale (table 716 ms, graph 520 ms vs DuckDB 5 ms) and held
+    at the app's scale (table 716 ms, graph 520 ms vs DuckDB 5 ms) and held
     ~3 GB of RAM per run. `?q=` URLs and favorites keep working because
     `Query` remains the browser's model.
 36a. **Full-text search speed is acceptable [user]:** ~100–300 ms over 1–7
@@ -380,7 +380,7 @@ LLM's interface to it.
     connected `serve` sends a native notification via the existing `beeep`
     code (`internal/alert`) with the URL in the text. Each alert goes out
     once. Alerts become saved queries plus a condition ("count > 0 in the
-    latest `auction-backend` run"), evaluated by `serve` as data arrives.
+    latest `app-backend` run"), evaluated by `serve` as data arrives.
 
 ### Fate of other existing features
 
@@ -396,7 +396,7 @@ LLM's interface to it.
   bucket counts in one form).
 - **Pure-Go-only engines [superseded]:** cgo is now allowed.
 - **SQLite as the engine, and an easy/scaling split with ClickHouse or chDB
-  [rejected]:** SQLite missed the browser bar at auction scale (table 1.27×,
+  [rejected]:** SQLite missed the browser bar at the app's scale (table 1.27×,
   graph 2.2× native); ClickHouse/chDB were as fast as DuckDB but need a
   180–360 MB runtime and awkward ingest. DuckDB alone covers the workload.
 - **The native engine `query.Run` [superseded]:** retired in favour of
@@ -440,7 +440,7 @@ commit b9d73a8. Synthetic HTTP-style records from two services; Apple M5 Pro.
   with indexes). +5.2 MB binary; needs `go 1.26`.
 - The 0.9 s excluded parsing log files; parse cost was unmeasured.
 
-### Spike 2 — storage engines on real auction logs (done)
+### Spike 2 — storage engines on real app logs (done)
 
 Branch `worktree-agent-a19de797595a4473b` (worktree
 `.claude/worktrees/agent-a19de797595a4473b`), package
@@ -449,9 +449,9 @@ Branch `worktree-agent-a19de797595a4473b` (worktree
 binary, libchdb.so) and the 14 GB of test databases are in this session's
 scratch directory and will not survive a cleanup.
 
-**Data.** `/private/tmp/claude-501/-Users-jim-code-auction/6b20bfe9-1699-45e6-934d-e548210499a1/scratchpad/`
+**Data.** `(a local scratch directory outside the repo)`
 (read-only, outside the repo; never pipe it into `loghorn`):
-`integration-full-info.log` (564 MB, 773k lines, one full auction
+`integration-full-info.log` (564 MB, 773k lines, one full
 integration run at info level) and `integration-full.log` (235 KB, same run
 at default level). Locally written lines are flat pino JSON with the
 stream in `logging.googleapis.com/labels.schema`; in Cloud Logging the same
@@ -516,7 +516,7 @@ commit 93129e9. Rerun: `sh internal/enginespike/multiday.sh <scratch> &&
 sh internal/enginespike/multiday.sh <scratch> clean` (~8 GB peak, ~4 min).
 All generated data was deleted.
 
-The auction run replayed as 7 days (772,654 rows/day, 5.4M total). A = all
+The app's run replayed as 7 days (772,654 rows/day, 5.4M total). A = all
 7 days in one DuckDB file; B = today hot in DuckDB + 6 days of Parquet via
 per-stream `UNION ALL BY NAME` views; Bday = B plus an automatic `day`
 predicate; C = Parquet only. p50 ms of 7 warm runs (page cache warm; true

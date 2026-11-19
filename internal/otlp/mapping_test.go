@@ -237,7 +237,7 @@ func TestStreamFallbacks(t *testing.T) {
 		scope *commonpb.InstrumentationScope
 		want  string
 	}{
-		{&logspb.LogRecord{EventName: "auction.db", Attributes: []*commonpb.KeyValue{ev}}, nil, "auction.db"},
+		{&logspb.LogRecord{EventName: "app.db", Attributes: []*commonpb.KeyValue{ev}}, nil, "app.db"},
 		{&logspb.LogRecord{Attributes: []*commonpb.KeyValue{ev}}, lib, "x"},
 		{&logspb.LogRecord{}, lib, "lib"},
 		{&logspb.LogRecord{}, nil, "otel"},
@@ -253,7 +253,7 @@ func TestStreamFallbacks(t *testing.T) {
 func TestMappedLineNormalizes(t *testing.T) {
 	ts := uint64(1763584812123456789)
 	lr := &logspb.LogRecord{
-		EventName: "auction.db", SeverityNumber: 17, TimeUnixNano: ts, Body: sv("boom"),
+		EventName: "app.db", SeverityNumber: 17, TimeUnixNano: ts, Body: sv("boom"),
 		Attributes: []*commonpb.KeyValue{kv("http.response.status_code", iv(503))},
 	}
 	lines := MapLogs(req([]*commonpb.KeyValue{kv("service.name", sv("api"))}, nil, lr), now)
@@ -262,7 +262,7 @@ func TestMappedLineNormalizes(t *testing.T) {
 	if !ok {
 		t.Fatalf("not normalized: %s", lines[0])
 	}
-	if r.Stream != "auction.db" {
+	if r.Stream != "app.db" {
 		t.Errorf("stream %q", r.Stream)
 	}
 	if r.Fields["service.name"] != "api" {

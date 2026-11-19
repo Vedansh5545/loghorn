@@ -722,7 +722,7 @@ func TestNestedObjectsGroupAsOneRecord(t *testing.T) {
   {
     "resource": {
       "labels": {
-        "service_name": "taa-backend"
+        "service_name": "app-backend"
       },
       "type": "cloud_run_revision"
     },
@@ -2081,11 +2081,11 @@ Create `testdata/gcloud-tail.json` — the shape `gcloud beta logging tail --jso
       "user_agent": "Mozilla/5.0 (Macintosh) {not-a-brace} [nor-this]"
     },
     "insert_id": "6aad671100091ffaa983635f",
-    "log_name": "projects/anvil-pulse-7451/logs/run.googleapis.com%2Frequests",
+    "log_name": "projects/example-project-123456/logs/run.googleapis.com%2Frequests",
     "receive_timestamp": "2026-09-18T16:30:09.936810442Z",
     "resource": {
       "labels": {
-        "service_name": "taa-backend"
+        "service_name": "app-backend"
       },
       "type": "cloud_run_revision"
     },
@@ -2125,7 +2125,7 @@ insert_id: 6aad6aa4000aa039f4a1a513
 json_payload:
   message: 'Database: QUERY returned 1 row'
   requestId: f17c46797e7721ce34df0c5a65fdac5d
-log_name: projects/anvil-pulse-7451/logs/run.googleapis.com%2Fstdout
+log_name: projects/example-project-123456/logs/run.googleapis.com%2Fstdout
 receive_timestamp: '2026-09-18T16:45:24.986702005Z'
 severity: 200
 span_id: ''
@@ -2259,8 +2259,8 @@ Expected: PASS. If the record counts differ, fix the *fixture* to match the shap
 These files live outside the repo and may not exist on every machine; skip this step if they're absent.
 
 ```bash
-go build -o /tmp/loghorn . && /tmp/loghorn --filter < ../auction/x | head -20
-/tmp/loghorn --filter < ../auction/y | head -20
+go build -o /tmp/loghorn . && /tmp/loghorn --filter < ../app/x | head -20
+/tmp/loghorn --filter < ../app/y | head -20
 ```
 
 Expected: whole records, not line fragments, and only error-severity ones. Confirm no fragment like a bare `"latency": "0.003s",` appears on its own.

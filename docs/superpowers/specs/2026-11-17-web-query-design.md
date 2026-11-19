@@ -16,10 +16,10 @@ aggregation (group-by, count, avg, percentiles) shown as tables or graphs, so
 the query model and engine are designed for that now even though the UI does
 not expose it yet.
 
-The data source is the auction backend's structured logs. Its log lines carry
+The data source is the structured logs of the app under test. Its log lines carry
 a `labels.schema` stream label (`api`, `auth`, `db`, `email`, `external`,
-`server`, `worker` — see auction `backend/src/http/logger.ts`), and each stream
-has its own payload shape. loghorn must stay generic: nothing about auction's
+`server`, `worker` — see the app's logger), and each stream
+has its own payload shape. loghorn must stay generic: nothing about the app's
 streams or fields is hard-coded.
 
 ## Goals
@@ -71,7 +71,7 @@ streams or fields is hard-coded.
   field that is in the data but not in the saved schema still shows, marked
   "new". A value that doesn't parse as the schema's type shows raw, marked,
   and is excluded from numeric comparisons rather than coerced to 0.
-- **Coupling loghorn to auction.** No auction stream or field names in Go code.
+- **Coupling loghorn to one app.** No app-specific stream or field names in Go code.
 - **Exposing logs to the network.** The logs contain user data.
 - **Changing what the TUI does.** `-web` is purely additive.
 
@@ -80,7 +80,7 @@ streams or fields is hard-coded.
 - Go, single binary, no cgo. The UI is static HTML/CSS/JS embedded with
   `go:embed`; no Node toolchain or frontend build step in this repo.
 - Listen on `127.0.0.1` only.
-- Data volumes are small: auction writes a few MB per day and `.loghorn/`
+- Data volumes are small: the app writes a few MB per day and `.loghorn/`
   keeps 4 days. A linear scan per query is acceptable; target < 200 ms for
   50k records.
 - `.loghorn/` stays gitignored and holds only log data. Schemas and favorites
@@ -119,8 +119,8 @@ time (`Received`) and the canonical record (below).
   (`2026-11-17T18:06:33.1234567Z {"severity":…}`), and nothing in loghorn
   strips it today, so the app's JSON would not be recognised as JSON. The web
   view's ingest strips that prefix (and uses it as the effective time when
-  the line has no timestamp of its own). Verified 2026-11-17 on auction run
-  44131823601: every line carries the prefix (7 fractional digits, e.g.
+  the line has no timestamp of its own). Verified 2026-11-17 on a real CI run:
+  every line carries the prefix (7 fractional digits, e.g.
   `2026-11-17T17:00:30.3832868Z {"severity":"INFO",…}`), the `integration`
   and `concurrency` jobs carry 200–290 labelled lines each (`db`, `auth`,
   `server`, `external`, `worker`), and the `web` job carries none. Whether the
@@ -184,7 +184,7 @@ value kinds and picks a type:
 - `int`, `float`, `bool`, `string`, `json` from the JSON value kinds (an int
   field that ever has a fraction becomes `float`).
 - `duration` when every non-empty string value matches a Go-style duration
-  like `0.003s` or `12ms` (auction's `latency`). Durations compare as
+  like `0.003s` or `12ms` (the app's `latency`). Durations compare as
   seconds.
 - `timestamp` when every non-empty value is an RFC 3339 string. `timestamp`
   and `receiveTimestamp` are always `timestamp`.

@@ -132,7 +132,7 @@ func TestNestedObjectsGroupAsOneRecord(t *testing.T) {
   {
     "resource": {
       "labels": {
-        "service_name": "taa-backend"
+        "service_name": "app-backend"
       },
       "type": "cloud_run_revision"
     },

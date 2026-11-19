@@ -356,7 +356,7 @@ func TestSavedWrapRoundTrip(t *testing.T) {
 }
 
 func TestValidStreamAllowsDots(t *testing.T) {
-	for _, s := range []string{"auction.db", "a..b", "0x", "a-b_c"} {
+	for _, s := range []string{"app.db", "a..b", "0x", "a-b_c"} {
 		if !ValidStream(s) {
 			t.Errorf("ValidStream(%q) = false, want true", s)
 		}
@@ -367,11 +367,11 @@ func TestValidStreamAllowsDots(t *testing.T) {
 		}
 	}
 	dir := t.TempDir()
-	if _, err := SaveSchema(dir, Schema{Stream: "auction.db", Columns: []string{"a"}}); err != nil {
+	if _, err := SaveSchema(dir, Schema{Stream: "app.db", Columns: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSaved(dir, "auction.db")
-	if err != nil || got == nil || got.Stream != "auction.db" {
+	got, err := LoadSaved(dir, "app.db")
+	if err != nil || got == nil || got.Stream != "app.db" {
 		t.Fatalf("LoadSaved = %+v, %v", got, err)
 	}
 }

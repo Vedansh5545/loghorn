@@ -99,15 +99,15 @@ Expected: `go.mod` lists both as direct requirements once Step 3 imports them.
   - `TestTraceIDs`: all-zero 16-byte trace id and empty span id → neither key; set ids → lowercase hex of 32 and 16 chars.
   - `TestResourceAndScope`: resource `{service.name: "api", loghorn.run.id: "R", host.name: "h"}`, scope `{name: "lib", version: "1.2"}` → `service.name == "api"`, `loghorn.run.id == "R"`, `otel.resource == {"host.name": "h"}`, `otel.scope.name == "lib"`, `otel.scope.version == "1.2"`; resource with only `service.name` → no `otel.resource` key.
   - `TestCollisions`: attribute `severity: "a"`, attribute `otel.resource: "b"`, attribute `labels.schema: "c"`, and an attribute `user` colliding with body-map `user` → `otel.attributes.severity`, `otel.attributes.otel.resource`, `otel.attributes.labels.schema`, `otel.attributes.user`; promoted values intact.
-  - `TestStreamFallbacks`: `event_name: "auction.db"` beats attribute `event.name: "x"` → `auction.db`; attribute only → `x`; scope `lib` only → `lib`; nothing → `otel`; empty `event_name` falls through to the attribute.
-  - `TestMappedLineNormalizes`: map a record (event name `auction.db`, severity number 17, attribute `http.response.status_code` int 503, resource `service.name: api`), then `e := adapter.ParseLine(line)`, `r, ok := record.Normalize(e, config.Default().Input)` → `ok`, `r.Stream == "auction.db"`, `r.Fields["service.name"] == "api"`, `r.Fields["http.response.status_code"] == json.Number("503")`, `r.Fields["severity"] == "ERROR"`, `r.Time` equals the record time, and `engine.IsImportant(e)`.
+  - `TestStreamFallbacks`: `event_name: "app.db"` beats attribute `event.name: "x"` → `app.db`; attribute only → `x`; scope `lib` only → `lib`; nothing → `otel`; empty `event_name` falls through to the attribute.
+  - `TestMappedLineNormalizes`: map a record (event name `app.db`, severity number 17, attribute `http.response.status_code` int 503, resource `service.name: api`), then `e := adapter.ParseLine(line)`, `r, ok := record.Normalize(e, config.Default().Input)` → `ok`, `r.Stream == "app.db"`, `r.Fields["service.name"] == "api"`, `r.Fields["http.response.status_code"] == json.Number("503")`, `r.Fields["severity"] == "ERROR"`, `r.Time` equals the record time, and `engine.IsImportant(e)`.
   - `TestMapLogsOrder`: two resources × two scopes × two records → 8 lines in request order.
-  - In `internal/schema/saved_test.go`, `TestValidStreamAllowsDots`: true for `auction.db`, `a..b`, `0x`, `a-b_c`; false for `.hidden`, `..`, `.`, `a/b`, `UPPER`, `""`, `-a`. Plus a `SaveSchema`/`LoadSaved` round trip for stream `auction.db` in a temp dir.
+  - In `internal/schema/saved_test.go`, `TestValidStreamAllowsDots`: true for `app.db`, `a..b`, `0x`, `a-b_c`; false for `.hidden`, `..`, `.`, `a/b`, `UPPER`, `""`, `-a`. Plus a `SaveSchema`/`LoadSaved` round trip for stream `app.db` in a temp dir.
 
 - [ ] **Step 3: Run to verify they fail**
 
 Run: `go test ./internal/otlp/ ./internal/schema/`
-Expected: FAIL (package `otlp` has no non-test files / `ValidStream("auction.db")` false).
+Expected: FAIL (package `otlp` has no non-test files / `ValidStream("app.db")` false).
 
 - [ ] **Step 4: Implement** `MapLogs` and `Stream` in `internal/otlp/mapping.go` (build a `map[string]any` per record and `json.Marshal` it; keys come out sorted, which is fine), and change `streamRe` in `internal/schema/saved.go` to `^[a-z0-9][a-z0-9._-]*$`.
 

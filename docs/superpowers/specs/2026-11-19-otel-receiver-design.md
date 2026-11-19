@@ -12,7 +12,7 @@ into a transparent wrapper.
 
 ## Intent
 
-auction is adding OTEL logging now. To test it locally, a developer (or an
+The app under test is adding OTEL logging now. To test it locally, a developer (or an
 LLM) runs
 
 ```
@@ -123,8 +123,8 @@ collides with a promoted key is kept under `otel.attributes.<key>`.
 **Stream.** OTEL has no `labels.schema`. Following OTEL conventions, the
 stream is, in order: the record's `event_name` field or `event.name`
 attribute (OTEL's name for a type of event with a defined structure); else
-the instrumentation scope name; else `otel`. auction should set
-`event.name` per payload shape (e.g. `auction.db`).
+the instrumentation scope name; else `otel`. The app should set
+`event.name` per payload shape (e.g. `app.db`).
 
 Saved schemas currently accept only stream names matching `[a-z0-9_-]+`.
 Event names contain dots, so the rule widens to `[a-z0-9][a-z0-9._-]*`.

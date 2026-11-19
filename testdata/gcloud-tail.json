@@ -6,11 +6,11 @@
       "user_agent": "Mozilla/5.0 (Macintosh) {not-a-brace} [nor-this]"
     },
     "insert_id": "6aad671100091ffaa983635f",
-    "log_name": "projects/anvil-pulse-7451/logs/run.googleapis.com%2Frequests",
+    "log_name": "projects/example-project-123456/logs/run.googleapis.com%2Frequests",
     "receive_timestamp": "2026-09-18T16:30:09.936810442Z",
     "resource": {
       "labels": {
-        "service_name": "taa-backend"
+        "service_name": "app-backend"
       },
       "type": "cloud_run_revision"
     },
