@@ -291,6 +291,19 @@ LLM's interface to it.
       router and a connection config — not a restructuring of `serve`. The
       Parquet archive is engine-neutral (ClickHouse reads Parquet).
 
+41. **Interim `-otel` on the subprocess path [user].** Before `serve`
+    exists, `loghorn -otel -- <cmd>` binds an OTLP/HTTP receiver, sets the
+    child's OTEL environment (logs endpoint, protocol, and
+    `loghorn.run.id` in `OTEL_RESOURCE_ATTRIBUTES`), runs the child on the
+    pty as today, and stores OTLP log records as JSON lines in `.loghorn/`
+    [user: keep `.loghorn/` for the first pass]. JSON stdout lines aren't
+    stored once OTLP records arrive; non-JSON stdout still is [user]. Stream
+    = `event.name` → instrumentation scope → `otel` [Claude's call, per OTEL
+    practice; user delegated]. Spec:
+    `2026-11-19-otel-receiver-design.md`, which also removes the TUI
+    [user] and makes `loghorn -- <cmd>` a transparent wrapper. Motivation:
+    auction is adding OTEL now.
+
 ### SQL interface (CLI, for LLMs)
 
 22. **The CLI is the LLM's main surface [user].** People copy the browser URL
