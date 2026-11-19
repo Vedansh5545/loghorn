@@ -58,8 +58,9 @@ gcloud beta logging tail --json | loghorn
 ```
 
 **Show only the failures** — `-filter` prints just the failing records to stdout,
-byte-for-byte as they arrived, instead of everything. It works with every input; with
-a command the exit status is still the command's:
+one per line, instead of everything. From a command or a pipe they are printed as
+recorded, with escape sequences removed; from a replay, as they were stored. It works
+with every input; with a command the exit status is still the command's:
 
 ```sh
 loghorn -filter -- go test ./...
