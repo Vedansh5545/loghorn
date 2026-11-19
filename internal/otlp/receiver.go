@@ -33,11 +33,12 @@ const (
 // Listen binds the loopback address the receiver serves on.
 func Listen() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 
-// Receiver is an OTLP/HTTP endpoint. Only logs are kept; traces and metrics
-// are validated and discarded.
+// Receiver is an OTLP/HTTP endpoint. Logs and traces are kept, each mapped to
+// lines for its own callback; metrics are validated and discarded.
 type Receiver struct {
-	deliver func(line []byte)
-	now     func() time.Time
+	logs  func(line []byte)
+	spans func(line []byte) // nil: traces are decoded and discarded
+	now   func() time.Time
 
 	// dmu orders delivery against Drain: handlers hold the read side while
 	// they deliver, Drain takes the write side to close, so no delivery can
@@ -52,13 +53,14 @@ type Receiver struct {
 	srv *http.Server
 }
 
-// NewReceiver returns a receiver that passes every mapped log line to
-// deliver before it answers the request. now == nil means time.Now.
-func NewReceiver(deliver func(line []byte), now func() time.Time) *Receiver {
+// NewReceiver returns a receiver that passes every mapped log line to logs and
+// every mapped span line to spans before it answers the request. spans == nil
+// means traces are decoded and discarded. now == nil means time.Now.
+func NewReceiver(logs, spans func(line []byte), now func() time.Time) *Receiver {
 	if now == nil {
 		now = time.Now
 	}
-	return &Receiver{deliver: deliver, now: now}
+	return &Receiver{logs: logs, spans: spans, now: now}
 }
 
 // Serve starts serving on ln in a goroutine.
@@ -72,12 +74,13 @@ func (r *Receiver) Serve(ln net.Listener) {
 
 // Drain blocks until no request has been in flight or started for idle
 // (measured from the call or the last request's end, whichever is later), or
-// max has passed since the call. It then closes the receiver, so deliver is
-// never called again, and shuts the server down.
+// max has passed since the call. It then closes the receiver, so neither the
+// logs nor the spans callback is called again once Drain returns, and shuts the
+// server down.
 //
-// Call Drain before closing whatever deliver writes to (the log writer): a
-// batch the SDK flushes as the child exits would otherwise arrive after the
-// writer is closed and be lost.
+// Call Drain before closing whatever the callbacks write to (the log writer,
+// whose Close also closes the span writer): a batch the SDK flushes as the
+// child exits would otherwise arrive after the writers are closed and be lost.
 func (r *Receiver) Drain(idle, max time.Duration) {
 	start := time.Now()
 	r.mu.Lock()
@@ -198,7 +201,7 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	isJSON := ct == ctJSON
 	var resp proto.Message
-	var lines [][]byte
+	var lines, spanLines [][]byte
 	switch req.URL.Path {
 	case "/v1/logs":
 		var lr collogspb.ExportLogsServiceRequest
@@ -209,9 +212,13 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		lines = MapLogs(&lr, r.now())
 		resp = &collogspb.ExportLogsServiceResponse{}
 	case "/v1/traces":
-		if err := validate(body, isJSON, &coltracepb.ExportTraceServiceRequest{}); err != nil {
+		var tr coltracepb.ExportTraceServiceRequest
+		if err := unmarshal(body, isJSON, &tr, fixSpanHexIDs); err != nil {
 			http.Error(w, "malformed request", http.StatusBadRequest)
 			return
+		}
+		if r.spans != nil {
+			spanLines = MapSpans(&tr)
 		}
 		resp = &coltracepb.ExportTraceServiceResponse{}
 	default:
@@ -229,7 +236,10 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	for _, l := range lines {
-		r.deliver(l)
+		r.logs(l)
+	}
+	for _, l := range spanLines {
+		r.spans(l)
 	}
 	r.dmu.RUnlock()
 
@@ -291,35 +301,57 @@ func validate(body []byte, isJSON bool, m proto.Message) error {
 	return proto.Unmarshal(body, m)
 }
 
-// fixHexIDs rewrites the hex traceId/spanId of every log record to base64,
-// which is what protojson expects for a bytes field. OTLP/JSON specifies hex;
-// protojson would otherwise decode a 32-char hex string as base64 without
-// error and produce a wrong id.
-func fixHexIDs(doc map[string]any) {
-	each := func(v any, f func(map[string]any)) {
-		arr, _ := v.([]any)
-		for _, e := range arr {
-			if m, ok := e.(map[string]any); ok {
-				f(m)
-			}
+// The OTLP/JSON id rewrites below turn the hex the spec uses into the base64
+// protojson expects for a bytes field; protojson would otherwise decode a
+// 32-char hex string as base64 without error and produce a wrong id.
+
+// eachObject calls f for every object in the JSON array v.
+func eachObject(v any, f func(map[string]any)) {
+	arr, _ := v.([]any)
+	for _, e := range arr {
+		if m, ok := e.(map[string]any); ok {
+			f(m)
 		}
 	}
-	each(doc["resourceLogs"], func(rl map[string]any) {
-		each(rl["scopeLogs"], func(sl map[string]any) {
-			each(sl["logRecords"], func(lr map[string]any) {
-				for _, k := range []string{"traceId", "spanId"} {
-					want := 32
-					if k == "spanId" {
-						want = 16
-					}
-					s, ok := lr[k].(string)
-					if !ok || len(s) != want {
-						continue
-					}
-					if b, err := hex.DecodeString(s); err == nil {
-						lr[k] = base64.StdEncoding.EncodeToString(b)
-					}
-				}
+}
+
+// hexToBase64 rewrites m[key] from hex to base64 when it is a hex string of
+// exactly want characters, and leaves it alone otherwise.
+func hexToBase64(m map[string]any, key string, want int) {
+	s, ok := m[key].(string)
+	if !ok || len(s) != want {
+		return
+	}
+	if b, err := hex.DecodeString(s); err == nil {
+		m[key] = base64.StdEncoding.EncodeToString(b)
+	}
+}
+
+// fixHexIDs rewrites the traceId/spanId of every log record.
+func fixHexIDs(doc map[string]any) {
+	eachObject(doc["resourceLogs"], func(rl map[string]any) {
+		eachObject(rl["scopeLogs"], func(sl map[string]any) {
+			eachObject(sl["logRecords"], func(lr map[string]any) {
+				hexToBase64(lr, "traceId", 32)
+				hexToBase64(lr, "spanId", 16)
+			})
+		})
+	})
+}
+
+// fixSpanHexIDs rewrites every span's traceId, spanId and parentSpanId, and
+// each of its links' traceId and spanId.
+func fixSpanHexIDs(doc map[string]any) {
+	eachObject(doc["resourceSpans"], func(rs map[string]any) {
+		eachObject(rs["scopeSpans"], func(ss map[string]any) {
+			eachObject(ss["spans"], func(sp map[string]any) {
+				hexToBase64(sp, "traceId", 32)
+				hexToBase64(sp, "spanId", 16)
+				hexToBase64(sp, "parentSpanId", 16)
+				eachObject(sp["links"], func(ln map[string]any) {
+					hexToBase64(ln, "traceId", 32)
+					hexToBase64(ln, "spanId", 16)
+				})
 			})
 		})
 	})

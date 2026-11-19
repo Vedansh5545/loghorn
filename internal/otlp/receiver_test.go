@@ -18,6 +18,7 @@ import (
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -47,12 +48,14 @@ func twoRecords() *collogspb.ExportLogsServiceRequest {
 		&logspb.LogRecord{TimeUnixNano: 2, Body: sv("b")})
 }
 
-func newServer(t *testing.T) (*httptest.Server, *sink) {
+// newServer serves a receiver whose log lines go to the first sink and span
+// lines to the second.
+func newServer(t *testing.T) (*httptest.Server, *sink, *sink) {
 	t.Helper()
-	s := &sink{}
-	srv := httptest.NewServer(NewReceiver(s.collect, fixedNow))
+	s, spans := &sink{}, &sink{}
+	srv := httptest.NewServer(NewReceiver(s.collect, spans.collect, fixedNow))
 	t.Cleanup(srv.Close)
-	return srv, s
+	return srv, s, spans
 }
 
 func post(t *testing.T, url, ct string, body []byte, hdr map[string]string) (*http.Response, []byte) {
@@ -99,7 +102,7 @@ func gz(t *testing.T, b []byte) []byte {
 }
 
 func TestProtobufLogs(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	resp, body := post(t, srv.URL+"/v1/logs", ctProto, mustProto(t, twoRecords()), nil)
 	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctProto {
 		t.Fatalf("status %d ct %q", resp.StatusCode, resp.Header.Get("Content-Type"))
@@ -116,7 +119,7 @@ func TestProtobufLogs(t *testing.T) {
 }
 
 func TestJSONLogs(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	rq := twoRecords()
 	rq.ResourceLogs[0].ScopeLogs[0].LogRecords[0].TraceId = mustHex(t, "5b8efff798038103d269b633813fc60c")
 	b, err := protojson.Marshal(rq)
@@ -147,7 +150,7 @@ func mustHex(t *testing.T, h string) []byte {
 }
 
 func TestJSONHexTraceID(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	body := `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"1","traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","body":{"stringValue":"x"}}]}]}]}`
 	resp, _ := post(t, srv.URL+"/v1/logs", ctJSON, []byte(body), nil)
 	if resp.StatusCode != 200 || s.count() != 1 {
@@ -160,7 +163,7 @@ func TestJSONHexTraceID(t *testing.T) {
 }
 
 func TestGzip(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	resp, _ := post(t, srv.URL+"/v1/logs", ctProto, gz(t, mustProto(t, twoRecords())), map[string]string{"Content-Encoding": "gzip"})
 	if resp.StatusCode != 200 || s.count() != 2 {
 		t.Fatalf("status %d delivered %d", resp.StatusCode, s.count())
@@ -168,7 +171,7 @@ func TestGzip(t *testing.T) {
 }
 
 func TestTooLargeIs413(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	resp, _ := post(t, srv.URL+"/v1/logs", ctProto, make([]byte, MaxBody+1), nil)
 	if resp.StatusCode != 413 || s.count() != 0 {
 		t.Fatalf("status %d delivered %d", resp.StatusCode, s.count())
@@ -176,67 +179,165 @@ func TestTooLargeIs413(t *testing.T) {
 }
 
 func TestGzipBombIs413(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	resp, _ := post(t, srv.URL+"/v1/logs", ctProto, gz(t, make([]byte, MaxBody+1)), map[string]string{"Content-Encoding": "gzip"})
 	if resp.StatusCode != 413 || s.count() != 0 {
 		t.Fatalf("status %d delivered %d", resp.StatusCode, s.count())
 	}
 }
 
-func TestTracesAndMetricsAccepted(t *testing.T) {
-	srv, s := newServer(t)
-	resp, body := post(t, srv.URL+"/v1/traces", ctProto, mustProto(t, &coltracepb.ExportTraceServiceRequest{}), nil)
-	if resp.StatusCode != 200 || proto.Unmarshal(body, &coltracepb.ExportTraceServiceResponse{}) != nil {
-		t.Fatalf("traces: %d", resp.StatusCode)
+func oneSpanReq(name string) *coltracepb.ExportTraceServiceRequest {
+	return &coltracepb.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{
+		ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{
+			TraceId: mustHexB("5b8efff798038103d269b633813fc60c"), SpanId: mustHexB("eee19b7ec3c1b174"), Name: name,
+		}}}},
+	}}}
+}
+
+func mustHexB(h string) []byte {
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		panic(err)
 	}
-	resp, body = post(t, srv.URL+"/v1/metrics", ctProto, mustProto(t, &colmetricspb.ExportMetricsServiceRequest{}), nil)
+	return b
+}
+
+func TestTracesStored(t *testing.T) {
+	srv, logs, spans := newServer(t)
+	jsonBody, err := protojson.Marshal(oneSpanReq("json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		ct   string
+		body []byte
+		hdr  map[string]string
+	}{
+		{"proto", ctProto, mustProto(t, oneSpanReq("proto")), nil},
+		{"json", ctJSON, jsonBody, nil},
+		{"gzip", ctProto, gz(t, mustProto(t, oneSpanReq("gzip"))), map[string]string{"Content-Encoding": "gzip"}},
+	}
+	for i, c := range cases {
+		resp, body := post(t, srv.URL+"/v1/traces", c.ct, c.body, c.hdr)
+		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != c.ct {
+			t.Fatalf("%s: status %d ct %q", c.name, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		var out coltracepb.ExportTraceServiceResponse
+		if c.ct == ctJSON {
+			err = protojson.Unmarshal(body, &out)
+		} else {
+			err = proto.Unmarshal(body, &out)
+		}
+		if err != nil {
+			t.Errorf("%s: reply %q: %v", c.name, body, err)
+		}
+		if spans.count() != i+1 {
+			t.Fatalf("%s: span sink has %d lines, want %d", c.name, spans.count(), i+1)
+		}
+		if got := decode(t, spans.lines[i])["name"]; got != c.name {
+			t.Errorf("%s: stored name %v", c.name, got)
+		}
+	}
+	if logs.count() != 0 {
+		t.Fatalf("log sink got %d lines", logs.count())
+	}
+}
+
+func TestMetricsDiscarded(t *testing.T) {
+	srv, logs, spans := newServer(t)
+	resp, body := post(t, srv.URL+"/v1/metrics", ctProto, mustProto(t, &colmetricspb.ExportMetricsServiceRequest{}), nil)
 	if resp.StatusCode != 200 || proto.Unmarshal(body, &colmetricspb.ExportMetricsServiceResponse{}) != nil {
 		t.Fatalf("metrics: %d", resp.StatusCode)
 	}
-	for _, p := range []string{"/v1/traces", "/v1/metrics"} {
-		resp, _ := post(t, srv.URL+p, ctJSON, []byte(`{}`), nil)
-		if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctJSON {
-			t.Fatalf("%s json: %d", p, resp.StatusCode)
-		}
+	resp, _ = post(t, srv.URL+"/v1/metrics", ctJSON, []byte(`{}`), nil)
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != ctJSON {
+		t.Fatalf("metrics json: %d", resp.StatusCode)
 	}
-	if s.count() != 0 {
-		t.Fatalf("delivered %d", s.count())
+	if logs.count() != 0 || spans.count() != 0 {
+		t.Fatalf("delivered %d logs, %d spans", logs.count(), spans.count())
+	}
+}
+
+func TestJSONHexSpanIDs(t *testing.T) {
+	srv, _, spans := newServer(t)
+	body := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"5b8efff798038103d269b633813fc60c","spanId":"eee19b7ec3c1b174","parentSpanId":"0102030405060708","name":"s",` +
+		`"links":[{"traceId":"0f0e0d0c0b0a09080706050403020100","spanId":"a1a2a3a4a5a6a7a8"}]}]}]}]}`
+	resp, _ := post(t, srv.URL+"/v1/traces", ctJSON, []byte(body), nil)
+	if resp.StatusCode != 200 || spans.count() != 1 {
+		t.Fatalf("status %d delivered %d", resp.StatusCode, spans.count())
+	}
+	m := decode(t, spans.lines[0])
+	if m["trace_id"] != "5b8efff798038103d269b633813fc60c" || m["span_id"] != "eee19b7ec3c1b174" || m["parent_span_id"] != "0102030405060708" {
+		t.Errorf("ids = %v / %v / %v", m["trace_id"], m["span_id"], m["parent_span_id"])
+	}
+	links, _ := m["links"].([]any)
+	if len(links) != 1 {
+		t.Fatalf("links = %v", m["links"])
+	}
+	l := links[0].(map[string]any)
+	if l["trace_id"] != "0f0e0d0c0b0a09080706050403020100" || l["span_id"] != "a1a2a3a4a5a6a7a8" {
+		t.Errorf("link ids = %v / %v", l["trace_id"], l["span_id"])
+	}
+}
+
+func TestTracesNilSinkDiscards(t *testing.T) {
+	logs := &sink{}
+	srv := httptest.NewServer(NewReceiver(logs.collect, nil, fixedNow))
+	t.Cleanup(srv.Close)
+	resp, _ := post(t, srv.URL+"/v1/traces", ctProto, mustProto(t, oneSpanReq("x")), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	resp, _ = post(t, srv.URL+"/v1/traces", ctJSON, []byte(`{"resourceSpans": 5}`), nil)
+	if resp.StatusCode != 400 {
+		t.Errorf("malformed traces with nil sink: status %d, want 400", resp.StatusCode)
+	}
+	if logs.count() != 0 {
+		t.Fatalf("log sink got %d", logs.count())
+	}
+}
+
+func TestTracesTooLargeIs413(t *testing.T) {
+	srv, logs, spans := newServer(t)
+	resp, _ := post(t, srv.URL+"/v1/traces", ctProto, make([]byte, MaxBody+1), nil)
+	if resp.StatusCode != 413 || logs.count() != 0 || spans.count() != 0 {
+		t.Fatalf("status %d delivered %d/%d", resp.StatusCode, logs.count(), spans.count())
 	}
 }
 
 func TestBadBodies(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, spans := newServer(t)
 	cases := []struct {
 		name string
+		path string
 		ct   string
 		body string
 		hdr  map[string]string
 		want int
 	}{
-		{"garbage protobuf", ctProto, "\xff\xff\xff\xff\xff", nil, 400},
-		{"invalid json", ctJSON, "{nope", nil, 400},
-		{"text/plain", "text/plain", "hi", nil, 415},
-		{"brotli", ctProto, "", map[string]string{"Content-Encoding": "br"}, 415},
-		{"bad gzip", ctProto, "not gzip", map[string]string{"Content-Encoding": "gzip"}, 400},
-		{"bad trace json", ctJSON, "{nope", nil, 400},
+		{"garbage protobuf", "/v1/logs", ctProto, "\xff\xff\xff\xff\xff", nil, 400},
+		{"invalid json", "/v1/logs", ctJSON, "{nope", nil, 400},
+		{"text/plain", "/v1/logs", "text/plain", "hi", nil, 415},
+		{"brotli", "/v1/logs", ctProto, "", map[string]string{"Content-Encoding": "br"}, 415},
+		{"bad gzip", "/v1/logs", ctProto, "not gzip", map[string]string{"Content-Encoding": "gzip"}, 400},
+		{"bad trace json", "/v1/traces", ctJSON, "{nope", nil, 400},
+		{"trace json of the wrong shape", "/v1/traces", ctJSON, `{"resourceSpans": 5}`, nil, 400},
+		{"garbage trace protobuf", "/v1/traces", ctProto, "\xff\xff\xff\xff\xff", nil, 400},
 	}
 	for _, c := range cases {
-		path := "/v1/logs"
-		if c.name == "bad trace json" {
-			path = "/v1/traces"
-		}
-		resp, _ := post(t, srv.URL+path, c.ct, []byte(c.body), c.hdr)
+		resp, _ := post(t, srv.URL+c.path, c.ct, []byte(c.body), c.hdr)
 		if resp.StatusCode != c.want {
 			t.Errorf("%s: status %d, want %d", c.name, resp.StatusCode, c.want)
 		}
 	}
-	if s.count() != 0 {
-		t.Fatalf("delivered %d", s.count())
+	if s.count() != 0 || spans.count() != 0 {
+		t.Fatalf("delivered %d logs, %d spans", s.count(), spans.count())
 	}
 }
 
 func TestRoutes(t *testing.T) {
-	srv, _ := newServer(t)
+	srv, _, _ := newServer(t)
 	resp, err := http.Get(srv.URL + "/v1/logs")
 	if err != nil {
 		t.Fatal(err)
@@ -260,7 +361,7 @@ func TestRoutes(t *testing.T) {
 }
 
 func TestForeignHostAndOriginRefused(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	port := srv.Listener.Addr().String()[strings.LastIndex(srv.Listener.Addr().String(), ":")+1:]
 	b := mustProto(t, twoRecords())
 	resp, _ := post(t, srv.URL+"/v1/logs", ctProto, b, map[string]string{"Host": "evil.example:" + port})
@@ -280,21 +381,24 @@ func TestForeignHostAndOriginRefused(t *testing.T) {
 	}
 }
 
-func startReal(t *testing.T) (*Receiver, *sink, string) {
+// startReal serves a receiver on a real listener and returns its log sink,
+// span sink and base URL (http://127.0.0.1:<port>).
+func startReal(t *testing.T) (*Receiver, *sink, *sink, string) {
 	t.Helper()
 	ln, err := Listen()
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &sink{}
-	r := NewReceiver(s.collect, fixedNow)
+	s, spans := &sink{}, &sink{}
+	r := NewReceiver(s.collect, spans.collect, fixedNow)
 	r.Serve(ln)
 	t.Cleanup(func() { r.Drain(0, 100*time.Millisecond) })
-	return r, s, "http://" + ln.Addr().String() + "/v1/logs"
+	return r, s, spans, "http://" + ln.Addr().String()
 }
 
 func TestDrainIdle(t *testing.T) {
-	r, s, url := startReal(t)
+	r, s, _, base := startReal(t)
+	url := base + "/v1/logs"
 	start := time.Now()
 	r.Drain(200*time.Millisecond, 3*time.Second)
 	if d := time.Since(start); d < 200*time.Millisecond || d > 600*time.Millisecond {
@@ -314,10 +418,12 @@ func TestDrainIdle(t *testing.T) {
 }
 
 func TestDrainWaitsForTraffic(t *testing.T) {
-	r, s, url := startReal(t)
+	r, s, spans, base := startReal(t)
+	url := base + "/v1/logs"
 	b := mustProto(t, twoRecords())
+	tb := mustProto(t, oneSpanReq("late"))
 	began := time.Now()
-	var ok atomic.Int64
+	var ok, spanOK atomic.Int64
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -331,6 +437,14 @@ func TestDrainWaitsForTraffic(t *testing.T) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
+		// A span batch flushed as the child exits, inside the drain window.
+		resp, err := http.Post(base+"/v1/traces", ctProto, bytes.NewReader(tb))
+		if err == nil {
+			if resp.StatusCode == 200 {
+				spanOK.Add(1)
+			}
+			resp.Body.Close()
+		}
 	}()
 	time.Sleep(25 * time.Millisecond)
 	r.Drain(200*time.Millisecond, 3*time.Second)
@@ -341,10 +455,30 @@ func TestDrainWaitsForTraffic(t *testing.T) {
 	if got := s.count(); int64(got) != 2*ok.Load() {
 		t.Fatalf("delivered %d lines for %d OK posts", got, ok.Load())
 	}
+	if spanOK.Load() != 1 || spans.count() != 1 {
+		t.Fatalf("span post OK %d, span lines %d; want the drain-window span delivered", spanOK.Load(), spans.count())
+	}
+}
+
+func TestNoSpanDeliveryAfterDrain(t *testing.T) {
+	r, logs, spans, _ := startReal(t)
+	r.Drain(0, 100*time.Millisecond)
+	// Drain shut the real listener; serve the same, closed receiver again to
+	// reach its closed path.
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+	resp, _ := post(t, srv.URL+"/v1/traces", ctProto, mustProto(t, oneSpanReq("after")), nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status %d, want 503", resp.StatusCode)
+	}
+	if spans.count() != 0 || logs.count() != 0 {
+		t.Fatalf("delivered %d spans, %d logs after Drain", spans.count(), logs.count())
+	}
 }
 
 func TestDrainMax(t *testing.T) {
-	r, _, url := startReal(t)
+	r, _, _, base := startReal(t)
+	url := base + "/v1/logs"
 	b := mustProto(t, twoRecords())
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -373,7 +507,7 @@ func TestDrainMax(t *testing.T) {
 }
 
 func TestConcurrentPosts(t *testing.T) {
-	srv, s := newServer(t)
+	srv, s, _ := newServer(t)
 	b := mustProto(t, twoRecords())
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {

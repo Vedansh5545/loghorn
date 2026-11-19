@@ -68,6 +68,56 @@ func TestRecordSinkCallsOnFailOnce(t *testing.T) {
 	}
 }
 
+func TestSpanSinkWithNoWriterIsNil(t *testing.T) {
+	if openSpanLog(nil) != nil {
+		t.Fatal("openSpanLog(nil) != nil")
+	}
+	if spanSink(nil, func(error) {}) != nil {
+		t.Fatal("spanSink(nil) must be nil so the receiver discards traces")
+	}
+}
+
+// The span writer is a companion of the log: each line lands in
+// loghorn.traces.jsonl, never in loghorn.log, and a span-file failure reports
+// once (a directory squats on the archive name the midnight rollover needs).
+func TestSpanSinkWritesCompanionAndFailsOnce(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	clock := &fakeClock{t: time.Date(2026, 9, 14, 22, 0, 0, 0, loc)}
+	logs, err := logfile.Open(dir, clock.Now, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { logs.Close() })
+	spans := openSpanLog(logs)
+	if spans == nil {
+		t.Fatal("openSpanLog returned nil")
+	}
+	var failures int
+	sink := spanSink(spans, func(error) { failures++ })
+	sink([]byte(`{"name":"a"}`))
+	b, err := os.ReadFile(filepath.Join(dir, logfile.SpansBase+logfile.SpansSuffix))
+	if err != nil || string(b) != "{\"name\":\"a\"}\n" {
+		t.Fatalf("span file = %q, %v", b, err)
+	}
+	if lb, _ := os.ReadFile(filepath.Join(dir, "loghorn.log")); strings.Contains(string(lb), "name") {
+		t.Fatalf("loghorn.log holds the span: %q", lb)
+	}
+
+	if err := os.Mkdir(filepath.Join(dir, "loghorn-2026-09-14"+logfile.SpansSuffix), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clock.t = time.Date(2026, 9, 15, 1, 0, 0, 0, loc)
+	sink([]byte(`{"name":"b"}`))
+	sink([]byte(`{"name":"c"}`))
+	if failures != 1 {
+		t.Fatalf("onFail called %d times, want 1", failures)
+	}
+}
+
 // recordSink must compact a record on its way to the log file: the file holds
 // one record per line, and -historical replay depends on it. Asserted here
 // because nothing else did — removing the CompactRecord call from recordSink

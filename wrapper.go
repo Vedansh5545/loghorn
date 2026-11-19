@@ -47,7 +47,13 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		}
 		id := otlp.NewRunID(time.Now())
 		endpoint := "http://" + ln.Addr().String()
-		rcv = otlp.NewReceiver(rec.OTLP, nil)
+		// The span writer lives under the log writer's lock, and closeLog
+		// (after rcv.Drain) closes it. Without a log file, traces are
+		// accepted and discarded.
+		spans := openSpanLog(logs)
+		rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, func(err error) {
+			fmt.Fprintln(os.Stderr, "loghorn: span file stopped:", err)
+		}), nil)
 		rcv.Serve(ln)
 		fmt.Fprintf(os.Stderr, "loghorn: -otel: receiving OTLP at %s (run %s)\n", endpoint, id)
 		childEnv = otlp.ChildEnv(os.Environ(), endpoint, id)
@@ -129,6 +135,37 @@ func openRecordingLog(o opts) *logfile.Writer {
 		fmt.Fprintf(os.Stderr, "loghorn: %v; running without a log file\n", locked)
 	}
 	return logs
+}
+
+// openSpanLog opens the span file as a companion of the project log, under its
+// lock. Without a log file there is none; a failure is reported and the run
+// goes on without one.
+func openSpanLog(logs *logfile.Writer) *logfile.Writer {
+	if logs == nil {
+		return nil
+	}
+	w, err := logs.Companion(logfile.SpansBase, logfile.SpansSuffix)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn: span file:", err)
+		return nil
+	}
+	return w
+}
+
+// spanSink returns the receiver's span callback: each line (already compact
+// JSON) is appended to w. A nil writer gives a nil callback, so the receiver
+// discards traces. onFail runs at most once, for the writer's first failure;
+// the writer ignores spans after it.
+func spanSink(w *logfile.Writer, onFail func(error)) func(line []byte) {
+	if w == nil {
+		return nil
+	}
+	var once sync.Once
+	return func(line []byte) {
+		if err := w.Write(line); err != nil {
+			once.Do(func() { onFail(err) })
+		}
+	}
 }
 
 func closeLog(w *logfile.Writer) {

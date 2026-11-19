@@ -40,6 +40,9 @@ func TestChildEnvFresh(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://127.0.0.1:4000/v1/logs",
 		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf",
 		"OTEL_LOGS_EXPORTER=otlp",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4000/v1/traces",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf",
+		"OTEL_TRACES_EXPORTER=otlp",
 		"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4000",
 		"OTEL_RESOURCE_ATTRIBUTES=loghorn.run.id=R",
 		"LOGHORN_RUN_ID=R",
@@ -72,5 +75,31 @@ func TestChildEnvLeavesGenericEndpoint(t *testing.T) {
 	m = envMap(t, ChildEnv([]string{"OTEL_EXPORTER_OTLP_ENDPOINT="}, "http://127.0.0.1:1", "R"))
 	if got := m["OTEL_EXPORTER_OTLP_ENDPOINT"]; got != "http://127.0.0.1:1" {
 		t.Errorf("empty generic endpoint = %q, want replaced", got)
+	}
+}
+
+func TestChildEnvTraces(t *testing.T) {
+	in := []string{
+		"PATH=/bin",
+		"OTEL_TRACES_EXPORTER=none",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector:4318/v1/traces",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc",
+	}
+	got := ChildEnv(in, "http://127.0.0.1:9", "R")
+	m := envMap(t, got)
+	for k, want := range map[string]string{
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:9/v1/traces",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+		"OTEL_TRACES_EXPORTER":               "otlp",
+	} {
+		if m[k] != want {
+			t.Errorf("%s = %q, want %q", k, m[k], want)
+		}
+	}
+	// Replaced in place: the pre-existing keys keep their positions.
+	for i, k := range []string{"PATH", "OTEL_TRACES_EXPORTER", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"} {
+		if !strings.HasPrefix(got[i], k+"=") {
+			t.Errorf("got[%d] = %q, want key %s", i, got[i], k)
+		}
 	}
 }

@@ -76,9 +76,9 @@ loghorn -web -- npm run dev
 loghorn -web
 ```
 
-**Receiving OTEL logs (`-otel`)** — for a command that exports OpenTelemetry logs,
-`-otel` starts an OTLP/HTTP receiver on `127.0.0.1` (a free port) and points the
-command at it:
+**Receiving OTEL logs and traces (`-otel`)** — for a command that exports
+OpenTelemetry logs or traces, `-otel` starts an OTLP/HTTP receiver on `127.0.0.1`
+(a free port) and points the command at it:
 
 ```sh
 loghorn -otel -- node server.js
@@ -86,6 +86,8 @@ loghorn -otel -- node server.js
 
 loghorn sets `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (`http://127.0.0.1:<port>/v1/logs`),
 `OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf`, `OTEL_LOGS_EXPORTER=otlp`,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (`http://127.0.0.1:<port>/v1/traces`),
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`, `OTEL_TRACES_EXPORTER=otlp`,
 `OTEL_EXPORTER_OTLP_ENDPOINT` (only when you hadn't set it), `OTEL_RESOURCE_ATTRIBUTES`
 (yours plus `loghorn.run.id=<id>`) and `LOGHORN_RUN_ID` for the command, and prints the
 endpoint and run id to stderr. Received records are appended to `.loghorn/loghorn.log`
@@ -94,6 +96,15 @@ as JSON lines (and shown in `-web`, and counted by `-notify`); they are not prin
 `event.name`, else its instrumentation scope name, else `otel`, so `-web` lists it
 under that name. The body, attributes, `service.name`, `trace_id`, `span_id` and the
 run id are stored as fields, and `loghorn.source` is `otlp`.
+
+Spans the command exports are stored one JSON object per line in
+`.loghorn/loghorn.traces.jsonl`, kept and rotated like `loghorn.log` (archived as
+`loghorn-<date>.traces.jsonl`); the file appears with the first span.
+Each line has `trace_id`, `span_id`, `parent_span_id`, `name`, `kind`, `start`, `end`,
+`duration_ms`, `status`, `status_message`, `attributes`, `events`, `links`,
+`service.name`, `loghorn.run.id`, `otel.resource` and the instrumentation scope (empty
+fields are left out). Spans are not part of `loghorn.log`, `-web`, `-filter` or
+`-notify`, and they don't count as OTLP logs below.
 
 Once the first OTLP record arrives, the command's stdout lines that are JSON objects
 are no longer stored, since they are most likely the same events logged twice; other
@@ -253,7 +264,7 @@ Nothing is written under your home directory.
 | `-historical` | off | replay the stored files (needs `-web` or `-filter`) |
 | `-gh-job` | | replay a GitHub Actions job's log, by job ID or URL (needs `-web` or `-filter`) |
 | `-gh-run` | | replay the first failed job of a GitHub Actions run, by run ID or URL (needs `-web` or `-filter`) |
-| `--otel` | off | receive the command's OTLP/HTTP logs on 127.0.0.1 and record them (needs `-- <command>`) |
+| `--otel` | off | receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs `-- <command>`) |
 | `-web` | off | serve the web query view on 127.0.0.1 and print its URL to stderr |
 | `-web-port` | `0` | port for `-web` (0 picks a free one) |
 | `-config` | off | print the config file in effect, then exit |

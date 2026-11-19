@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -14,6 +17,11 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // runHelper is the body of a child the -otel tests run: the test binary itself
@@ -60,9 +68,48 @@ func otelChild() int {
 	provider.Logger("e2e").Emit(ctx, r)
 	_ = provider.ForceFlush(ctx)
 	_ = provider.Shutdown(ctx)
+	if err := postSpan(); err != nil {
+		fmt.Fprintln(os.Stderr, "traces:", err)
+		return 97
+	}
 	fmt.Println(`{"severity":"INFO","message":"after","labels":{"schema":"app"}}`)
 	fmt.Println("plain after")
 	return 3
+}
+
+// postSpan sends one span to the traces endpoint loghorn set, as protobuf.
+// The repo has no OTEL trace SDK exporter, so the request is built by hand.
+func postSpan() error {
+	str := func(k, v string) *commonpb.KeyValue {
+		return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
+	}
+	start := time.Now()
+	req := &coltracepb.ExportTraceServiceRequest{ResourceSpans: []*tracepb.ResourceSpans{{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			str("service.name", "e2e"), str("loghorn.run.id", os.Getenv("LOGHORN_RUN_ID")),
+		}},
+		ScopeSpans: []*tracepb.ScopeSpans{{Spans: []*tracepb.Span{{
+			TraceId:           []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			SpanId:            []byte{1, 2, 3, 4, 5, 6, 7, 8},
+			Name:              "e2e.span",
+			Kind:              tracepb.Span_SPAN_KIND_SERVER,
+			StartTimeUnixNano: uint64(start.UnixNano()),
+			EndTimeUnixNano:   uint64(start.Add(time.Millisecond).UnixNano()),
+		}}}},
+	}}}
+	b, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), "application/x-protobuf", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // helperEnv makes the loghorn binary run name as its child (the environment
@@ -134,6 +181,29 @@ func TestOtelEndToEnd(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, rec[k], want)
 		}
 	}
+
+	if strings.Contains(logText, "e2e.span") {
+		t.Errorf("loghorn.log holds the span:\n%s", logText)
+	}
+	spanText, err := os.ReadFile(filepath.Join(dir, ".loghorn", "loghorn.traces.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spanLines := strings.Split(strings.TrimSuffix(string(spanText), "\n"), "\n")
+	if len(spanLines) != 1 {
+		t.Fatalf("want 1 span line, got %d:\n%s", len(spanLines), spanText)
+	}
+	var span map[string]any
+	if err := json.Unmarshal([]byte(spanLines[0]), &span); err != nil {
+		t.Fatalf("span line: %v", err)
+	}
+	for k, want := range map[string]any{
+		"name": "e2e.span", "kind": "server", "service.name": "e2e", "loghorn.run.id": id,
+	} {
+		if span[k] != want {
+			t.Errorf("span %s = %v, want %v", k, span[k], want)
+		}
+	}
 }
 
 func TestOtelNoLogsWarns(t *testing.T) {
@@ -149,14 +219,17 @@ func TestOtelNoLogsWarns(t *testing.T) {
 	if !strings.Contains(readLog(t, dir), "lonely") {
 		t.Errorf("log lacks the stdout record")
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".loghorn", "loghorn.traces.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("span file exists without any span: %v", err)
+	}
 }
 
 func TestOtelChildEnvironment(t *testing.T) {
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "team=x")
 	dir := t.TempDir()
 	res := runLoghorn(t, dir, nil, "-otel", "--", "sh", "-c",
-		`echo "$OTEL_EXPORTER_OTLP_LOGS_ENDPOINT|$OTEL_LOGS_EXPORTER|$LOGHORN_RUN_ID|$OTEL_RESOURCE_ATTRIBUTES"`)
-	m := regexp.MustCompile(`^http://127\.0\.0\.1:\d+/v1/logs\|otlp\|(\S+)\|team=x,loghorn\.run\.id=(\S+)\n$`).FindStringSubmatch(res.stdout)
+		`echo "$OTEL_EXPORTER_OTLP_LOGS_ENDPOINT|$OTEL_LOGS_EXPORTER|$LOGHORN_RUN_ID|$OTEL_RESOURCE_ATTRIBUTES|$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT|$OTEL_EXPORTER_OTLP_TRACES_PROTOCOL|$OTEL_TRACES_EXPORTER"`)
+	m := regexp.MustCompile(`^http://127\.0\.0\.1:\d+/v1/logs\|otlp\|(\S+)\|team=x,loghorn\.run\.id=([^|\s]+)\|http://127\.0\.0\.1:\d+/v1/traces\|http/protobuf\|otlp\n$`).FindStringSubmatch(res.stdout)
 	if m == nil || m[1] != m[2] || !runIDRe.MatchString(m[1]) {
 		t.Errorf("child environment: %q", res.stdout)
 	}
