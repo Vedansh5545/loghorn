@@ -42,6 +42,13 @@ after launch leaves it running.
   patch when it runs, because the previous save's reload replaces
   `schemaData` (see `saveFieldFormat`).
 
+## Go modules
+
+After `go get` of a module with generated protobuf code (e.g.
+`go.opentelemetry.io/proto/otlp`), run `go mod tidy`: `go get` alone leaves
+go.sum without the entries for its transitive grpc/grpc-gateway imports, and
+the build fails on a clean checkout.
+
 ## Config lookups that walk up the tree
 
 A helper that searches upward for a repo's `.config/loghorn/` must stop at the

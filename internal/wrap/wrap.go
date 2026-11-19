@@ -208,6 +208,9 @@ func (e eofReader) Read(p []byte) (int, error) {
 // stripANSI removes 7-bit escape sequences (CSI, OSC, DCS/SOS/PM/APC strings
 // and two-byte escapes) and keeps every other byte, including invalid UTF-8,
 // unchanged. An unterminated sequence is dropped to the end of rec.
+//
+// Not charmbracelet's ansi.Strip: it also drops invalid UTF-8 bytes, and the
+// recorded line must keep every non-escape byte the child wrote.
 func stripANSI(rec []byte) []byte {
 	i := bytes.IndexByte(rec, 0x1b)
 	if i < 0 {

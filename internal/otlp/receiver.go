@@ -74,6 +74,10 @@ func (r *Receiver) Serve(ln net.Listener) {
 // (measured from the call or the last request's end, whichever is later), or
 // max has passed since the call. It then closes the receiver, so deliver is
 // never called again, and shuts the server down.
+//
+// Call Drain before closing whatever deliver writes to (the log writer): a
+// batch the SDK flushes as the child exits would otherwise arrive after the
+// writer is closed and be lost.
 func (r *Receiver) Drain(idle, max time.Duration) {
 	start := time.Now()
 	r.mu.Lock()

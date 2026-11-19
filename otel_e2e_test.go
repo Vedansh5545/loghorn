@@ -49,6 +49,8 @@ func otelChild() int {
 		return 98
 	}
 	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
+	// In otel/log v1.47 a Record takes attribute.Value/attribute.KeyValue
+	// (attribute.StringValue, attribute.String/Int), not log.StringValue.
 	var r otellog.Record
 	r.SetTimestamp(time.Now())
 	r.SetBody(attribute.StringValue("hello otel"))
