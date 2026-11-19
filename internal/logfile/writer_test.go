@@ -269,3 +269,24 @@ func TestCloseReleasesLockAndIsIdempotent(t *testing.T) {
 	}
 	openAt(t, dir, at(2026, 9, 15, 10, 0))
 }
+
+func TestLogPruneSparesSpanFiles(t *testing.T) {
+	dir := t.TempDir()
+	putFile(t, filepath.Join(dir, "loghorn-2026-09-10.log"), "x", at(2026, 9, 10, 12, 0))
+	putFile(t, filepath.Join(dir, "loghorn-2026-09-10.traces.jsonl"), "x", at(2026, 9, 10, 12, 0))
+	putFile(t, filepath.Join(dir, "loghorn.traces.jsonl"), "keep\n", at(2026, 9, 15, 9, 0))
+	putFile(t, filepath.Join(dir, "loghorn-notadate.traces.jsonl"), "x", at(2026, 9, 10, 12, 0))
+	openAt(t, dir, at(2026, 9, 15, 12, 0))
+
+	if exists(filepath.Join(dir, "loghorn-2026-09-10.log")) {
+		t.Errorf("old log archive should be pruned")
+	}
+	for _, n := range []string{"loghorn-2026-09-10.traces.jsonl", "loghorn-notadate.traces.jsonl", "loghorn.traces.jsonl"} {
+		if !exists(filepath.Join(dir, n)) {
+			t.Errorf("%s should still exist", n)
+		}
+	}
+	if got := readFile(t, filepath.Join(dir, "loghorn.traces.jsonl")); got != "keep\n" {
+		t.Errorf("loghorn.traces.jsonl changed: %q", got)
+	}
+}

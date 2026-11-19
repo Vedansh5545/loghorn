@@ -1,6 +1,8 @@
 // Package logfile echoes every record loghorn receives to disk. loghorn.log holds
 // the current local day, each finished day is archived as loghorn-YYYY-MM-DD.log,
-// and archives before the last three days are deleted.
+// and archives before the last three days are deleted. A Writer can hand out a
+// companion for another file name (loghorn.traces.jsonl), which rotates and prunes
+// the same way but only touches its own files and shares the log writer's lock.
 //
 // Expiry works on whole files because a log can only be appended to: dropping
 // lines from the front would mean rewriting it. A day's file becomes deletable
@@ -21,10 +23,14 @@ import (
 )
 
 const (
-	currentName   = "loghorn.log"
-	archivePrefix = "loghorn-"
-	archiveSuffix = ".log"
-	dateLayout    = "2006-01-02"
+	// A writer's files are <base><suffix> and <base>-YYYY-MM-DD<suffix>. The exact
+	// suffix keeps the two writers apart: neither matches the other's names.
+	LogBase     = "loghorn"
+	LogSuffix   = ".log"
+	SpansBase   = "loghorn"
+	SpansSuffix = ".traces.jsonl"
+
+	dateLayout = "2006-01-02"
 
 	// keepDays is how many finished days are kept before today.
 	keepDays = 3
@@ -33,16 +39,21 @@ const (
 // Writer appends records to the log file. It is safe for concurrent use, so
 // main can Close it while the ingest goroutine may still be writing.
 type Writer struct {
-	dir   string
-	clock func() time.Time
-	loc   *time.Location
+	dir    string
+	base   string // file name stem
+	suffix string // file name suffix: <base><suffix>, <base>-<date><suffix>
+	clock  func() time.Time
+	loc    *time.Location
 
-	mu   sync.Mutex
-	lock *os.File  // holds the flock for the Writer's lifetime
-	f    *os.File  // loghorn.log; nil once closed or stopped
-	day  time.Time // local midnight starting the day f covers
-	next time.Time // the local midnight after day
-	buf  []byte    // reused so a record and its newline go out in one write
+	mu         sync.Mutex
+	lock       *os.File  // holds the flock for the Writer's lifetime; nil for a companion
+	f          *os.File  // <base><suffix>; nil before a companion's first write, and once closed or stopped
+	closed     bool      // closed or stopped: Write does nothing
+	shut       bool      // Close was called
+	companions []*Writer // closed with this Writer, before the lock is released
+	day        time.Time // local midnight starting the day f covers
+	next       time.Time // the local midnight after day
+	buf        []byte    // reused so a record and its newline go out in one write
 }
 
 // Open creates dir if needed, locks it, archives a loghorn.log left from an
@@ -66,7 +77,7 @@ func Open(dir string, clock func() time.Time, loc *time.Location) (*Writer, erro
 	if err != nil {
 		return nil, err
 	}
-	w := &Writer{dir: dir, clock: clock, loc: loc, lock: lock}
+	w := &Writer{dir: dir, base: LogBase, suffix: LogSuffix, clock: clock, loc: loc, lock: lock}
 	if err := w.start(w.midnight(clock())); err != nil {
 		w.Close()
 		return nil, err
@@ -105,12 +116,43 @@ func writeGitignore(dir string) error {
 	return nil
 }
 
-// start readies today's file. A leftover's day is its mtime: while loghorn runs
+// Companion returns a writer for base in the same directory, with the same
+// clock and location and no lock of its own: it lives under w's lock, and w's
+// Close closes it first. A leftover <base>.log from an earlier day is archived
+// and old archives are pruned now, but <base>.log is not created until the first
+// Write. It fails if base is w's own or w is closed. Call once per base.
+func (w *Writer) Companion(base, suffix string) (*Writer, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.shut {
+		return nil, errors.New("logfile: writer is closed")
+	}
+	if base == w.base && suffix == w.suffix {
+		return nil, errors.New("logfile: companion names equal the writer's own: " + base + suffix)
+	}
+	c := &Writer{dir: w.dir, base: base, suffix: suffix, clock: w.clock, loc: w.loc}
+	if err := c.settle(c.midnight(c.clock())); err != nil {
+		return nil, err
+	}
+	w.companions = append(w.companions, c)
+	return c, nil
+}
+
+// start readies today's file: settle, then open.
+func (w *Writer) start(today time.Time) error {
+	if err := w.settle(today); err != nil {
+		return err
+	}
+	return w.open(today)
+}
+
+// settle archives a leftover file from an earlier day and prunes old archives.
+// A leftover's day is its mtime: while loghorn runs
 // it archives the file itself at midnight, so a file found at startup holds only
 // records from the day of its last write. Touching the file by hand is the only
 // way to fool this, and the cost is an archive misdated by a day.
-func (w *Writer) start(today time.Time) error {
-	fi, err := os.Stat(w.path(currentName))
+func (w *Writer) settle(today time.Time) error {
+	fi, err := os.Stat(w.path(w.currentName()))
 	switch {
 	case err == nil && fi.ModTime().Before(today):
 		if err := w.archive(w.midnight(fi.ModTime())); err != nil {
@@ -119,10 +161,7 @@ func (w *Writer) start(today time.Time) error {
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return err
 	}
-	if err := w.prune(today); err != nil {
-		return err
-	}
-	return w.open(today)
+	return w.prune(today)
 }
 
 // Write appends rec and a newline in a single unbuffered write, so tail -F stays
@@ -136,10 +175,11 @@ func (w *Writer) start(today time.Time) error {
 func (w *Writer) Write(rec []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.f == nil {
+	if w.closed {
 		return nil
 	}
-	if err := w.write(rec); err != nil {
+	if err := w.writeOrStart(rec); err != nil {
+		w.closed = true
 		if w.f != nil {
 			// The Close error is ignored: the write error above is already
 			// what stops the Writer and is what gets returned, and there is
@@ -150,6 +190,17 @@ func (w *Writer) Write(rec []byte) error {
 		return err
 	}
 	return nil
+}
+
+// writeOrStart opens the file first when it is not open yet (a companion's first
+// write, possibly after a midnight), then writes.
+func (w *Writer) writeOrStart(rec []byte) error {
+	if w.f == nil {
+		if err := w.start(w.midnight(w.clock())); err != nil {
+			return err
+		}
+	}
+	return w.write(rec)
 }
 
 // write appends rec, rolling over first if a local midnight has passed. On a
@@ -187,14 +238,23 @@ func (w *Writer) rollover(today time.Time) error {
 	return w.open(today)
 }
 
-// Close closes the file and releases the lock. It is safe to call twice.
+// Close closes the file and releases the lock. It is safe to call twice. The
+// log writer closes its companions first, so no companion file is open once the
+// lock is gone; a companion's Close closes only its own file. Lock order is the
+// parent's mu, then a companion's mu, never the reverse.
 func (w *Writer) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.shut, w.closed = true, true
 	var err error
 	if w.f != nil {
 		err = w.f.Close()
 		w.f = nil
+	}
+	for _, c := range w.companions {
+		if cerr := c.Close(); err == nil {
+			err = cerr
+		}
 	}
 	if w.lock != nil {
 		// The lock file's own close error is ignored: there is nothing to
@@ -206,11 +266,11 @@ func (w *Writer) Close() error {
 	return err
 }
 
-// open opens loghorn.log for appending as the file covering day. 0o600 because
+// open opens <base>.log for appending as the file covering day. 0o600 because
 // the file can hold days of dev-server output — tokens, auth headers — that
 // other accounts on the box should not be able to read.
 func (w *Writer) open(day time.Time) error {
-	f, err := os.OpenFile(w.path(currentName), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(w.path(w.currentName()), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
@@ -219,10 +279,10 @@ func (w *Writer) open(day time.Time) error {
 	return nil
 }
 
-// archive moves loghorn.log to day's archive, appending to that archive if it
+// archive moves <base>.log to day's archive, appending to that archive if it
 // already exists rather than replacing it.
 func (w *Writer) archive(day time.Time) error {
-	src, dst := w.path(currentName), w.path(archivePrefix+day.Format(dateLayout)+archiveSuffix)
+	src, dst := w.path(w.currentName()), w.path(w.base+"-"+day.Format(dateLayout)+w.suffix)
 	if _, err := os.Stat(dst); errors.Is(err, fs.ErrNotExist) {
 		return os.Rename(src, dst)
 	} else if err != nil {
@@ -262,7 +322,7 @@ func (w *Writer) prune(today time.Time) error {
 		return err
 	}
 	for _, e := range entries {
-		day, ok := parseArchiveDay(e.Name(), w.loc)
+		day, ok := parseArchiveDay(w.base, w.suffix, e.Name(), w.loc)
 		if !ok || !day.Before(cutoff) {
 			continue
 		}
@@ -273,16 +333,18 @@ func (w *Writer) prune(today time.Time) error {
 	return nil
 }
 
+func (w *Writer) currentName() string { return w.base + w.suffix }
+
 // archiveName reports whether name has the archive shape
-// loghorn-<date>.log, returning the date portion for the caller to parse.
+// <base>-<date><suffix>, returning the date portion for the caller to parse.
 // Shared by parseArchiveDay below and by HistoricalFiles in history.go, so
 // the two never drift apart on what counts as an archive.
-func archiveName(name string) (string, bool) {
-	s, ok := strings.CutPrefix(name, archivePrefix)
+func archiveName(base, suffix, name string) (string, bool) {
+	s, ok := strings.CutPrefix(name, base+"-")
 	if !ok {
 		return "", false
 	}
-	return strings.CutSuffix(s, archiveSuffix)
+	return strings.CutSuffix(s, suffix)
 }
 
 // parseArchiveDay parses the date out of an archive's name, in loc.
@@ -291,8 +353,8 @@ func archiveName(name string) (string, bool) {
 // the two ends in different zones would shift the cutoff by the zone offset.
 // HistoricalFiles only orders archive dates against each other, so it passes
 // time.UTC — a fixed epoch is enough to sort them correctly.
-func parseArchiveDay(name string, loc *time.Location) (time.Time, bool) {
-	s, ok := archiveName(name)
+func parseArchiveDay(base, suffix, name string, loc *time.Location) (time.Time, bool) {
+	s, ok := archiveName(base, suffix, name)
 	if !ok {
 		return time.Time{}, false
 	}

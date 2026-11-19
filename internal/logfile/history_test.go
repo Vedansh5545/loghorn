@@ -96,3 +96,21 @@ func TestHistoricalFilesMissingDir(t *testing.T) {
 		t.Fatalf("HistoricalFiles = %v, want nil", got)
 	}
 }
+
+func TestHistoricalFilesIgnoresSpanFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		"loghorn-2026-09-14.log", "loghorn.log",
+		"loghorn-2026-09-14.traces.jsonl", "loghorn.traces.jsonl",
+	} {
+		putFile(t, filepath.Join(dir, name), "x\n", time.Time{})
+	}
+	got, err := HistoricalFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(dir, "loghorn-2026-09-14.log"), filepath.Join(dir, "loghorn.log")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

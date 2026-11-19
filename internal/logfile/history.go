@@ -30,7 +30,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 	haveCurrent := false
 	for _, e := range entries {
 		name := e.Name()
-		if name == currentName {
+		if name == LogBase+LogSuffix {
 			haveCurrent = true
 			continue
 		}
@@ -39,7 +39,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 			// skip it before parseArchiveDay gets a chance to match its name.
 			continue
 		}
-		if _, ok := parseArchiveDay(name, time.UTC); ok {
+		if _, ok := parseArchiveDay(LogBase, LogSuffix, name, time.UTC); ok {
 			archives = append(archives, name)
 		}
 	}
@@ -50,8 +50,8 @@ func HistoricalFiles(dir string) ([]string, error) {
 	// cutoff, so UTC is enough here — unlike prune, which must parse in the
 	// writer's own location (see parseArchiveDay in writer.go).
 	sort.Slice(archives, func(i, j int) bool {
-		di, _ := parseArchiveDay(archives[i], time.UTC)
-		dj, _ := parseArchiveDay(archives[j], time.UTC)
+		di, _ := parseArchiveDay(LogBase, LogSuffix, archives[i], time.UTC)
+		dj, _ := parseArchiveDay(LogBase, LogSuffix, archives[j], time.UTC)
 		return di.Before(dj)
 	})
 
@@ -60,7 +60,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 		files = append(files, filepath.Join(dir, name))
 	}
 	if haveCurrent {
-		files = append(files, filepath.Join(dir, currentName))
+		files = append(files, filepath.Join(dir, LogBase+LogSuffix))
 	}
 	return files, nil
 }
