@@ -1,10 +1,18 @@
 # `-otel` Spans Implementation Plan
 
+> **Amendment (user decision, during Task 1):** span files are named
+> `loghorn.traces.jsonl` (today) and `loghorn-YYYY-MM-DD.traces.jsonl`
+> (archives), not `loghorn-spans.log` / `loghorn-spans-<date>.log`. The
+> writer takes a base name and a suffix; each writer's archive matching
+> requires its exact suffix. Where this plan still says `SpansBase` /
+> `loghorn-spans`, use the names Task 1 records under "As built" in the
+> workspace context.md.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: execute with the `orchestrating-plans` skill (one task-runner subagent per task, each dispatching its own fresh reviewer). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** under `loghorn -otel -- <cmd>`, every span the child exports is stored as one JSON line in `.loghorn/loghorn-spans.log`, rotated and pruned like `loghorn.log`; the child is also pointed at the traces endpoint. Metrics stay discarded; the web view does not change.
+**Goal:** under `loghorn -otel -- <cmd>`, every span the child exports is stored as one JSON line in `.loghorn/loghorn.traces.jsonl`, rotated and pruned like `loghorn.log`; the child is also pointed at the traces endpoint. Metrics stay discarded; the web view does not change.
 
-**Architecture:** `logfile.Writer` is parameterised by a base name (`loghorn`, `loghorn-spans`). The span writer is a *companion* of the log writer: created from it, sharing its directory, clock, location and its one `loghorn.lock`, closed by the log writer's `Close` before the lock is released, and opening its file only on the first span. `internal/otlp` gains `MapSpans` (spec "Spans" table); the receiver decodes `/v1/traces` fully and delivers span lines to a second callback under the same drain guard as logs. `wrapper.go` wires the companion writer to that callback; `ChildEnv` adds the three traces variables.
+**Architecture:** `logfile.Writer` is parameterised by a base name and a suffix (`loghorn` + `.log`; `loghorn` + `.traces.jsonl`). The span writer is a *companion* of the log writer: created from it, sharing its directory, clock, location and its one `loghorn.lock`, closed by the log writer's `Close` before the lock is released, and opening its file only on the first span. `internal/otlp` gains `MapSpans` (spec "Spans" table); the receiver decodes `/v1/traces` fully and delivers span lines to a second callback under the same drain guard as logs. `wrapper.go` wires the companion writer to that callback; `ChildEnv` adds the three traces variables.
 
 **Order, and why:** Task 1 (logfile) is a library change with no new caller, so it cannot break a run. Task 2 builds the mapping, receiver change, environment and wiring on top of its `Companion` interface and proves the whole path end to end.
 
@@ -18,8 +26,8 @@
 - Commit each task directly to `main` (no branch, no merge commit). Commit messages end with the session's attribution lines.
 - **Never pipe data into a loghorn binary** (`… | loghorn`): piped stdin is recorded to the project log. Manual checks run the binary from a scratch directory with a command after `--`, or `< file`.
 - **Tests never write into the repo's own `.loghorn`.** Unit tests use `t.TempDir()` for every `logfile.Open`; binary tests go through `runLoghorn(t, dir, …)` with `dir := t.TempDir()` (it already sets `cmd.Dir`, `HOME`, `XDG_CONFIG_HOME`).
-- **Pruning never deletes the other writer's files**, in either direction: the log writer never removes `loghorn-spans.log` or `loghorn-spans-<date>.log`; the span writer never removes `loghorn.log` or `loghorn-<date>.log`. Both directions are tested (Task 1).
-- File names, verbatim: `loghorn.log`, `loghorn-YYYY-MM-DD.log`, `loghorn-spans.log`, `loghorn-spans-YYYY-MM-DD.log`, `loghorn.lock`. Retention unchanged: `keepDays = 3`. Files `0o600`, as today.
+- **Pruning never deletes the other writer's files**, in either direction: the log writer never removes `loghorn.traces.jsonl` or `loghorn-<date>.traces.jsonl`; the span writer never removes `loghorn.log` or `loghorn-<date>.log`. Both directions are tested (Task 1).
+- File names, verbatim: `loghorn.log`, `loghorn-YYYY-MM-DD.log`, `loghorn.traces.jsonl`, `loghorn-YYYY-MM-DD.traces.jsonl`, `loghorn.lock`. Retention unchanged: `keepDays = 3`. Files `0o600`, as today.
 - Stored span keys, exactly: `trace_id`, `span_id`, `parent_span_id`, `name`, `kind`, `start`, `end`, `duration_ms`, `status`, `status_message`, `attributes`, `events` (items `{time, name, attributes}`), `links` (items `{trace_id, span_id, attributes}`), `service.name`, `loghorn.run.id`, `otel.resource`, `otel.scope.name`, `otel.scope.version`.
 - Child environment under `-otel` adds, always set (replacing any existing value): `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=<endpoint>/v1/traces`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`, `OTEL_TRACES_EXPORTER=otlp`. Existing variables unchanged.
 - The web view (`internal/web`), `-historical`, `-filter` and the recorder do not change behaviour; spans never enter `loghorn.log` or the live store, and spans do not count as "OTLP logs" for the stdout dedupe switch or the `no OTLP logs received` warning (**Decided**).
@@ -29,10 +37,10 @@
 ## Review Focus
 
 1. **A span batch flushed as the child exits.** The SDK's final export can arrive after the child is gone; it must be written, and nothing may be written after the writers close. Spans are delivered under the same `dmu` read lock as logs, and `Drain` still runs before `closeLog`. Tests: Task 2 `TestDrainWaitsForTraffic` extended to traces, `TestNoSpanDeliveryAfterDrain`.
-2. **Pruning across writers.** Five-day-old `loghorn-spans-*.log` next to five-day-old `loghorn-*.log`: each writer prunes only its own; `-historical` never lists span files. Tests: Task 1 `TestLogPruneSparesSpanFiles`, `TestSpanPruneSparesLogFiles`, `TestHistoricalFilesIgnoresSpanFiles`.
-3. **A late write after `Close`** (a handler racing shutdown) must not create `loghorn-spans.log` outside the lock. Test: Task 1 `TestCompanionWriteAfterCloseCreatesNothing`.
+2. **Pruning across writers.** Five-day-old `loghorn-*.traces.jsonl` next to five-day-old `loghorn-*.log`: each writer prunes only its own; `-historical` never lists span files. Tests: Task 1 `TestLogPruneSparesSpanFiles`, `TestSpanPruneSparesLogFiles`, `TestHistoricalFilesIgnoresSpanFiles`.
+3. **A late write after `Close`** (a handler racing shutdown) must not create `loghorn.traces.jsonl` outside the lock. Test: Task 1 `TestCompanionWriteAfterCloseCreatesNothing`.
 4. **OTLP/JSON span, parent and link ids are hex.** Without the rewrite `protojson` decodes them as base64 and stores wrong ids. Test: Task 2 `TestJSONHexSpanIDs`.
-5. **Midnight before the first span / leftover from an earlier day.** A `loghorn-spans.log` left from yesterday is archived as `loghorn-spans-<its mtime day>.log` when the companion is created, and a run that crosses midnight before its first span still opens a fresh file for the new day. Tests: Task 1 `TestCompanionArchivesLeftoverAtCreate`, `TestCompanionFirstWriteAfterMidnight`.
+5. **Midnight before the first span / leftover from an earlier day.** A `loghorn.traces.jsonl` left from yesterday is archived as `loghorn-<its mtime day>.traces.jsonl` when the companion is created, and a run that crosses midnight before its first span still opens a fresh file for the new day. Tests: Task 1 `TestCompanionArchivesLeftoverAtCreate`, `TestCompanionFirstWriteAfterMidnight`.
 
 ---
 
@@ -74,20 +82,20 @@
 - The "stopped or closed" state becomes an explicit `closed bool` field (today it is `f == nil`), because a companion has `f == nil` before its first span too. `Write` opens lazily only when `!closed && f == nil`. A write failure sets `closed` as today's code sets `f = nil`.
 - Lock ordering: the log writer's `Close` holds its own `mu` and then takes each companion's `mu`; a companion never takes its parent's `mu`. The parent's companion list is guarded by the parent's `mu`.
 - No base-name validation beyond "not the parent's own" (callers pass the two constants).
-- Package doc comment updated to say the package writes `loghorn.log` and, as a companion, `loghorn-spans.log`, with the same rotation.
+- Package doc comment updated to say the package writes `loghorn.log` and, as a companion, `loghorn.traces.jsonl`, with the same rotation.
 
 - [ ] **Step 1: Write the failing tests** (all in `t.TempDir()`, clock `at(…)` in `la`, reusing `openAt`, `putFile`, `exists`, `readFile`):
-  - `TestLogPruneSparesSpanFiles` (writer_test.go): put `loghorn-2026-09-10.log`, `loghorn-spans-2026-09-10.log`, `loghorn-spans.log` (mtime today), `loghorn-spans-notadate.log`; `openAt(… at(2026,9,15,12,0))` → `loghorn-2026-09-10.log` gone; the three span files still exist, `loghorn-spans.log` content unchanged.
-  - `TestSpanPruneSparesLogFiles` (companion_test.go): `openAt(… at(2026,9,15,12,0))` on an empty dir, **then** put `loghorn-2026-09-09.log` and `loghorn-spans-2026-09-10.log`, `loghorn-spans-2026-09-14.log` (so only the companion's pruning can act), then `Companion(SpansBase)` → `loghorn-spans-2026-09-10.log` gone, `loghorn-spans-2026-09-14.log` kept, `loghorn-2026-09-09.log` and `loghorn.log` still exist.
-  - `TestCompanionCreatesFileOnFirstWrite`: after `Companion(SpansBase)`, `loghorn-spans.log` does not exist; `Write([]byte("a"))` → file is `"a\n"`, mode `0o600`; `loghorn.log` unaffected.
-  - `TestCompanionArchivesLeftoverAtCreate`: `loghorn-spans.log` with mtime `at(2026,9,14,22,0)`, open at `at(2026,9,15,10,0)`, `Companion` (no write) → `loghorn-spans-2026-09-14.log` holds the old content, `loghorn-spans.log` absent.
-  - `TestCompanionFirstWriteAfterMidnight`: leftover `loghorn-spans.log` mtime `at(2026,9,15,9,0)`; open and `Companion` at `at(2026,9,15,10,0)` (leftover kept); advance clock to `at(2026,9,16,1,0)`; `Write("b")` → `loghorn-spans-2026-09-15.log` holds the leftover, `loghorn-spans.log` is `"b\n"`.
-  - `TestCompanionRollsOver`: write `"a"` on the 15th, `"b"` after midnight → `loghorn-spans-2026-09-15.log == "a\n"`, `loghorn-spans.log == "b\n"`, and `loghorn.log` / `loghorn-2026-09-15.log` untouched by the span rollover.
-  - `TestCompanionWriteAfterCloseCreatesNothing`: two cases — closing the companion, and closing only the log writer — then `Write` returns nil and `loghorn-spans.log` does not exist.
+  - `TestLogPruneSparesSpanFiles` (writer_test.go): put `loghorn-2026-09-10.log`, `loghorn-2026-09-10.traces.jsonl`, `loghorn.traces.jsonl` (mtime today), `loghorn-spans-notadate.log`; `openAt(… at(2026,9,15,12,0))` → `loghorn-2026-09-10.log` gone; the three span files still exist, `loghorn.traces.jsonl` content unchanged.
+  - `TestSpanPruneSparesLogFiles` (companion_test.go): `openAt(… at(2026,9,15,12,0))` on an empty dir, **then** put `loghorn-2026-09-09.log` and `loghorn-2026-09-10.traces.jsonl`, `loghorn-2026-09-14.traces.jsonl` (so only the companion's pruning can act), then `Companion(SpansBase)` → `loghorn-2026-09-10.traces.jsonl` gone, `loghorn-2026-09-14.traces.jsonl` kept, `loghorn-2026-09-09.log` and `loghorn.log` still exist.
+  - `TestCompanionCreatesFileOnFirstWrite`: after `Companion(SpansBase)`, `loghorn.traces.jsonl` does not exist; `Write([]byte("a"))` → file is `"a\n"`, mode `0o600`; `loghorn.log` unaffected.
+  - `TestCompanionArchivesLeftoverAtCreate`: `loghorn.traces.jsonl` with mtime `at(2026,9,14,22,0)`, open at `at(2026,9,15,10,0)`, `Companion` (no write) → `loghorn-2026-09-14.traces.jsonl` holds the old content, `loghorn.traces.jsonl` absent.
+  - `TestCompanionFirstWriteAfterMidnight`: leftover `loghorn.traces.jsonl` mtime `at(2026,9,15,9,0)`; open and `Companion` at `at(2026,9,15,10,0)` (leftover kept); advance clock to `at(2026,9,16,1,0)`; `Write("b")` → `loghorn-2026-09-15.traces.jsonl` holds the leftover, `loghorn.traces.jsonl` is `"b\n"`.
+  - `TestCompanionRollsOver`: write `"a"` on the 15th, `"b"` after midnight → `loghorn-2026-09-15.traces.jsonl == "a\n"`, `loghorn.traces.jsonl == "b\n"`, and `loghorn.log` / `loghorn-2026-09-15.log` untouched by the span rollover.
+  - `TestCompanionWriteAfterCloseCreatesNothing`: two cases — closing the companion, and closing only the log writer — then `Write` returns nil and `loghorn.traces.jsonl` does not exist.
   - `TestCloseClosesCompanionBeforeLock`: companion written once; `w.Close()`; then a second `Open` on the same dir succeeds (lock released) and `Write` on the old companion returns nil without appending.
   - `TestCompanionErrors`: `Companion(LogBase)` → error; `Companion` after `w.Close()` → error.
   - `TestCompanionWriteFailureLeavesLogWriter` (rollover_test.go style, reusing however `TestWriteFailureStopsTheWriter` forces the failure): the companion's failure is returned once, later companion writes return nil, and the log writer still writes.
-  - `TestHistoricalFilesIgnoresSpanFiles` (history_test.go): dir with `loghorn-2026-09-14.log`, `loghorn.log`, `loghorn-spans-2026-09-14.log`, `loghorn-spans.log` → exactly `[loghorn-2026-09-14.log, loghorn.log]`.
+  - `TestHistoricalFilesIgnoresSpanFiles` (history_test.go): dir with `loghorn-2026-09-14.log`, `loghorn.log`, `loghorn-2026-09-14.traces.jsonl`, `loghorn.traces.jsonl` → exactly `[loghorn-2026-09-14.log, loghorn.log]`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -150,7 +158,7 @@ git commit -m "feat(logfile): writer by base name; span companion under the log 
 
 **Wiring (`wrapper.go`, `runCommand`):** under `o.otel`, after `openRecordingLog`, `spans := openSpanLog(logs)`; `rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, …), nil)`. No new close call: `closeLog(logs)` (already after `rcv.Drain`) closes the companion. Without a log file (lock held elsewhere) `spans` is nil and traces are accepted and discarded.
 
-**Copy:** usage paragraph for `-otel` becomes "… the log records it receives are stored with the command's output, and spans in .loghorn/loghorn-spans.log (kept and rotated like loghorn.log)." Flag help: `"receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs -- <command>)"`. README `-otel` section: list the three traces variables and the spans file.
+**Copy:** usage paragraph for `-otel` becomes "… the log records it receives are stored with the command's output, and spans in .loghorn/loghorn.traces.jsonl (kept and rotated like loghorn.log)." Flag help: `"receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs -- <command>)"`. README `-otel` section: list the three traces variables and the spans file.
 
 - [ ] **Step 1: Write the failing tests**
   - `spans_test.go` (decode with `json.Decoder.UseNumber`):
@@ -172,8 +180,8 @@ git commit -m "feat(logfile): writer by base name; span companion under the log 
   - `env_test.go`: `ChildEnv` sets `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:9/v1/traces`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`, `OTEL_TRACES_EXPORTER=otlp`; each replaces a pre-existing value in place (e.g. `OTEL_TRACES_EXPORTER=none` → `otlp`) and no key appears twice.
   - `otel_e2e_test.go`:
     - In `otelChild`, after the log record, POST one protobuf `ExportTraceServiceRequest` to `os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")` (`Content-Type: application/x-protobuf`): resource attributes `service.name = "e2e"` and `loghorn.run.id = os.Getenv("LOGHORN_RUN_ID")`, one span `name "e2e.span"`, kind `SERVER`, set ids and times. Exit 97 if the POST fails or is not 200.
-    - `TestOtelEndToEnd`: `.loghorn/loghorn-spans.log` has exactly one line; it has `name == "e2e.span"`, `kind == "server"`, `service.name == "e2e"`, `loghorn.run.id == id`; and `loghorn.log` contains no line with `"e2e.span"`.
-    - `TestOtelNoLogsWarns`: `.loghorn/loghorn-spans.log` does not exist (created on first span).
+    - `TestOtelEndToEnd`: `.loghorn/loghorn.traces.jsonl` has exactly one line; it has `name == "e2e.span"`, `kind == "server"`, `service.name == "e2e"`, `loghorn.run.id == id`; and `loghorn.log` contains no line with `"e2e.span"`.
+    - `TestOtelNoLogsWarns`: `.loghorn/loghorn.traces.jsonl` does not exist (created on first span).
     - `TestOtelChildEnvironment`: extend the echoed string with `$OTEL_EXPORTER_OTLP_TRACES_ENDPOINT|$OTEL_EXPORTER_OTLP_TRACES_PROTOCOL|$OTEL_TRACES_EXPORTER` and the regex with `http://127\.0\.0\.1:\d+/v1/traces\|http/protobuf\|otlp`.
 
 - [ ] **Step 2: Run to verify they fail**
@@ -192,5 +200,5 @@ Expected: all PASS, gofmt prints nothing.
 
 ```bash
 git add internal/otlp/ wrapper.go main.go README.md otel_e2e_test.go
-git commit -m "feat: -otel stores spans in .loghorn/loghorn-spans.log"
+git commit -m "feat: -otel stores spans in .loghorn/loghorn.traces.jsonl"
 ```

@@ -132,17 +132,17 @@ Event names contain dots, so the rule widens to `[a-z0-9][a-z0-9._-]*`.
 ### Spans
 
 Spans are stored, one JSON line per span, in their own file:
-`.loghorn/loghorn-spans.log`. They don't go into `loghorn.log` because a span
+`.loghorn/loghorn.traces.jsonl`. They don't go into `loghorn.log` because a span
 is not a log record: it has a start and end, a parent and a status, and
 mixed into `loghorn.log` every span would show up in the web view, `-filter`
 and `-historical` as a log line.
 
 - **Rotation and retention** match `loghorn.log`: at midnight the file moves
-  to `loghorn-spans-YYYY-MM-DD.log`, and archives older than the retention
+  to `loghorn-YYYY-MM-DD.traces.jsonl`, and archives older than the retention
   period are pruned. `logfile.Writer` takes the base name as a parameter
-  (`loghorn` and `loghorn-spans`). The existing name matching already
-  ignores the other writer's files: `loghorn-spans.log` and
-  `loghorn-spans-<date>.log` don't parse as `loghorn-<date>.log`, so the
+  and the file suffix (`loghorn` + `.log`; `loghorn` + `.traces.jsonl`). The existing name matching already
+  ignores the other writer's files: `loghorn.traces.jsonl` and
+  `loghorn-<date>.traces.jsonl` don't parse as `loghorn-<date>.log`, so the
   log writer's pruning and `-historical` skip them, and the span writer
   matches only its own prefix.
 - **Locking:** both writers live under the one `loghorn.lock` the log
@@ -283,7 +283,7 @@ does not apply to OTLP records (they always have a time).
 - Claude chooses the stream mapping following OTEL practice.
 - Remove the TUI in this spec.
 - Store spans in a log file; metrics stay discarded. If spans need their
-  own file, name it `loghorn-spans.log`.
+  own file, name it `loghorn.traces.jsonl`.
 
 ## Claude's calls (correct any of these)
 
