@@ -126,7 +126,7 @@ func (j Job) Failed() bool {
 }
 
 // FirstFailed is the index of the first failed job, or 0 when none failed,
-// so a picker can start on the job most likely wanted.
+// the job -gh-run shows: the one most likely wanted.
 func FirstFailed(jobs []Job) int {
 	for i, j := range jobs {
 		if j.Failed() {

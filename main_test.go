@@ -13,30 +13,6 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/store"
 )
 
-func TestParseTheme(t *testing.T) {
-	for _, tc := range []struct {
-		in      string
-		wantHex string // ignored when wantAsk is true: bg is documented unused then.
-		wantAsk bool
-	}{
-		{"auto", "#000000", true},
-		{"light", "#ffffff", false},
-		{"dark", "#000000", false},
-		{"#cee8be", "#cee8be", false},
-		{"#CEE8BE", "#cee8be", false},
-	} {
-		bg, ask, err := parseTheme(tc.in)
-		if err != nil || ask != tc.wantAsk || (!tc.wantAsk && bg.Hex() != tc.wantHex) {
-			t.Errorf("parseTheme(%q) = %s, %v, %v; want %s, %v, nil", tc.in, bg.Hex(), ask, err, tc.wantHex, tc.wantAsk)
-		}
-	}
-	for _, bad := range []string{"", "blue", "cee8be", "#cee8b", "#fff", "#cee8bz", "Light"} {
-		if _, _, err := parseTheme(bad); err == nil || err.Error() != "--theme must be auto, light, dark or #rrggbb" {
-			t.Errorf("parseTheme(%q) error = %v, want the usage message", bad, err)
-		}
-	}
-}
-
 // logDir is where the log file lives and -historical reads from: .loghorn
 // under the directory loghorn was started in, one per project.
 func TestLogDir(t *testing.T) {
@@ -50,29 +26,6 @@ func TestLogDir(t *testing.T) {
 	}
 	if want := filepath.Join(cwd, ".loghorn"); got != want {
 		t.Fatalf("logDir() = %q, want %q", got, want)
-	}
-}
-
-func TestIsRegularFileTrueForARegularFile(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "regular")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if !isRegularFile(f) {
-		t.Fatalf("want true for a regular file")
-	}
-}
-
-func TestIsRegularFileFalseForAPipe(t *testing.T) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	defer w.Close()
-	if isRegularFile(r) {
-		t.Fatalf("want false for the read end of a pipe")
 	}
 }
 
@@ -177,37 +130,6 @@ func TestConfigForUsesWorkingDirectory(t *testing.T) {
 	}
 	if path != p || cfg.Input.Format != config.FormatJSON {
 		t.Fatalf("Load(%q) = %q, %q; want %q, json", dir, path, cfg.Input.Format, p)
-	}
-}
-
-func TestScrollbackFor(t *testing.T) {
-	cases := []struct {
-		name       string
-		historical bool
-		explicit   bool
-		n          int
-		want       int
-	}{
-		{"historical default gets the larger cap", true, false, 5000, 100000},
-		{"historical with --scrollback keeps the explicit value", true, true, 777, 777},
-		{"live default is unaffected", false, false, 5000, 5000},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := scrollbackFor(c.historical, c.explicit, c.n); got != c.want {
-				t.Fatalf("scrollbackFor(%v, %v, %d) = %d, want %d", c.historical, c.explicit, c.n, got, c.want)
-			}
-		})
-	}
-}
-
-func TestWebRejectsFilter(t *testing.T) {
-	err := webFlagError(true, true)
-	if err == nil || err.Error() != "-web cannot be used with -filter" {
-		t.Fatalf("webFlagError(web, filter) = %v", err)
-	}
-	if webFlagError(true, false) != nil || webFlagError(false, true) != nil {
-		t.Fatal("-web alone and -filter alone must be accepted")
 	}
 }
 

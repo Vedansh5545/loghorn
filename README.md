@@ -2,11 +2,13 @@
 
 # loghorn
 
-Watch a dev server's logs and surface the failures.
+Wrap a dev server, record its logs, and surface the failures.
 
-loghorn reads a log stream, decides which lines matter, and shows those. Everything
-else stays in the scrollback, one keystroke away — so a request that failed is
-readable in context rather than lost in ten thousand routine lines.
+loghorn runs your command and stays out of the way: its output reaches the
+terminal unchanged, and every record is also kept in a per-project log file. From
+there `-filter` prints only the lines that matter and `-web` serves a query view of
+them — so a request that failed is findable in context rather than lost in ten
+thousand routine lines.
 
 A line is a **failure** if any of these holds:
 
@@ -33,67 +35,63 @@ go build -o loghorn .
 
 ## Running it
 
-**Launch the producer — the preferred way:**
+**Wrap the producer:**
 
 ```sh
 loghorn -- npm run dev
 ```
 
-loghorn owns the process: it captures stdout and stderr together, keeps the keyboard
-to itself, and stops the whole process group on quit.
+loghorn is a transparent wrapper. The command's stdout and stderr reach the terminal
+unchanged — through a pty when stdout is a terminal, so colours, progress bars and
+prompts work as they do without loghorn — and the keyboard stays the command's.
+`Ctrl-C` goes straight to the command; `SIGTERM` and `SIGHUP` sent to loghorn are
+forwarded to it, and a command still running `--shutdown-grace` after a `SIGTERM` is
+killed. loghorn exits with the command's status (127 when it can't be found).
+Meanwhile every record is appended to the project's log file, with escape sequences
+removed.
 
-**Read a pipe** — right for files and non-interactive producers:
+**Record a pipe** — the input is copied to stdout and recorded the same way:
 
 ```sh
 kubectl logs -f pod | loghorn
 gcloud beta logging tail --json | loghorn
 ```
 
-An interactive producer in a pipeline fights loghorn for `/dev/tty`, so both read it
-and keystrokes get split at random. Launch it instead.
-
-**Replay what was stored:**
-
-```sh
-loghorn -historical
-```
-
-**Read a GitHub Actions job's log** — by job ID (the number after `/job/` in its
-URL; the run is looked up) or by the whole URL. Or give `-gh-run` a run ID or run
-URL and pick the job from a list at startup; the list opens on the first failed
-job. Both go through the GitHub CLI, so
-`gh` must be installed and logged in; a bare ID uses the repository of the current
-directory.
+**Show only the failures** — `-filter` prints just the failing records to stdout,
+byte-for-byte as they arrived, instead of everything. It works with every input; with
+a command the exit status is still the command's:
 
 ```sh
-loghorn -gh-job 133607019104
-loghorn -gh-job https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
-loghorn -gh-run https://github.com/owner/repo/actions/runs/43954926722
+loghorn -filter -- go test ./...
+loghorn -filter < capture.json
 ```
 
-**Headless, for a script or CI** — prints only the failures to stdout, byte-for-byte
-as they arrived:
+**Browse in a web view** — `-web` serves a query view (see below) and prints its URL
+to stderr. It combines with a command, a pipe, a replay and `-filter`. On its own it
+browses the stored logs:
 
 ```sh
-loghorn --filter < capture.json
+loghorn -web -- npm run dev
+loghorn -web
 ```
 
-## Keys
+**Replays** read a finished log. They never write the log file, so they need `-web`
+or `-filter` to show anything:
 
-| Key | |
-|---|---|
-| `j` / `k` | move a line |
-| `ctrl+d` / `ctrl+u` | half page |
-| `g` / `G` | oldest / newest |
-| `space` | hold / release the live tail |
-| `a` | all lines / failures only |
-| `c` | pin this line's request; again releases |
-| `/` *text* `enter` | find; `/` then `enter` clears |
-| `enter` | open the detail pane |
-| `y` | copy the entry to the clipboard |
-| `f` | send keys to a launched child until `esc` |
-| `q` | quit (`Q` quits but leaves the child running) |
-| `?` | the full list, in the app |
+```sh
+loghorn -filter < capture.json      # a file on stdin
+loghorn -web -historical            # the stored days, oldest first, then today
+loghorn -filter -gh-job 133607019104
+loghorn -web -gh-job https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
+loghorn -web -gh-run https://github.com/owner/repo/actions/runs/43954926722
+```
+
+`-gh-job` takes a job ID (the number after `/job/` in its URL; the run is looked up) or
+the whole URL. `-gh-run` takes a run ID or run URL and shows the run's first failed job
+(its first job when none failed), listing every job on stderr so you can name another
+with `-gh-job`. Both go through the GitHub CLI, so `gh` must be installed and logged
+in; a bare ID uses the repository of the current directory. The replay flags refuse a
+command or piped stdin, so from cron or CI pass `</dev/null`.
 
 ## gcloud
 
@@ -126,11 +124,6 @@ worth creating only when a producer needs something unusual.
 format       = "auto"   # auto | json | yaml | text
 field-naming = "auto"   # auto | camel | snake
 severity     = "auto"   # auto | string | numeric
-
-[display]
-format-sql          = true    # lay SQL out a clause to a line
-unquote-identifiers = false   # drop redundant SQL identifier quoting
-keyword-case        = "preserve"   # preserve | upper | lower
 ```
 
 - **`format`** — how the stream is split into records. `auto` decides from the first
@@ -141,27 +134,7 @@ keyword-case        = "preserve"   # preserve | upper | lower
   `camel` and `snake` restrict it to one.
 - **`severity`** — `auto` accepts a string name or a numeric code; `string` and
   `numeric` restrict it to one.
-- **`format-sql`** — lays a logged statement out a clause and a select item to a line
-  before the pane shows it. On by default. Turn it off to see statements exactly as they
-  were logged, which for a generated statement means one long line; that also skips the
-  formatter, which costs about 100ms the first time it sees a given statement.
-- **`unquote-identifiers`** — ORMs quote every identifier they generate, so a logged
-  statement arrives as ``select `id`, `user_id` from `grants` `` and reads as more
-  punctuation than SQL. With this on, the detail pane drops the quotes that carry no
-  meaning and shows `select id, user_id from grants`. Quotes that *do* carry meaning
-  stay: a reserved word (`` `order` ``), a name with a space in it, a name starting
-  with a digit. The SQL lexer decides which is which, so there is no keyword list to
-  fall out of date. Only the pane is rewritten — the stored log file and the entry's
-  raw bytes keep the statement exactly as logged — but note that yank copies what the
-  pane shows, so with this on you are copying the unquoted form.
-- **`keyword-case`** — how SQL keywords are cased in the detail pane. `preserve` shows
-  them as the statement wrote them; `upper` gives you `SELECT ... FROM ... WHERE`, which
-  is the usual way to tell keywords from the columns around them, and `lower` the
-  reverse. Only keywords are recased — a quoted identifier and the contents of a string
-  literal are left alone. An unrecognised value is rejected when the file loads rather
-  than passed through, because sql-formatter answers one by silently deleting every
-  keyword from the statement. This is the formatter's own setting, so it does nothing
-  with `format-sql = false`; `unquote-identifiers` still applies either way.
+A `display` section, which configured the terminal UI of older versions, is ignored with a warning.
 
 ### Where the file is found
 
@@ -202,8 +175,9 @@ and the GitHub flags work there.
 ## Web query view
 
 `loghorn -web` also serves a browser view of the run's structured records at
-`http://127.0.0.1:<port>/` (the URL is in the status bar and is printed again
-when the TUI exits). Pick the port with `-web-port`; the default is a free one.
+`http://127.0.0.1:<port>/`; the URL is printed to stderr. With a command it
+serves until the command exits, with a pipe until end of input, and with a
+replay (or alone) until `Ctrl-C`. Pick the port with `-web-port`; the default is a free one.
 The server listens on loopback only and refuses requests for any other Host,
 and writes that do not come from its own origin.
 
@@ -243,28 +217,25 @@ The URL carries the query, and a favorite saves the mode with it.
 
 Schemas (field types, display and column widths) and favorite queries are saved as TOML in
 the repo's `.config/loghorn/`: `schemas/<stream>.toml` and `queries.toml`.
-Nothing is written under your home directory. `-web` cannot be combined with
-`-filter`.
+Nothing is written under your home directory.
 
 ## Flags
 
 | Flag | Default | |
 |---|---|---|
-| `--filter` | off | headless: print only the failures to stdout |
-| `-historical` | off | read the stored files instead of live input |
-| `-gh-job` | | read a GitHub Actions job's log (job ID or URL) instead of live input |
-| `-gh-run` | | pick a job of a GitHub Actions run (run ID or URL), then read its log |
-| `-web` | off | serve the web query view on 127.0.0.1 while loghorn runs |
+| `--filter` | off | print only the failures to stdout instead of everything |
+| `-historical` | off | replay the stored files (needs `-web` or `-filter`) |
+| `-gh-job` | | replay a GitHub Actions job's log, by job ID or URL (needs `-web` or `-filter`) |
+| `-gh-run` | | replay the first failed job of a GitHub Actions run, by run ID or URL (needs `-web` or `-filter`) |
+| `-web` | off | serve the web query view on 127.0.0.1 and print its URL to stderr |
 | `-web-port` | `0` | port for `-web` (0 picks a free one) |
 | `-config` | off | print the config file in effect, then exit |
-| `--scrollback` | `5000` | entries kept in memory |
 | `--notify` | off | desktop notification on fresh errors |
 | `--notify-max-age` | `1s` | skip notifications for errors older than this |
 | `--notify-reset` | `15s` | quiet gap that ends an error burst |
 | `--notify-sound` | on | play the system alert sound with notifications |
-| `--theme` | `auto` | `auto`, `light`, `dark`, or a background as `#rrggbb` |
 | `--exclusive` | off | exit rather than run without the log file if another loghorn holds it |
-| `--shutdown-grace` | `5s` | how long a launched command gets on SIGTERM before SIGKILL |
+| `--shutdown-grace` | `5s` | after forwarding SIGTERM to the command, SIGKILL it this much later |
 
 One dash or two makes no difference — `-filter` and `--filter` are the same flag.
 `loghorn --help` is authoritative.

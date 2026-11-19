@@ -14,7 +14,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 )
 
-// Ported from internal/headless: Pipe with Filter set is the old headless.Run.
+// Ported from the old headless package: Pipe with Filter set is the old headless.Run.
 
 // pipeFilter runs Pipe as a filter with in's framing and field settings and
 // returns what it printed and every record the sink saw.
