@@ -10,7 +10,8 @@ const DEFAULT_FROM = "this-run";
 // state is the query, in the server's Query JSON shape.
 export const state = {
   stream: "",
-  source: "log", // "log" or "otel": which kind of stream `stream` names
+  source: "log", // the mode: "log" (Logs) or "otel" (Spans); `stream` is one of its kinds
+  service: "", // the service key, "*" for all; "" until loadSession chooses one
   range: { from: DEFAULT_FROM, to: "now" },
   filters: [],
   search: "",
@@ -38,7 +39,14 @@ const MAX_GRAPH_TOP = 50; // the server draws at most this many series
 const stackable = (plot) => !plot || plot.op === "count" || plot.op === "sum";
 
 let session = null;
-let streams = [];
+let kinds = []; // last /api/kinds answer: [{name, count}] of state.service, by count
+let services = []; // [{key, count}] of every service in the interval
+let kindsOpen = false; // the kind list's More is expanded
+let started = false; // the first refresh has checked the URL's kind
+
+const ALL_SERVICES = "*";
+const SERVICE_KEY = "loghorn.service"; // localStorage: the last service chosen
+const TOP_KINDS = 10;
 let lastResult = null;
 let lastResultStream = ""; // the streamKey() lastResult belongs to
 let schemaData = null; // {schema, ops} of state.stream
@@ -272,25 +280,34 @@ export function visualize(cell, column) {
 // ---- URL state ----
 
 // streamKey identifies the current stream: the same name can exist as a log
-// stream and as a span stream.
+// stream and as a span stream, and in several services.
 function streamKey() {
-  return state.source + ":" + state.stream;
+  return state.service + "|" + state.source + ":" + state.stream;
 }
 
-// schemaURL is the schema endpoint for one (stream, source).
+// svcParam is the &service= query parameter of the selected service.
+function svcParam() {
+  return "&service=" + encodeURIComponent(state.service);
+}
+
+// withSvc appends the selected service to an endpoint path.
+function withSvc(path) {
+  return path.includes("?") ? path + svcParam() : path + "?" + svcParam().slice(1);
+}
+
+// schemaURL is the schema endpoint for one (stream, source) of the selected
+// service.
 function schemaURL(stream, source) {
-  return "/api/schema?stream=" + encodeURIComponent(stream) + "&source=" + encodeURIComponent(source);
+  return "/api/schema?stream=" + encodeURIComponent(stream) + "&source=" + encodeURIComponent(source) + svcParam();
 }
 
 function saveURL() {
-  // stream and columns are written explicitly so a shared URL does not depend
-  // on the receiver's defaults.
-  const full = Object.assign({}, state, {
-    stream: state.stream,
-    columns: state.columns.length ? state.columns : defaultColumns(),
-  });
+  // Columns are written as they are: empty means "inferred over the
+  // interval".
+  const full = Object.assign({}, state);
   // A missing source means log, so only otel is written.
   if (full.source !== "otel") delete full.source;
+  if (!full.service) delete full.service;
   const q = "?q=" + encodeURIComponent(JSON.stringify(full));
   if (location.search !== q) history.replaceState(null, "", q);
 }
@@ -302,6 +319,7 @@ function applyQuery(q) {
   Object.assign(state, q);
   state.stream = typeof q.stream === "string" ? q.stream : "";
   state.source = q.source === "otel" ? "otel" : "log";
+  state.service = typeof q.service === "string" ? q.service : "";
   state.search = typeof q.search === "string" ? q.search : "";
   state.range = Object.assign({ from: DEFAULT_FROM, to: "now" }, q.range || {});
   state.sort = Object.assign({ field: "", desc: true }, q.sort || {});
@@ -354,7 +372,9 @@ const FROM_PRESETS = ["this-run", "15m", "1h", "24h", "all"];
 const TO_PRESETS = ["now"];
 
 function syncBar() {
-  $("stream").value = streamKey();
+  syncMode();
+  renderServices();
+  renderKindList();
   syncRangeControl("from", state.range.from || DEFAULT_FROM, FROM_PRESETS);
   syncRangeControl("to", state.range.to || "now", TO_PRESETS);
   $("search").value = state.search;
@@ -366,6 +386,7 @@ function rangeChanged(which) {
   if (sel.value !== "custom") {
     custom.hidden = true;
     state.range[which] = sel.value;
+    reloadKinds();
     runQuery();
     return;
   }
@@ -384,31 +405,28 @@ function customChanged(which) {
   const d = new Date(v); // datetime-local is local time
   if (isNaN(d.getTime())) return;
   state.range[which] = d.toISOString();
+  reloadKinds();
   runQuery();
 }
 
 function wireBar() {
   $("bar").addEventListener("submit", (e) => e.preventDefault());
-  $("stream").addEventListener("change", () => {
-    const v = $("stream").value;
-    const i = v.indexOf(":");
-    state.source = v.slice(0, i) === "otel" ? "otel" : "log";
-    state.stream = v.slice(i + 1);
-    state.columns = [];
-    state.filters = [];
-    state.sort = { field: "", desc: true };
-    state.groupBy = [];
-    state.aggregates = [];
-    state.plot = { op: "count" };
-    state.order = { op: "count" };
-    closeColumnMenu();
-    hiddenThisQuery = [];
-    tempWidths = {};
-    clearExplore();
-    loadSchema().then(() => {
-      rebuildExplore();
-      runQuery();
-    });
+  for (const b of document.querySelectorAll("#sb-mode [data-source]")) {
+    b.addEventListener("click", () => setMode(b.dataset.source));
+  }
+  $("service").addEventListener("change", () => setService($("service").value));
+  $("kind-more").addEventListener("click", () => {
+    kindsOpen = !kindsOpen;
+    if (!kindsOpen) $("kind-filter").value = "";
+    renderKindList();
+    if (kindsOpen) $("kind-filter").focus();
+  });
+  $("kind-filter").addEventListener("input", () => renderKindList());
+  $("kind-filter").addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    $("kind-filter").value = "";
+    renderKindList();
   });
   $("from").addEventListener("change", () => rangeChanged("from"));
   $("to").addEventListener("change", () => rangeChanged("to"));
@@ -480,39 +498,276 @@ function renderHeader() {
   $("title").textContent = parts.join(" · ");
 }
 
-function renderStreams() {
-  const sel = $("stream");
-  sel.replaceChildren();
-  const sources = new Map(); // name -> number of sources it exists under
-  for (const s of streams) sources.set(s.name, (sources.get(s.name) || 0) + 1);
-  for (const s of streams) {
-    const n = s.count.toLocaleString();
-    const label = sources.get(s.name) > 1 ? s.name + " (" + s.source + ", " + n + ")" : s.name + " (" + n + ")";
-    const o = el("option", "", label);
-    o.value = s.source + ":" + s.name;
-    sel.append(o);
-  }
-  const none = streams.length === 0;
+async function loadSession() {
+  session = await api("GET", "/api/session");
+  renderHeader();
+  const none = session.count === 0;
   $("empty").hidden = !none;
   $("results").hidden = none;
   $("footer").hidden = none;
+  await chooseService();
 }
 
-async function loadSession() {
-  [session, streams] = await Promise.all([api("GET", "/api/session"), api("GET", "/api/streams")]);
-  renderHeader();
-  renderStreams();
-  if (streams.length && !streams.some((s) => s.name === state.stream && s.source === state.source)) {
-    const top = streams.reduce((a, b) => (b.count > a.count ? b : a));
-    state.stream = top.name;
-    state.source = top.source === "otel" ? "otel" : "log";
-    state.columns = [];
-    state.filters = [];
-    state.groupBy = [];
-    state.aggregates = [];
-    state.plot = { op: "count" };
-    state.order = { op: "count" };
+// ---- mode, service and kind list ----
+
+function storedService() {
+  try {
+    return localStorage.getItem(SERVICE_KEY) || "";
+  } catch {
+    return "";
   }
+}
+
+function storeService(svc) {
+  try {
+    localStorage.setItem(SERVICE_KEY, svc);
+  } catch {
+    // the last service is a per-browser convenience only
+  }
+}
+
+// kindsURL is the /api/kinds request of the mode and range for service svc.
+function kindsURL(svc) {
+  return "/api/kinds?source=" + encodeURIComponent(state.source) + "&service=" + encodeURIComponent(svc) +
+    "&from=" + encodeURIComponent(state.range.from || DEFAULT_FROM) + "&to=" + encodeURIComponent(state.range.to || "now");
+}
+
+// chooseService picks the service when the URL named none: with exactly one
+// service in the interval, that one; else the last one used in this browser;
+// else the one with the most records. With no records and nothing stored the
+// choice waits for the next refresh.
+async function chooseService() {
+  if (state.service) return;
+  const data = await api("GET", kindsURL(ALL_SERVICES));
+  const svcs = Array.isArray(data.services) ? data.services : [];
+  if (svcs.length === 1) {
+    state.service = svcs[0].key;
+    return;
+  }
+  const top = svcs.reduce((a, b) => (!a || b.count > a.count ? b : a), null);
+  state.service = storedService() || (top ? top.key : "");
+}
+
+let kindsSeq = 0;
+
+// loadKinds fetches the kind and service counts of the mode, service and
+// range, and redraws the service selector and the kind list. It returns false
+// when a newer call superseded this one (its answer is dropped).
+async function loadKinds() {
+  const mine = ++kindsSeq;
+  const data = await api("GET", kindsURL(state.service));
+  if (mine !== kindsSeq) return false;
+  kinds = Array.isArray(data.kinds) ? data.kinds : [];
+  services = Array.isArray(data.services) ? data.services : [];
+  renderServices();
+  renderKindList();
+  return true;
+}
+
+// reloadKinds is loadKinds for callers that don't wait for it.
+function reloadKinds() {
+  loadKinds().catch((err) => showError(err.message));
+}
+
+function syncMode() {
+  for (const b of document.querySelectorAll("#sb-mode [data-source]")) {
+    const on = b.dataset.source === state.source;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", String(on));
+  }
+}
+
+// renderServices lists All, then the services in the interval by count. A
+// selected service with no records in the interval stays listed.
+function renderServices() {
+  const sel = $("service");
+  sel.replaceChildren();
+  const all = el("option", "", "All");
+  all.value = ALL_SERVICES;
+  sel.append(all);
+  const byCount = services.slice().sort((a, b) => b.count - a.count || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  for (const s of byCount) {
+    const o = el("option", "", s.key + " (" + s.count.toLocaleString() + ")");
+    o.value = s.key;
+    sel.append(o);
+  }
+  const cur = state.service || ALL_SERVICES;
+  if (cur !== ALL_SERVICES && !services.some((s) => s.key === cur)) {
+    const o = el("option", "", cur + " (none in range)");
+    o.value = cur;
+    sel.append(o);
+  }
+  sel.value = cur;
+}
+
+// pinnedKinds is the names of the mode's pinned kinds, listed first.
+function pinnedKinds() {
+  return [];
+}
+
+// kindRowExtras adds per-row controls (the pin toggle) to a kind row.
+function kindRowExtras(row, name) {} // a no-op until pins arrive
+
+// listedKinds is every row of the list in order: the pinned kinds (count
+// from kinds, else 0), then the other kinds in server order.
+function listedKinds() {
+  const counts = new Map(kinds.map((k) => [k.name, k.count]));
+  const pins = pinnedKinds();
+  const pinned = new Set(pins);
+  return pins.map((name) => ({ name, count: counts.get(name) || 0, pinned: true }))
+    .concat(kinds.filter((k) => !pinned.has(k.name)).map((k) => ({ name: k.name, count: k.count })));
+}
+
+// firstKind is the first listed kind with records, else the first listed
+// kind, else "".
+function firstKind() {
+  const rows = listedKinds();
+  const r = rows.find((k) => k.count > 0) || rows[0];
+  return r ? r.name : "";
+}
+
+function kindRow(k, sep) {
+  const on = k.name === state.stream;
+  const row = el("div", "kind-row" + (k.count ? "" : " kind-zero") + (on ? " selected" : "") + (sep ? " kind-sep" : ""));
+  row.dataset.kind = k.name;
+  row.setAttribute("role", "option");
+  row.setAttribute("aria-selected", String(on));
+  row.tabIndex = 0;
+  row.title = k.name;
+  row.append(el("span", "kind-name", k.name), el("span", "kind-count", k.count.toLocaleString()));
+  row.addEventListener("click", () => {
+    if (k.name !== state.stream) selectKind(k.name);
+  });
+  row.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    if (k.name !== state.stream) selectKind(k.name);
+  });
+  kindRowExtras(row, k.name);
+  return row;
+}
+
+// renderKindList draws the pinned kinds, the top 10 other kinds and, when
+// More is open, the rest narrowed by the filter box. The selected kind is
+// always shown, with 0 when the interval has none of it.
+function renderKindList() {
+  const rows = listedKinds();
+  const pins = rows.filter((r) => r.pinned).length;
+  const top = rows.slice(0, pins + TOP_KINDS);
+  const rest = rows.slice(pins + TOP_KINDS);
+  const needle = $("kind-filter").value.trim().toLowerCase();
+  const open = kindsOpen && rest.length > 0;
+  const more = open ? rest.filter((r) => r.name.toLowerCase().includes(needle)) : [];
+  const out = [];
+  top.forEach((r, i) => out.push(kindRow(r, pins > 0 && i === pins)));
+  const sel = state.stream;
+  if (sel && !top.some((r) => r.name === sel) && !more.some((r) => r.name === sel)) {
+    out.push(kindRow(rest.find((r) => r.name === sel) || { name: sel, count: 0 }, out.length > 0));
+  }
+  more.forEach((r, i) => out.push(kindRow(r, i === 0)));
+  $("kind-list").replaceChildren(...out);
+  const btn = $("kind-more");
+  btn.hidden = rest.length === 0;
+  btn.textContent = open ? "Less ▴" : "More (" + rest.length.toLocaleString() + ") ▸";
+  btn.setAttribute("aria-expanded", String(open));
+  $("kind-filter").hidden = !open;
+}
+
+// selectKind makes name the current kind: it resets the columns, filters and
+// explore settings, loads the kind's schema and runs the query. An empty name
+// selects nothing and clears the results.
+async function selectKind(name) {
+  state.stream = name;
+  state.columns = [];
+  state.filters = [];
+  state.sort = { field: "", desc: true };
+  state.groupBy = [];
+  state.aggregates = [];
+  state.plot = { op: "count" };
+  state.order = { op: "count" };
+  closeColumnMenu();
+  hiddenThisQuery = [];
+  tempWidths = {};
+  clearExplore();
+  renderKindList();
+  if (!name) {
+    schemaData = null;
+    clearResults();
+    saveURL();
+    return;
+  }
+  await loadSchema();
+  rebuildExplore();
+  runQuery();
+}
+
+// clearResults empties the table and graph when no kind is selected.
+function clearResults() {
+  querySeq++; // drop an answer still on its way
+  lastResult = null;
+  $("head").replaceChildren();
+  $("body").replaceChildren();
+  $("graph").replaceChildren();
+  $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
+}
+
+// setMode switches between Logs and Spans and selects the new mode's first
+// kind with records.
+async function setMode(src) {
+  if (src === state.source) return;
+  state.source = src === "otel" ? "otel" : "log";
+  state.stream = "";
+  kindsOpen = false;
+  $("kind-filter").value = "";
+  syncMode();
+  try {
+    if (!(await loadKinds())) return;
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  selectKind(firstKind());
+}
+
+// setService switches the service, remembers it in this browser and keeps the
+// kind when the service has records of it, else selects its first kind with
+// records.
+async function setService(svc) {
+  if (svc === state.service) return;
+  state.service = svc;
+  storeService(svc);
+  try {
+    if (!(await loadKinds())) return;
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  if (!state.stream || !kinds.some((k) => k.name === state.stream && k.count > 0)) {
+    selectKind(firstKind());
+    return;
+  }
+  closeColumnMenu();
+  clearExplore();
+  await loadSchema(); // field settings are per service
+  rebuildExplore();
+  runQuery();
+}
+
+// fallbackKind replaces a kind the list doesn't have (an old URL's kind, or
+// the retired `span` stream) by the first kind with records, resetting the
+// query parts that belonged to it. With no kinds at all it keeps it.
+function fallbackKind() {
+  if (state.stream && listedKinds().some((k) => k.name === state.stream)) return;
+  const name = firstKind();
+  if (!name) return;
+  state.stream = name;
+  state.columns = [];
+  state.filters = [];
+  state.sort = { field: "", desc: true };
+  state.groupBy = [];
+  state.aggregates = [];
+  state.plot = { op: "count" };
+  state.order = { op: "count" };
 }
 
 // ---- results ----
@@ -863,7 +1118,18 @@ export async function runQuery() {
 async function refresh() {
   try {
     await loadSession();
+    await loadKinds();
+    // The URL's kind is checked once; later a kind that leaves the interval
+    // stays selected and shows 0.
+    if (!started || !state.stream) fallbackKind();
+    started = true;
     syncBar();
+    if (!state.stream) {
+      schemaData = null;
+      clearResults();
+      saveURL();
+      return;
+    }
     await loadSchema();
     rebuildExplore();
   } catch (err) {
@@ -896,13 +1162,6 @@ function fieldByPath(path) {
 
 function badge(text, cls) {
   return el("span", "badge" + (cls ? " badge-" + cls : ""), text);
-}
-
-// defaultColumns is the stream's saved default columns, or [] when the loaded
-// schema belongs to another stream.
-function defaultColumns() {
-  const sc = schemaData && schemaData.schema;
-  return sc && sc.stream === state.stream && sc.source === state.source && Array.isArray(sc.columns) ? sc.columns.slice() : [];
 }
 
 // currentColumns is the column paths the table shows now.
@@ -1150,7 +1409,7 @@ async function commitTriple(t) {
   // Validate the triple on its own, so errors of the whole query (bucket
   // count, plot, aggregates) are not blamed on it.
   try {
-    await api("POST", "/api/query", { stream: state.stream, source: state.source, range: state.range, filters: [f], limit: 1 });
+    await api("POST", "/api/query", { stream: state.stream, source: state.source, service: state.service, range: state.range, filters: [f], limit: 1 });
   } catch (err) {
     if (!triples.includes(t) || !sameFilter(candidate(t), f)) return; // edited meanwhile
     const had = !!t.filter;
@@ -2001,9 +2260,13 @@ function favStatus(msg, bad) {
 async function loadFavorites() {
   const list = $("fav-list");
   list.replaceChildren(el("li", "muted", "loading…"));
+  if (!state.service || state.service === ALL_SERVICES) {
+    list.replaceChildren(el("li", "muted", "choose a service to see its favorites"));
+    return;
+  }
   let favs;
   try {
-    favs = await api("GET", "/api/favorites");
+    favs = await api("GET", withSvc("/api/favorites"));
   } catch (err) {
     list.replaceChildren();
     favStatus(err.detail || err.message, true);
@@ -2045,7 +2308,9 @@ async function loadFavorite(f) {
   const before = streamKey();
   const prevStream = state.stream;
   const prevSource = state.source;
+  const prevService = state.service;
   applyQuery(JSON.parse(JSON.stringify(f.query || {})));
+  state.service = prevService; // a favorite belongs to the selected service
   if (!state.stream) {
     state.stream = prevStream;
     state.source = prevSource;
@@ -2057,6 +2322,7 @@ async function loadFavorite(f) {
   }
   syncBar();
   syncView();
+  reloadKinds(); // the mode or range may have changed
   clearExplore();
   if (streamKey() !== before || !schemaData) await loadSchema();
   rebuildExplore();
@@ -2067,15 +2333,19 @@ async function saveFavorite() {
   const name = prompt("Name for this favorite query:");
   if (name === null || !name.trim()) return;
   const n = name.trim();
+  if (!state.service || state.service === ALL_SERVICES) {
+    favStatus("Choose a service to save", true);
+    return;
+  }
   const path = "/api/favorites/" + encodeURIComponent(n);
   const body = JSON.parse(JSON.stringify(state));
   try {
     try {
-      await api("PUT", path, body);
+      await api("PUT", withSvc(path), body);
     } catch (err) {
       if (err.status !== 409) throw err;
       if (!confirm("A favorite named \"" + n + "\" exists. Overwrite it?")) return;
-      await api("PUT", path + "?overwrite=1", body);
+      await api("PUT", withSvc(path + "?overwrite=1"), body);
     }
     favStatus("saved \"" + n + "\"");
   } catch (err) {
@@ -2089,7 +2359,7 @@ async function saveFavorite() {
 async function deleteFavorite(name) {
   if (!confirm("Delete favorite \"" + name + "\"?")) return;
   try {
-    await api("DELETE", "/api/favorites/" + encodeURIComponent(name));
+    await api("DELETE", withSvc("/api/favorites/" + encodeURIComponent(name)));
     favStatus("deleted \"" + name + "\"");
   } catch (err) {
     favStatus(err.detail || err.message, true);

@@ -30,9 +30,24 @@
     <button type="button" class="tab" role="tab" data-view="graph">Graph</button>
   </section>
   <div class="sb-form">
+    <div id="sb-mode" class="sb-field">
+      <span class="sb-l" id="sb-mode-label">Mode</span>
+      <div class="sb-body tabs" role="group" aria-labelledby="sb-mode-label">
+        <button type="button" class="tab" data-source="log">Logs</button>
+        <button type="button" class="tab" data-source="otel">Spans</button>
+      </div>
+    </div>
+    <div id="sb-service" class="sb-field">
+      <label class="sb-l" for="service">Service</label>
+      <div class="sb-body"><select id="service"></select></div>
+    </div>
     <div id="sb-stream" class="sb-field">
-      <label class="sb-l" for="stream">Stream</label>
-      <div class="sb-body"><select id="stream"></select></div>
+      <span class="sb-l" id="sb-stream-label">Stream</span>
+      <div class="sb-body">
+        <div id="kind-list" class="kind-list" role="listbox" aria-labelledby="sb-stream-label"></div>
+        <button id="kind-more" type="button" class="link kind-more" hidden>More ▸</button>
+        <input id="kind-filter" type="search" placeholder="filter kinds" aria-label="filter kinds" hidden>
+      </div>
     </div>
     <div id="sb-from" class="sb-field">
       <label class="sb-l" for="from">From</label>

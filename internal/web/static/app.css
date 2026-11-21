@@ -233,3 +233,19 @@ td .muted { color: var(--muted); }
 .menu-item:disabled { color: var(--muted); cursor: default; opacity: 0.6; }
 .menu-list { display: flex; flex-direction: column; gap: 1px; min-width: 160px; max-width: 280px; max-height: calc(60vh - 20px); overflow-y: auto; }
 .menu-empty { padding: 3px 6px; font-size: 12px; }
+/* Mode switch: a .tabs row inside a sidebar field body. */
+.sb-body.tabs { flex-direction: row; gap: 0; }
+/* Kind list: one row per kind with its count in the interval. */
+.kind-list { display: flex; flex-direction: column; max-height: 22rem; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; }
+.kind-list:empty { display: none; }
+.kind-row { display: flex; align-items: baseline; gap: 6px; padding: 2px 6px; font-size: 12.5px; cursor: pointer; min-width: 0; }
+.kind-row:hover { background: var(--row-hover); }
+.kind-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kind-row.selected { background: var(--accent); color: #fff; }
+.kind-row.selected .kind-count { color: inherit; }
+.kind-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.kind-count { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.kind-zero:not(.selected) .kind-name { color: var(--muted); }
+.kind-sep { border-top: 1px solid var(--line); }
+.sb-body > .kind-more { align-self: flex-start; padding: 0 4px; font-size: 12.5px; }
+.sb-field .sb-body > #kind-filter { width: 100%; }
