@@ -634,7 +634,7 @@ let pins = [];
 let pinCounts = new Map();
 let pinsSeq = 0;
 
-// pinList is one service's pin list as PUT /api/pins sends it.
+// servicePins is one service's pin list as PUT /api/pins sends it.
 function servicePins(svc) {
   return pins.filter((p) => p.service === svc).map((p) => ({ source: p.source, kind: p.kind }));
 }
@@ -671,21 +671,29 @@ function pinnedKinds() {
 
 // togglePin pins or unpins kind name of the selected service and saves the
 // service's whole pin list.
-async function togglePin(name) {
+let pinSaves = Promise.resolve();
+
+function togglePin(name) {
   if (readOnly()) return;
   const svc = state.service;
-  const list = servicePins(svc);
-  const i = list.findIndex((p) => p.source === state.source && p.kind === name);
-  if (i >= 0) list.splice(i, 1);
-  else list.push({ source: state.source, kind: name });
-  try {
-    const r = await api("PUT", "/api/pins?service=" + encodeURIComponent(svc), { pins: list });
-    if (state.service !== svc) return;
-    pins = pins.filter((p) => p.service !== svc).concat(((r && r.pins) || []).map((p) => ({ source: p.source, kind: p.kind, service: svc })));
-    renderKindList();
-  } catch (err) {
-    showError("saving pins: " + (err.detail || err.message));
-  }
+  const source = state.source;
+  // Saves run one after another and each builds its list when it runs, from
+  // the list the previous save left, so two quick toggles both land.
+  const run = async () => {
+    const list = servicePins(svc);
+    const i = list.findIndex((p) => p.source === source && p.kind === name);
+    if (i >= 0) list.splice(i, 1);
+    else list.push({ source, kind: name });
+    try {
+      const r = await api("PUT", "/api/pins?service=" + encodeURIComponent(svc), { pins: list });
+      pins = pins.filter((p) => p.service !== svc).concat(((r && r.pins) || []).map((p) => ({ source: p.source, kind: p.kind, service: svc })));
+      if (state.service === svc) renderKindList();
+    } catch (err) {
+      showError("saving pins: " + (err.detail || err.message));
+    }
+  };
+  pinSaves = pinSaves.then(run);
+  return pinSaves;
 }
 
 // kindRowExtras adds the pin toggle to a kind row: shown on hover, always
@@ -858,6 +866,10 @@ async function setService(svc) {
   hiddenThisQuery = [];
   tempWidths = {};
   clearExplore();
+  // The columns of the previous service's favorite don't carry over.
+  const favs = await serviceFavorites();
+  if (state.service !== svc) return; // a newer switch took over
+  state.columns = favoriteColumns(favs, state.stream);
   if (!(await loadSchema())) return; // field settings are per service
   rebuildExplore();
   runQuery();
@@ -865,13 +877,15 @@ async function setService(svc) {
 
 // fallbackKind replaces a kind the list doesn't have (an old URL's kind, or
 // the retired `span` stream) by the first kind with records, resetting the
-// query parts that belonged to it. With no kinds at all it keeps it.
+// query parts that belonged to it. With no kinds at all it keeps it. It
+// returns true when it changed the kind.
 function fallbackKind() {
-  if (state.stream && listedKinds().some((k) => k.name === state.stream)) return;
+  if (state.stream && listedKinds().some((k) => k.name === state.stream)) return false;
   const name = firstKind();
-  if (!name) return;
+  if (!name) return false;
   state.stream = name;
   resetQueryParts();
+  return true;
 }
 
 // resetQueryParts clears the parts of the query that belong to one kind.
@@ -1239,7 +1253,11 @@ async function refresh() {
     await loadKinds();
     // The URL's kind is checked once; later a kind that leaves the interval
     // stays selected and shows 0.
-    if (!started || !state.stream) fallbackKind();
+    if ((!started || !state.stream) && fallbackKind()) {
+      const name = state.stream;
+      const favs = await serviceFavorites();
+      if (state.stream === name) state.columns = favoriteColumns(favs, name);
+    }
     started = true;
     syncBar();
     if (!state.stream) {
@@ -2216,16 +2234,22 @@ async function saveFieldFormat(path, patch) {
   // much of each value a cell shows.
   const visual = Object.keys(patch).some((k) => k !== "width");
   if (!visual) applyWidths();
+  const svc = state.service;
   const run = async () => {
-    if (state.stream !== stream || state.source !== source || !loaded()) return;
+    if (state.service !== svc || state.stream !== stream || state.source !== source || !loaded()) return;
     apply();
-    // Only the edited field is sent; the server merges it by path.
+    // Only the edited field is sent; the server merges it by path. Field
+    // settings are source-wide, so the kind's inferred type and visualizer go
+    // along only when this edit set them (a unit edit needs its type).
     const edited = schemaData.schema.fields.find((x) => x.path === path);
-    const body = { fields: [schemaFieldBody(edited)] };
+    const fb = schemaFieldBody(edited);
+    if (!("type" in patch) && !("unit" in patch)) fb.type = "";
+    if (!("visualizer" in patch)) fb.visualizer = "";
+    const body = { fields: [fb] };
     try {
       await api("PUT", schemaURL(stream, source), body);
       const fresh = await api("GET", schemaURL(stream, source));
-      if (state.stream !== stream || state.source !== source) return;
+      if (state.service !== svc || state.stream !== stream || state.source !== source) return;
       schemaData = fresh;
       fillFieldPaths();
       if (visual) {
@@ -2506,7 +2530,7 @@ async function loadFavorite(f) {
   syncView();
   reloadKinds(); // the mode or range may have changed
   clearExplore();
-  if (streamKey() !== before || !schemaData) await loadSchema();
+  if ((streamKey() !== before || !schemaData) && !(await loadSchema())) return; // a newer selection took over
   rebuildExplore();
   runQuery();
 }
@@ -2516,10 +2540,6 @@ async function saveFavorite() {
   const name = prompt("Name for this favorite query:");
   if (name === null || !name.trim()) return;
   const n = name.trim();
-  if (readOnly()) {
-    favStatus(NEED_SERVICE, true);
-    return;
-  }
   const path = "/api/favorites/" + encodeURIComponent(n);
   const body = JSON.parse(JSON.stringify(state));
   try {

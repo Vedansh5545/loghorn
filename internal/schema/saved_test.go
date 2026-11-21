@@ -213,3 +213,34 @@ func TestEffectiveSourceWide(t *testing.T) {
 		t.Error("untouched field marked saved")
 	}
 }
+
+// A width-only save in one kind must not retype the same path in another.
+func TestWidthOnlySaveKeepsInferredTypePerKind(t *testing.T) {
+	dir := evalDir(t)
+	if _, err := MergeFields(dir, "otel", []Field{{Path: "status", Width: 90}}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadFields(dir, "otel")
+	if err != nil || len(saved) != 1 || saved[0].Type != "" || saved[0].Visualizer != "" {
+		t.Fatalf("saved = %+v, %v", saved, err)
+	}
+	kindA := Schema{Stream: "a", Fields: []Field{{Path: "status", Type: TInt, Visualizer: VNumber}}}
+	kindB := Schema{Stream: "b", Fields: []Field{{Path: "status", Type: TString, Visualizer: VPlain}}}
+	for _, k := range []Schema{kindA, kindB} {
+		f, _ := Effective(k, saved).Field("status")
+		if f.Type != k.Fields[0].Type || f.Visualizer != k.Fields[0].Visualizer || f.Width != 90 || !f.Saved {
+			t.Errorf("kind %s: %+v", k.Stream, f)
+		}
+	}
+	// An explicit type edit is kept by a later width-only edit.
+	if _, err := MergeFields(dir, "otel", []Field{{Path: "status", Type: TInt, Visualizer: VNumber, Width: 90}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MergeFields(dir, "otel", []Field{{Path: "status", Width: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ = LoadFields(dir, "otel")
+	if saved[0].Type != TInt || saved[0].Visualizer != VNumber || saved[0].Width != 100 {
+		t.Errorf("after merge: %+v", saved[0])
+	}
+}

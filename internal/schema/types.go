@@ -61,9 +61,9 @@ func ValidUnit(t Type, unit string) bool {
 // Field is one field of a stream schema.
 type Field struct {
 	Path       string `toml:"path" json:"path"`
-	Type       Type   `toml:"type" json:"type"`
+	Type       Type   `toml:"type,omitempty" json:"type"`
 	Unit       string `toml:"unit,omitempty" json:"unit,omitempty"` // timestamp: s|ms|us|ns; duration: display unit
-	Visualizer string `toml:"visualizer" json:"visualizer"`
+	Visualizer string `toml:"visualizer,omitempty" json:"visualizer"`
 	Label      string `toml:"label,omitempty" json:"label,omitempty"`
 	Hidden     bool   `toml:"hidden,omitempty" json:"hidden,omitempty"`
 	// Width is in pixels; 0 = automatic. BurntSushi/toml's omitempty does not

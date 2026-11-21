@@ -79,7 +79,8 @@ var spanRules = []struct {
 	}},
 }
 
-// SpanStream names the stream of a span by its kind and attributes: the first
+// SpanStream returns a span's span.type (not the record's stream, which for an
+// unclassified span is its name), by its kind and attributes: the first
 // matching rule wins, else StreamSpan. An attribute is present when its key
 // exists with a non-nil value.
 func SpanStream(kind string, attrs map[string]any) string {

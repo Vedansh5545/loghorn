@@ -27,16 +27,18 @@ var validVisualizers = map[string]bool{
 // validateField checks a field's Type, Visualizer and Unit against the
 // constants; the error names the field.
 func validateField(f Field) error {
-	if !validTypes[f.Type] {
+	// Type and Visualizer may be empty: a saved field then leaves the inferred
+	// value alone, so a width-only edit never pins the kind's inferred type.
+	if f.Type != "" && !validTypes[f.Type] {
 		return fmt.Errorf("field %q: unknown type %q", f.Path, f.Type)
 	}
-	if !validVisualizers[f.Visualizer] {
+	if f.Visualizer != "" && !validVisualizers[f.Visualizer] {
 		return fmt.Errorf("field %q: unknown visualizer %q", f.Path, f.Visualizer)
 	}
 	if f.Width < 0 {
 		return fmt.Errorf("field %q: negative width %d", f.Path, f.Width)
 	}
-	if !ValidUnit(f.Type, f.Unit) {
+	if f.Type != "" && !ValidUnit(f.Type, f.Unit) {
 		return fmt.Errorf("field %q: invalid unit %q for type %s", f.Path, f.Unit, f.Type)
 	}
 	return nil
@@ -121,7 +123,7 @@ func LoadFields(dir, source string) ([]Field, error) {
 	for i := range f.Fields {
 		// A hand-edited file may leave the visualizer out; use the default
 		// for the field's type rather than locking out the whole file.
-		if x := &f.Fields[i]; x.Visualizer == "" {
+		if x := &f.Fields[i]; x.Visualizer == "" && x.Type != "" {
 			x.Visualizer = DefaultVisualizer(x.Path, x.Type)
 		}
 		if err := validateField(f.Fields[i]); err != nil {
@@ -157,6 +159,13 @@ func MergeFields(dir, source string, fields []Field) (path string, err error) {
 	}
 	for _, f := range fields {
 		if i, ok := byPath[f.Path]; ok {
+			// An empty type or visualizer means "not edited": keep the saved one.
+			if f.Type == "" {
+				f.Type = cur[i].Type
+			}
+			if f.Visualizer == "" {
+				f.Visualizer = cur[i].Visualizer
+			}
 			cur[i] = f
 			continue
 		}
@@ -187,7 +196,18 @@ func Effective(inferred Schema, saved []Field) Schema {
 	for _, sf := range saved {
 		if i, ok := byPath[sf.Path]; ok {
 			f := &out.Fields[i]
-			f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width, f.Wrap = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width, sf.Wrap
+			// Only a set type or visualizer overrides the inferred one, so
+			// settings saved from one kind don't retype the same path in another.
+			if sf.Type != "" {
+				f.Type = sf.Type
+			}
+			if sf.Visualizer != "" {
+				f.Visualizer = sf.Visualizer
+			}
+			f.Unit, f.Label, f.Hidden, f.Width, f.Wrap = sf.Unit, sf.Label, sf.Hidden, sf.Width, sf.Wrap
+			if !ValidUnit(f.Type, f.Unit) {
+				f.Unit = ""
+			}
 			f.Saved = true
 		}
 	}

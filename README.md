@@ -264,7 +264,9 @@ that service. A record's service is its `service.namespace`, else its
 
 Earlier versions saved schemas and favorites in the repo's `.config/loghorn/`;
 that is no longer read, and loghorn says so once per repo. To keep the
-favorites, copy them to a service by hand:
+favorites, copy them to a service by hand. `<key>` is the escaped service key:
+bytes other than letters, digits, `.`, `_` and `-` become `%XX`, and a leading
+`.` becomes `%2E`.
 
 ```sh
 mkdir -p ~/.config/loghorn/services/<key> && cp .config/loghorn/queries.toml ~/.config/loghorn/services/<key>/

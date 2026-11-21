@@ -21,7 +21,7 @@ type Record struct {
 	Seq           int            // assigned by store.Add, 1-based
 	Time          time.Time      // effective time (store fills inherited ones)
 	TimeInherited bool           // Time was not the record's own
-	Stream        string         // labels.schema, or the span stream
+	Stream        string         // labels.schema, or the span's kind
 	Service       string         // service key; empty until the store fills it
 	Source        string         // SourceLog or SourceOtel; empty means SourceLog
 	Fields        map[string]any // canonical dotted path -> string | json.Number | bool | nil | []any
