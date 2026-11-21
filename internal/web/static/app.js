@@ -678,13 +678,7 @@ function renderKindList() {
 // selects nothing and clears the results.
 async function selectKind(name) {
   state.stream = name;
-  state.columns = [];
-  state.filters = [];
-  state.sort = { field: "", desc: true };
-  state.groupBy = [];
-  state.aggregates = [];
-  state.plot = { op: "count" };
-  state.order = { op: "count" };
+  resetQueryParts();
   closeColumnMenu();
   hiddenThisQuery = [];
   tempWidths = {};
@@ -696,7 +690,7 @@ async function selectKind(name) {
     saveURL();
     return;
   }
-  await loadSchema();
+  if (!(await loadSchema())) return; // a newer selection took over
   rebuildExplore();
   runQuery();
 }
@@ -747,8 +741,10 @@ async function setService(svc) {
     return;
   }
   closeColumnMenu();
+  hiddenThisQuery = [];
+  tempWidths = {};
   clearExplore();
-  await loadSchema(); // field settings are per service
+  if (!(await loadSchema())) return; // field settings are per service
   rebuildExplore();
   runQuery();
 }
@@ -761,6 +757,11 @@ function fallbackKind() {
   const name = firstKind();
   if (!name) return;
   state.stream = name;
+  resetQueryParts();
+}
+
+// resetQueryParts clears the parts of the query that belong to one kind.
+function resetQueryParts() {
   state.columns = [];
   state.filters = [];
   state.sort = { field: "", desc: true };
@@ -1103,7 +1104,10 @@ let querySeq = 0;
 
 export async function runQuery() {
   saveURL();
-  if (!state.stream) return;
+  if (!state.stream) {
+    clearResults();
+    return;
+  }
   const mine = ++querySeq;
   try {
     const result = await api("POST", "/api/query", state);
@@ -1130,7 +1134,7 @@ async function refresh() {
       saveURL();
       return;
     }
-    await loadSchema();
+    if (!(await loadSchema())) return; // a newer selection took over
     rebuildExplore();
   } catch (err) {
     showError(err.message);
@@ -1141,15 +1145,24 @@ async function refresh() {
 
 // ---- schema of the current stream ----
 
+let schemaSeq = 0;
+
+// loadSchema loads the current kind's schema. It returns false, dropping the
+// answer, when a newer call (another kind, mode or service) superseded it.
 async function loadSchema() {
+  const mine = ++schemaSeq;
   schemaData = null;
-  if (!state.stream) return;
+  if (!state.stream) return true;
+  let data = null;
   try {
-    schemaData = await api("GET", schemaURL(state.stream, state.source));
+    data = await api("GET", schemaURL(state.stream, state.source));
   } catch (err) {
-    showError(err.message);
+    if (mine === schemaSeq) showError(err.message);
   }
+  if (mine !== schemaSeq) return false;
+  schemaData = data;
   fillFieldPaths();
+  return true;
 }
 
 function schemaFields() {
