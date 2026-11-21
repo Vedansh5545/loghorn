@@ -17,27 +17,38 @@ import (
 
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/store"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 )
 
 type fixture struct {
 	srv  *httptest.Server
-	repo string // temp repo root holding .git
+	base string // temp config base (<base>/services/<key>/)
 }
 
 func newFixture(t *testing.T, files ...string) *fixture {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	st := store.New(store.ModeHistorical, time.Time{})
 	if err := store.Preload(st, files, config.Input{}); err != nil {
 		t.Fatal(err)
 	}
-	repo := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	base := t.TempDir()
 	now := time.Date(2026, 11, 17, 18, 0, 0, 0, time.UTC)
-	srv := httptest.NewServer(New(Options{Store: st, StartDir: repo, Now: func() time.Time { return now }}))
+	srv := httptest.NewServer(New(Options{Store: st, ConfigBase: base, Now: func() time.Time { return now }}))
 	t.Cleanup(srv.Close)
-	return &fixture{srv: srv, repo: repo}
+	return &fixture{srv: srv, base: base}
+}
+
+// svcDir is the config dir of service key under the fixture's base.
+func (f *fixture) svcDir(key string) string { return svcconf.Dir(f.base, key) }
+
+// noServices fails when a refused write created any service config.
+func (f *fixture) noServices(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(f.base, "services")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused write created config: %v", err)
+	}
 }
 
 const pino = "../../testdata/web/pino.log"
@@ -115,7 +126,7 @@ type schemaResp struct {
 		Fields  []struct {
 			Path, Type, Visualizer, Inferred string
 			Count                            int
-			New, Saved                       bool
+			Saved                            bool
 		}
 	}
 	Ops map[string][]string
@@ -214,12 +225,12 @@ func TestQueryValidation400(t *testing.T) {
 
 func TestSchemaPutWritesFile(t *testing.T) {
 	f := newFixture(t, pino)
-	body := `{"stream":"db","columns":["latency"],"fields":[{"path":"latency","type":"duration","unit":"ms","visualizer":"duration"}]}`
+	body := `{"fields":[{"path":"latency","type":"duration","unit":"ms","visualizer":"duration"}]}`
 	code, b := f.do(t, http.MethodPut, "/api/schema?stream=db", body, "")
 	if code != 200 {
 		t.Fatalf("PUT = %d %s", code, b)
 	}
-	want := filepath.Join(f.repo, ".config", "loghorn", "fields-log.toml")
+	want := filepath.Join(f.svcDir("default"), "fields-log.toml")
 	var res struct{ Path string }
 	if err := json.Unmarshal(b, &res); err != nil || res.Path != want {
 		t.Fatalf("response %s; want path %s", b, want)
@@ -235,37 +246,29 @@ func TestSchemaPutWritesFile(t *testing.T) {
 			t.Fatalf("saved field not marked saved: %+v", fl)
 		}
 	}
-	var sess struct {
-		ConfigDir   string
-		ConfigFound bool
-	}
+	var sess struct{ ConfigBase string }
 	f.getJSON(t, "/api/session", &sess)
-	if !sess.ConfigFound || sess.ConfigDir != filepath.Join(f.repo, ".config", "loghorn") {
+	if sess.ConfigBase != f.base {
 		t.Fatalf("session = %+v", sess)
 	}
 }
 
-func TestSchemaPutBadStream400(t *testing.T) {
+func TestSchemaPutInvalid400(t *testing.T) {
 	f := newFixture(t, pino)
-	cases := []struct{ stream, body string }{
-		{"", `{"fields":[]}`},
-		{"db", `{"stream":"api","fields":[]}`}, // body names another stream
-		{"db", `{"fields":[{"path":"latency","type":"weird","visualizer":"text"}]}`},        // validation
-		{"db", `{"fields":[{"path":"latency","type":"int","unit":"ms","visualizer":"x"}]}`}, // validation
-		{"db", `{"fields":`},
-	}
-	for _, c := range cases {
-		code, b := f.do(t, http.MethodPut, "/api/schema?stream="+c.stream, c.body, "")
+	for _, body := range []string{
+		`{"fields":[{"path":"latency","type":"weird","visualizer":"text"}]}`,
+		`{"fields":[{"path":"latency","type":"int","unit":"ms","visualizer":"x"}]}`,
+		`{"fields":`,
+	} {
+		code, b := f.do(t, http.MethodPut, "/api/schema", body, "")
 		wantError(t, code, 400, b)
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a refused PUT created .config: %v", err)
-	}
+	f.noServices(t)
 }
 
 func TestRecordSQLFormatted(t *testing.T) {
 	f := newFixture(t, pino)
-	sdir := filepath.Join(f.repo, ".config", "loghorn")
+	sdir := f.svcDir("default")
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -360,9 +363,7 @@ func TestForeignHostWrites403(t *testing.T) {
 			}
 		}
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a refused write created .config: %v", err)
-	}
+	f.noServices(t)
 }
 
 func TestForeignOrigin403(t *testing.T) {
@@ -376,9 +377,7 @@ func TestForeignOrigin403(t *testing.T) {
 		code, b = f.do(t, http.MethodDelete, "/api/favorites/x", "", o)
 		wantError(t, code, 403, b)
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a refused write created .config: %v", err)
-	}
+	f.noServices(t)
 }
 
 func TestMissingOriginPut403(t *testing.T) {
@@ -389,9 +388,7 @@ func TestMissingOriginPut403(t *testing.T) {
 	wantError(t, code, 403, b)
 	code, b = f.do(t, http.MethodDelete, "/api/favorites/x", "", "-")
 	wantError(t, code, 403, b)
-	if _, err := os.Stat(filepath.Join(f.repo, ".config")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a refused write created .config: %v", err)
-	}
+	f.noServices(t)
 }
 
 func TestFavoritesRoutes(t *testing.T) {
@@ -417,7 +414,7 @@ func TestFavoritesRoutes(t *testing.T) {
 	if len(favs) != 1 || favs[0].Name != "slow db / errors" || favs[0].Query.Stream != "api" {
 		t.Fatalf("favorites = %+v", favs)
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config", "loghorn", "queries.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(f.svcDir("default"), "queries.toml")); err != nil {
 		t.Fatal(err)
 	}
 	code, b = f.do(t, http.MethodPut, "/api/favorites/"+strings.Repeat("n", 101), `{}`, "")
@@ -436,13 +433,13 @@ func TestEmptyStore(t *testing.T) {
 		t.Fatalf("streams = %d %s; want []", code, b)
 	}
 	var sess struct {
-		Mode        string
-		Count       int
-		RunStart    *string
-		ConfigFound bool
+		Mode       string
+		Count      int
+		RunStart   *string
+		ConfigBase string
 	}
 	f.getJSON(t, "/api/session", &sess)
-	if sess.Count != 0 || sess.Mode != "historical" || sess.RunStart != nil || sess.ConfigFound {
+	if sess.Count != 0 || sess.Mode != "historical" || sess.RunStart != nil || sess.ConfigBase != f.base {
 		t.Fatalf("session = %+v", sess)
 	}
 }
@@ -519,7 +516,7 @@ func TestSpanAndLogStreamsApart(t *testing.T) {
 		Matched, StreamTotal int
 		Columns              []struct{ Path string }
 	}
-	q := `{"stream":"db","source":"otel","range":{"from":"all"},"columns":["db.query.text","duration_ms"]}`
+	q := `{"stream":"db","source":"otel","service":"demo-svc","range":{"from":"all"},"columns":["db.query.text","duration_ms"]}`
 	code, b := f.do(t, http.MethodPost, "/api/query", q, "")
 	if code != 200 {
 		t.Fatalf("otel query = %d %s", code, b)
@@ -549,7 +546,7 @@ func TestSpanAndLogStreamsApart(t *testing.T) {
 			Fields []struct{ Path string }
 		}
 	}
-	f.getJSON(t, "/api/schema?stream=db&source=otel", &sch)
+	f.getJSON(t, "/api/schema?stream=db&source=otel&service=demo-svc", &sch)
 	hasField := false
 	for _, fl := range sch.Schema.Fields {
 		hasField = hasField || fl.Path == "db.query.text"
@@ -563,7 +560,7 @@ func TestSpanAndLogStreamsApart(t *testing.T) {
 
 func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
 	f := newFixture(t, pino, spans)
-	code, b := f.do(t, http.MethodGet, "/api/schema?stream=db&source=otel", "", "")
+	code, b := f.do(t, http.MethodGet, "/api/schema?stream=db&source=otel&service=demo-svc", "", "")
 	if code != 200 {
 		t.Fatalf("GET = %d %s", code, b)
 	}
@@ -572,7 +569,7 @@ func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(resp.Schema)
-	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=otel", body, "")
+	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=otel&service=demo-svc", body, "")
 	if code != 200 {
 		t.Fatalf("PUT = %d %s", code, b)
 	}
@@ -580,11 +577,11 @@ func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
 	if err := json.Unmarshal(b, &res); err != nil || !strings.HasSuffix(res.Path, "fields-otel.toml") {
 		t.Fatalf("response %s", b)
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config", "loghorn", "fields-log.toml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(f.svcDir("demo-svc"), "fields-log.toml")); !os.IsNotExist(err) {
 		t.Fatalf("log schema file written: %v", err)
 	}
 	var got schemaResp
-	f.getJSON(t, "/api/schema?stream=db&source=otel", &got)
+	f.getJSON(t, "/api/schema?stream=db&source=otel&service=demo-svc", &got)
 	saved := 0
 	for _, fl := range got.Schema.Fields {
 		if fl.Saved {
@@ -601,9 +598,255 @@ func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
 			t.Fatalf("log field marked saved: %+v", fl)
 		}
 	}
-	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=otel",
-		`{"stream":"db","source":"log","columns":[],"fields":[]}`, "")
-	wantError(t, code, 400, b)
 	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=bogus", body, "")
 	wantError(t, code, 400, b)
+}
+
+const services = "../../testdata/web/services.jsonl"
+
+type kindsResp struct {
+	Kinds []struct {
+		Name  string
+		Count int
+	}
+	Services []struct {
+		Key   string
+		Count int
+	}
+}
+
+func (k kindsResp) count(name string) (int, bool) {
+	for _, c := range k.Kinds {
+		if c.Name == name {
+			return c.Count, true
+		}
+	}
+	return 0, false
+}
+
+func TestKindsFollowRange(t *testing.T) {
+	f := newFixture(t, services)
+	var all kindsResp
+	f.getJSON(t, "/api/kinds?source=otel&service=shop-api&from=all", &all)
+	if n, _ := all.count("sweep orders"); n != 12 {
+		t.Errorf("sweep orders = %d; want 12 (%+v)", n, all.Kinds)
+	}
+	if n, _ := all.count("db"); n != 6 {
+		t.Errorf("db = %d; want 6 (%+v)", n, all.Kinds)
+	}
+	if n, _ := all.count("http.server"); n != 4 {
+		t.Errorf("http.server = %d; want 4 (%+v)", n, all.Kinds)
+	}
+	if len(all.Services) != 2 || all.Services[0].Key != "shop-api" || all.Services[0].Count != 88 ||
+		all.Services[1].Key != "mail" || all.Services[1].Count != 5 {
+		t.Errorf("services = %+v", all.Services)
+	}
+	var early kindsResp
+	f.getJSON(t, "/api/kinds?source=otel&service=shop-api&from=2026-11-17T16:00:00Z&to=2026-11-17T16:30:00Z", &early)
+	if _, ok := early.count("db"); ok {
+		t.Errorf("db before 16:30: %+v", early.Kinds)
+	}
+	if n, _ := early.count("sweep orders"); n == 0 || n >= 12 {
+		t.Errorf("sweep orders before 16:30 = %d; want some, not all", n)
+	}
+	var logs kindsResp
+	f.getJSON(t, "/api/kinds?source=log&from=all", &logs)
+	if n, _ := logs.count("db"); n != 3 || len(logs.Kinds) != 1 {
+		t.Errorf("default log kinds = %+v", logs.Kinds)
+	}
+	var every kindsResp
+	f.getJSON(t, "/api/kinds?source=otel&service=*&from=all", &every)
+	if n, _ := every.count("send email"); n != 12 {
+		t.Errorf("send email over all services = %d; want 12", n)
+	}
+}
+
+func TestKindsUnknownServiceEmpty(t *testing.T) {
+	f := newFixture(t, services)
+	code, b := f.do(t, http.MethodGet, "/api/kinds?source=otel&service=nobody&from=all", "", "")
+	if code != 200 || !strings.Contains(string(b), `"kinds":[]`) {
+		t.Fatalf("kinds = %d %s", code, b)
+	}
+	var got kindsResp
+	if err := json.Unmarshal(b, &got); err != nil || len(got.Services) != 2 {
+		t.Fatalf("services = %s (%v)", b, err)
+	}
+}
+
+func TestKindsBadRange400(t *testing.T) {
+	f := newFixture(t, services)
+	for _, q := range []string{"from=yesterday", "to=later", "source=bogus"} {
+		code, b := f.do(t, http.MethodGet, "/api/kinds?service=shop-api&"+q, "", "")
+		wantError(t, code, 400, b)
+	}
+}
+
+func TestPinsRoundTrip(t *testing.T) {
+	f := newFixture(t, services)
+	var got struct {
+		Pins []struct{ Source, Kind string }
+	}
+	f.getJSON(t, "/api/pins?service=shop-api", &got)
+	if got.Pins == nil || len(got.Pins) != 0 {
+		t.Fatalf("empty pins = %#v", got.Pins)
+	}
+	code, b := f.do(t, http.MethodPut, "/api/pins?service=shop-api", `{"pins":[{"source":"otel","kind":"db"},{"source":"otel","kind":"db"}]}`, "")
+	if code != 200 || json.Unmarshal(b, &got) != nil || len(got.Pins) != 1 || got.Pins[0].Kind != "db" {
+		t.Fatalf("PUT = %d %s", code, b)
+	}
+	got.Pins = nil
+	f.getJSON(t, "/api/pins?service=shop-api", &got)
+	if len(got.Pins) != 1 || got.Pins[0].Source != "otel" || got.Pins[0].Kind != "db" {
+		t.Fatalf("pins = %+v", got.Pins)
+	}
+	if _, err := os.Stat(filepath.Join(f.base, "services", "shop-api", "pins.toml")); err != nil {
+		t.Fatal(err)
+	}
+	code, b = f.do(t, http.MethodPut, "/api/pins?service=*", `{"pins":[]}`, "")
+	wantError(t, code, 400, b)
+	if !strings.Contains(string(b), "Choose a service to save") {
+		t.Errorf("PUT * = %s", b)
+	}
+	code, b = f.do(t, http.MethodGet, "/api/pins?service=*", "", "")
+	wantError(t, code, 400, b)
+	code, b = f.do(t, http.MethodPut, "/api/pins?service=mail", `{"pins":[{"source":"bogus","kind":"db"}]}`, "")
+	wantError(t, code, 400, b)
+	code, b = f.do(t, http.MethodPut, "/api/pins?service=mail", `{"pins":`, "")
+	wantError(t, code, 400, b)
+	if _, err := os.Stat(f.svcDir("mail")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused pin PUT created config: %v", err)
+	}
+}
+
+func TestQueryServiceFilter(t *testing.T) {
+	f := newFixture(t, services)
+	matched := func(body string) int {
+		t.Helper()
+		code, b := f.do(t, http.MethodPost, "/api/query", body, "")
+		var res struct{ Matched int }
+		if code != 200 || json.Unmarshal(b, &res) != nil {
+			t.Fatalf("query %s = %d %s", body, code, b)
+		}
+		return res.Matched
+	}
+	if n := matched(`{"stream":"send email","source":"otel","service":"mail","range":{"from":"all"}}`); n != 3 {
+		t.Errorf("mail send email = %d; want 3", n)
+	}
+	if n := matched(`{"stream":"send email","source":"otel","service":"*","range":{"from":"all"}}`); n != 12 {
+		t.Errorf("all send email = %d; want 12", n)
+	}
+	if n := matched(`{"stream":"db","range":{"from":"all"}}`); n != 3 {
+		t.Errorf("default log db = %d; want the 3 pino lines", n)
+	}
+	if n := matched(`{"stream":"db","service":"nobody","range":{"from":"all"}}`); n != 0 {
+		t.Errorf("unknown service db = %d; want 0", n)
+	}
+}
+
+func TestSchemaPutMergesBySource(t *testing.T) {
+	f := newFixture(t, services)
+	body := `{"fields":[{"path":"duration_ms","type":"duration","visualizer":"duration","unit":"ms"}]}`
+	code, b := f.do(t, http.MethodPut, "/api/schema?source=otel&service=shop-api", body, "")
+	if code != 200 {
+		t.Fatalf("PUT = %d %s", code, b)
+	}
+	var res struct{ Path string }
+	want := filepath.Join(f.svcDir("shop-api"), "fields-otel.toml")
+	if json.Unmarshal(b, &res) != nil || res.Path != want {
+		t.Fatalf("response %s; want %s", b, want)
+	}
+	for _, kind := range []string{"db", url.QueryEscape("sweep orders")} {
+		var got schemaResp
+		f.getJSON(t, "/api/schema?stream="+kind+"&source=otel&service=shop-api", &got)
+		ok := false
+		for _, fl := range got.Schema.Fields {
+			ok = ok || (fl.Path == "duration_ms" && fl.Saved && fl.Type == "duration")
+		}
+		if !ok {
+			t.Errorf("%s: duration_ms not saved: %+v", kind, got.Schema.Fields)
+		}
+	}
+	// Another service and the all-services view apply nothing.
+	for _, svc := range []string{"mail", url.QueryEscape("*")} {
+		var got schemaResp
+		f.getJSON(t, "/api/schema?stream="+url.QueryEscape("send email")+"&source=otel&service="+svc, &got)
+		for _, fl := range got.Schema.Fields {
+			if fl.Saved {
+				t.Errorf("%s: field saved: %+v", svc, fl)
+			}
+		}
+	}
+	data, err := os.ReadFile(want)
+	if err != nil || strings.Count(string(data), "[[field]]") != 1 {
+		t.Fatalf("file: %v\n%s", err, data)
+	}
+	code, b = f.do(t, http.MethodPut, "/api/schema?source=otel&service=*", body, "")
+	wantError(t, code, 400, b)
+	if !strings.Contains(string(b), "Choose a service to save") {
+		t.Errorf("PUT * = %s", b)
+	}
+	code, b = f.do(t, http.MethodPut, "/api/schema?source=bogus&service=shop-api", body, "")
+	wantError(t, code, 400, b)
+}
+
+func TestSchemaPutConcurrentMerge(t *testing.T) {
+	f := newFixture(t, services)
+	const n = 20
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			body := fmt.Sprintf(`{"fields":[{"path":"f%02d","type":"string","visualizer":"plain"}]}`, i)
+			req, _ := http.NewRequest(http.MethodPut, f.srv.URL+"/api/schema?source=otel&service=shop-api", strings.NewReader(body))
+			req.Header.Set("Origin", f.srv.URL)
+			resp, err := f.srv.Client().Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode != 200 {
+					err = fmt.Errorf("PUT f%02d = %d", i, resp.StatusCode)
+				}
+			}
+			errs <- err
+		}(i)
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Error(err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(f.svcDir("shop-api"), "fields-otel.toml"))
+	if err != nil || strings.Count(string(data), "[[field]]") != n {
+		t.Fatalf("file: %v\n%s", err, data)
+	}
+}
+
+func TestFavoritesPerService(t *testing.T) {
+	f := newFixture(t, services)
+	if code, b := f.do(t, http.MethodPut, "/api/favorites/x?service=shop-api", `{"stream":"db","source":"otel","service":"shop-api"}`, ""); code != 200 {
+		t.Fatalf("PUT = %d %s", code, b)
+	}
+	var favs []struct{ Name string }
+	f.getJSON(t, "/api/favorites?service=mail", &favs)
+	if favs == nil || len(favs) != 0 {
+		t.Fatalf("mail favorites = %#v", favs)
+	}
+	f.getJSON(t, "/api/favorites?service=shop-api", &favs)
+	if len(favs) != 1 || favs[0].Name != "x" {
+		t.Fatalf("shop-api favorites = %+v", favs)
+	}
+	data, err := os.ReadFile(filepath.Join(f.svcDir("shop-api"), "queries.toml"))
+	if err != nil || strings.Contains(string(data), "service") {
+		t.Fatalf("queries.toml: %v\n%s", err, data)
+	}
+	code, b := f.do(t, http.MethodGet, "/api/favorites?service=*", "", "")
+	wantError(t, code, 400, b)
+	for _, m := range []string{http.MethodPut, http.MethodDelete} {
+		code, b := f.do(t, m, "/api/favorites/x?service=*", `{"stream":"db"}`, "")
+		wantError(t, code, 400, b)
+		if !strings.Contains(string(b), "Choose a service to save") {
+			t.Errorf("%s * = %s", m, b)
+		}
+	}
+	if code, b := f.do(t, http.MethodDelete, "/api/favorites/x?service=shop-api", "", ""); code != 200 {
+		t.Fatalf("DELETE = %d %s", code, b)
+	}
 }

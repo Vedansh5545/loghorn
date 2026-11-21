@@ -3,8 +3,11 @@
 //
 //	go run ./internal/web/demo [-port 8790] FILE...
 //
-// Saved schemas and favorites go to the .config/loghorn of the working
-// directory's git repo, so run it from a scratch directory.
+// Pins, favorites and field settings go to the user's config,
+// $XDG_CONFIG_HOME/loghorn/services/<service>/ (else ~/.config/loghorn/...),
+// so run it with a scratch config:
+//
+//	XDG_CONFIG_HOME=$(mktemp -d) go run ./internal/web/demo FILE...
 package main
 
 import (
@@ -17,6 +20,7 @@ import (
 
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/store"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 	"github.com/jimbeveridge/loghorn/internal/web"
 )
 
@@ -32,7 +36,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "demo:", err)
 		os.Exit(1)
 	}
-	wd, err := os.Getwd()
+	base, err := svcconf.BaseFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "demo:", err)
 		os.Exit(1)
@@ -42,7 +46,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "demo:", err)
 		os.Exit(1)
 	}
-	srv := &http.Server{Handler: web.New(web.Options{Store: st, StartDir: wd}), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: web.New(web.Options{Store: st, ConfigBase: base}), ReadHeaderTimeout: 10 * time.Second}
 	fmt.Printf("loghorn demo: http://%s/ (%d records)\n", l.Addr(), st.Info().Count)
 	go func() {
 		ch := make(chan os.Signal, 1)

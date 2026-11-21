@@ -252,10 +252,27 @@ its own row and the other filters keep working). Three modes share it:
 
 The URL carries the query, and a favorite saves the mode with it.
 
-Schemas (field types, display and column widths) and favorite queries are saved as TOML in
-the repo's `.config/loghorn/`: `schemas/<stream>.toml` for log streams,
-`schemas/otel/<stream>.toml` for span streams, and `queries.toml`.
-Nothing is written under your home directory.
+Pins, favorite queries and field settings (types, display and column widths)
+are saved as TOML per service, in `~/.config/loghorn/services/<service>/`
+(`$XDG_CONFIG_HOME/loghorn/services/<service>/` when that is set):
+`pins.toml`, `queries.toml`, and `fields-log.toml` / `fields-otel.toml` for
+log and span fields. A field setting applies to every kind of its source in
+that service. A record's service is its `service.namespace`, else its
+`service.name` (or a Cloud Logging `resource.labels.service_name`), else
+`default`; the lines of a launched command (`-- cmd`) that name none take
+`OTEL_SERVICE_NAME` from the environment. *All* services is read only.
+
+Earlier versions saved schemas and favorites in the repo's `.config/loghorn/`;
+that is no longer read, and loghorn says so once per repo. To keep the
+favorites, copy them to a service by hand:
+
+```sh
+mkdir -p ~/.config/loghorn/services/<key> && cp .config/loghorn/queries.toml ~/.config/loghorn/services/<key>/
+```
+
+Old `schemas/*.toml` are not converted: re-save their fields one by one in the
+page, or paste their `[[field]]` entries into `fields-log.toml` /
+`fields-otel.toml`. `.config/loghorn/config.toml` stays where it is.
 
 ## Flags
 

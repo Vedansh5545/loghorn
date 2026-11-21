@@ -24,28 +24,34 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/schema"
 	"github.com/jimbeveridge/loghorn/internal/sqlfmt"
 	"github.com/jimbeveridge/loghorn/internal/store"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 )
 
 //go:embed static
 var embedded embed.FS
 
-// maxBody caps request bodies (schemas, queries, favorites).
+// maxBody caps request bodies (schemas, queries, favorites, pins).
 const maxBody = 1 << 20
 
 // Options configures the handler.
 type Options struct {
-	Store    *store.Store
-	StartDir string           // where FindConfigDir starts (the working directory)
-	Now      func() time.Time // nil means time.Now
+	Store *store.Store
+	// ConfigBase holds the per-service config: <ConfigBase>/services/<key>/
+	// (svcconf.Dir) with pins, favorites and field settings.
+	ConfigBase string
+	Now        func() time.Time // nil means time.Now
 }
+
+// schemaKey identifies a cached inferred schema.
+type schemaKey struct{ Service, Source, Name string }
 
 type server struct {
 	o       Options
 	static  fs.FS
-	writeMu sync.Mutex // serialises schema and favorites file writes
+	writeMu sync.Mutex // serialises pins, field settings and favorites writes
 
 	cacheMu sync.Mutex
-	cache   map[record.StreamKey]cachedSchema // inferred schema per (source, stream)
+	cache   map[schemaKey]cachedSchema // inferred schema per (service, source, stream)
 }
 
 type cachedSchema struct {
@@ -67,12 +73,15 @@ func New(o Options) http.Handler {
 	if err != nil {
 		panic(err) // the embed directive guarantees static/ exists
 	}
-	s := &server{o: o, static: sub, cache: map[record.StreamKey]cachedSchema{}}
+	s := &server{o: o, static: sub, cache: map[schemaKey]cachedSchema{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(sub)))
 	mux.HandleFunc("GET /api/session", s.session)
 	mux.HandleFunc("GET /api/streams", s.streams)
+	mux.HandleFunc("GET /api/kinds", s.kinds)
+	mux.HandleFunc("GET /api/pins", s.getPins)
+	mux.HandleFunc("PUT /api/pins", s.putPins)
 	mux.HandleFunc("GET /api/schema", s.getSchema)
 	mux.HandleFunc("PUT /api/schema", s.putSchema)
 	mux.HandleFunc("POST /api/query", s.query)
@@ -152,8 +161,46 @@ func (s *server) index(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
-func (s *server) configDir() (string, bool, error) {
-	return schema.FindConfigDir(s.o.StartDir)
+// allServices is the service value that means every service (read only).
+const allServices = "*"
+
+// serviceParam is ?service=, with "" meaning record.DefaultService.
+func serviceParam(r *http.Request) string {
+	return orDefault(r.URL.Query().Get("service"))
+}
+
+func orDefault(svc string) string {
+	if svc == "" {
+		return record.DefaultService
+	}
+	return svc
+}
+
+// saveService is the ?service= a write applies to. All services can't be
+// written: it writes a 400 and returns false.
+func saveService(w http.ResponseWriter, r *http.Request) (string, bool) {
+	svc := serviceParam(r)
+	if svc == allServices {
+		writeError(w, http.StatusBadRequest, "Choose a service to save")
+		return "", false
+	}
+	return svc, true
+}
+
+// readService is the ?service= of a read that is per service only (pins,
+// favorites); the page asks each service in turn for all of them.
+func readService(w http.ResponseWriter, r *http.Request) (string, bool) {
+	svc := serviceParam(r)
+	if svc == allServices {
+		writeError(w, http.StatusBadRequest, "choose a service")
+		return "", false
+	}
+	return svc, true
+}
+
+// svcDir is the config directory of one service (never allServices).
+func (s *server) svcDir(svc string) string {
+	return svcconf.Dir(s.o.ConfigBase, svc)
 }
 
 // timePtr is nil for the zero time, so JSON shows null rather than year 1.
@@ -165,25 +212,19 @@ func timePtr(t time.Time) *time.Time {
 }
 
 type sessionJSON struct {
-	Mode        store.Mode `json:"mode"`
-	RunStart    *time.Time `json:"runStart"`
-	Earliest    *time.Time `json:"earliest"`
-	Latest      *time.Time `json:"latest"`
-	Count       int        `json:"count"`
-	ConfigDir   string     `json:"configDir"`
-	ConfigFound bool       `json:"configFound"`
+	Mode       store.Mode `json:"mode"`
+	RunStart   *time.Time `json:"runStart"`
+	Earliest   *time.Time `json:"earliest"`
+	Latest     *time.Time `json:"latest"`
+	Count      int        `json:"count"`
+	ConfigBase string     `json:"configBase"`
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
-	dir, found, err := s.configDir()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	in := s.o.Store.Info()
 	writeJSON(w, http.StatusOK, sessionJSON{
 		Mode: in.Mode, RunStart: timePtr(in.RunStart), Earliest: timePtr(in.Earliest),
-		Latest: timePtr(in.Latest), Count: in.Count, ConfigDir: dir, ConfigFound: found,
+		Latest: timePtr(in.Latest), Count: in.Count, ConfigBase: s.o.ConfigBase,
 	})
 }
 
@@ -201,25 +242,111 @@ func (s *server) streams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// effective returns the snapshot and the effective schema of stream k: the
-// inferred schema (cached per snapshot version) merged with the saved one.
-// k.Source must already be parsed (record.ParseSource).
-func (s *server) effective(k record.StreamKey) ([]record.Record, schema.Schema, error) {
+type countJSON struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type serviceCountJSON struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}
+
+// kinds counts the kinds of one service (or "*") and the records of every
+// service, for one source, within the ?from=&to= range (query range values).
+func (s *server) kinds(w http.ResponseWriter, r *http.Request) {
+	src, ok := sourceParam(w, r)
+	if !ok {
+		return
+	}
+	rng := query.Range{From: r.URL.Query().Get("from"), To: r.URL.Query().Get("to")}
+	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.Info().RunStart)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	kc, sc := s.o.Store.Kinds(src, serviceParam(r), from, to)
+	out := struct {
+		Kinds    []countJSON        `json:"kinds"`
+		Services []serviceCountJSON `json:"services"`
+	}{make([]countJSON, 0, len(kc)), make([]serviceCountJSON, 0, len(sc))}
+	for _, c := range kc {
+		out.Kinds = append(out.Kinds, countJSON{c.Name, c.Count})
+	}
+	for _, c := range sc {
+		out.Services = append(out.Services, serviceCountJSON{c.Name, c.Count})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type pinsJSON struct {
+	Pins []svcconf.Pin `json:"pins"`
+}
+
+func (s *server) getPins(w http.ResponseWriter, r *http.Request) {
+	svc, ok := readService(w, r)
+	if !ok {
+		return
+	}
+	pins, err := svcconf.LoadPins(s.svcDir(svc))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pinsJSON{pins})
+}
+
+// putPins replaces the service's pins and returns them as saved (sources
+// normalised, duplicates dropped).
+func (s *server) putPins(w http.ResponseWriter, r *http.Request) {
+	svc, ok := saveService(w, r)
+	if !ok {
+		return
+	}
+	var body pinsJSON
+	if err := decode(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad pins: "+err.Error())
+		return
+	}
+	dir := s.svcDir(svc)
+	s.writeMu.Lock()
+	err := svcconf.SavePins(dir, body.Pins)
+	var pins []svcconf.Pin
+	if err == nil {
+		pins, err = svcconf.LoadPins(dir)
+	}
+	s.writeMu.Unlock()
+	switch {
+	case errors.Is(err, svcconf.ErrBadPin):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeJSON(w, http.StatusOK, pinsJSON{pins})
+	}
+}
+
+// effective returns the snapshot and the effective schema of stream k within
+// service svc: the inferred schema (cached per snapshot version) with the
+// service's saved field settings applied. For allServices it infers over
+// every service and applies no saved settings. k.Source must already be
+// parsed (record.ParseSource).
+func (s *server) effective(svc string, k record.StreamKey) ([]record.Record, schema.Schema, error) {
 	recs, version := s.o.Store.Snapshot()
+	ck := schemaKey{svc, k.Source, k.Name}
 	s.cacheMu.Lock()
-	c, ok := s.cache[k]
+	c, ok := s.cache[ck]
 	s.cacheMu.Unlock()
 	if !ok || c.version != version {
-		c = cachedSchema{version, schema.Infer("*", k.Source, k.Name, recs)}
+		c = cachedSchema{version, schema.Infer(svc, k.Source, k.Name, recs)}
 		s.cacheMu.Lock()
-		s.cache[k] = c
+		s.cache[ck] = c
 		s.cacheMu.Unlock()
 	}
-	dir, _, err := s.configDir()
-	if err != nil {
-		return nil, schema.Schema{}, err
+	if svc == allServices {
+		return recs, schema.Effective(c.s, nil), nil
 	}
-	saved, err := schema.LoadFields(dir, k.Source)
+	saved, err := schema.LoadFields(s.svcDir(svc), k.Source)
 	if err != nil {
 		return nil, schema.Schema{}, err
 	}
@@ -249,7 +376,7 @@ func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, sch, err := s.effective(record.StreamKey{Source: src, Name: stream})
+	_, sch, err := s.effective(serviceParam(r), record.StreamKey{Source: src, Name: stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -264,37 +391,27 @@ func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 	}{sch, ops})
 }
 
+// putSchema merges the body's fields, by path, into the service's saved
+// field settings for the source; other saved fields are kept. The stream is
+// not needed: field settings apply to every kind of the source.
 func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
-	stream := r.URL.Query().Get("stream")
-	if stream == "" {
-		writeError(w, http.StatusBadRequest, "stream is required")
-		return
-	}
 	src, ok := sourceParam(w, r)
 	if !ok {
 		return
 	}
-	var sch schema.Schema
-	if err := decode(r, &sch); err != nil {
-		writeError(w, http.StatusBadRequest, "bad schema: "+err.Error())
+	svc, ok := saveService(w, r)
+	if !ok {
 		return
 	}
-	if sch.Stream != "" && sch.Stream != stream {
-		writeError(w, http.StatusBadRequest, "body stream does not match ?stream=")
-		return
+	var body struct {
+		Fields []schema.Field `json:"fields"`
 	}
-	if bsrc, ok := record.ParseSource(sch.Source); sch.Source != "" && (!ok || bsrc != src) {
-		writeError(w, http.StatusBadRequest, "body source does not match ?source=")
-		return
-	}
-	sch.Stream, sch.Source = stream, src
-	dir, _, err := s.configDir()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := decode(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad fields: "+err.Error())
 		return
 	}
 	s.writeMu.Lock()
-	path, err := schema.MergeFields(dir, src, sch.Fields)
+	path, err := schema.MergeFields(s.svcDir(svc), src, body.Fields)
 	s.writeMu.Unlock()
 	if err != nil {
 		writeError(w, saveStatus(err), err.Error())
@@ -303,7 +420,7 @@ func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
-// saveStatus maps a SaveSchema error to 500 for file-system failures and 400
+// saveStatus maps a MergeFields error to 500 for file-system failures and 400
 // for everything else (unsavable stream, invalid field).
 func saveStatus(err error) int {
 	var pe *fs.PathError
@@ -330,7 +447,8 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown source %q", q.Source))
 		return
 	}
-	recs, sch, err := s.effective(record.StreamKey{Source: src, Name: q.Stream})
+	q.Service = orDefault(q.Service)
+	recs, sch, err := s.effective(q.Service, record.StreamKey{Source: src, Name: q.Stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -374,7 +492,7 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	if json.Indent(&buf, rec.Raw, "", "  ") == nil {
 		raw = buf.String()
 	}
-	_, sch, err := s.effective(rec.Key())
+	_, sch, err := s.effective(orDefault(rec.Service), rec.Key())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -401,12 +519,11 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {
-	dir, _, err := s.configDir()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	svc, ok := readService(w, r)
+	if !ok {
 		return
 	}
-	favs, err := favorites.Load(dir)
+	favs, err := favorites.Load(s.svcDir(svc))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -414,21 +531,21 @@ func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, favs)
 }
 
-// putFavorite stores the body (a query.Query) under the path's name.
+// putFavorite stores the body (a query.Query) under the path's name, in the
+// ?service= favorites (the query's own service is not saved).
 func (s *server) putFavorite(w http.ResponseWriter, r *http.Request) {
+	svc, ok := saveService(w, r)
+	if !ok {
+		return
+	}
 	var q query.Query
 	if err := decode(r, &q); err != nil {
 		writeError(w, http.StatusBadRequest, "bad query: "+err.Error())
 		return
 	}
-	dir, _, err := s.configDir()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	f := favorites.Favorite{Name: r.PathValue("name"), Query: q}
 	s.writeMu.Lock()
-	err = favorites.Put(dir, f, r.URL.Query().Get("overwrite") == "1")
+	err := favorites.Put(s.svcDir(svc), f, r.URL.Query().Get("overwrite") == "1")
 	s.writeMu.Unlock()
 	switch {
 	case errors.Is(err, favorites.ErrExists):
@@ -443,14 +560,13 @@ func (s *server) putFavorite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) deleteFavorite(w http.ResponseWriter, r *http.Request) {
-	dir, _, err := s.configDir()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	svc, ok := saveService(w, r)
+	if !ok {
 		return
 	}
 	name := r.PathValue("name")
 	s.writeMu.Lock()
-	err = favorites.Delete(dir, name)
+	err := favorites.Delete(s.svcDir(svc), name)
 	s.writeMu.Unlock()
 	switch {
 	case errors.Is(err, favorites.ErrNotFound):

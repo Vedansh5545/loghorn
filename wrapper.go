@@ -23,6 +23,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 	"github.com/jimbeveridge/loghorn/internal/runner"
 	"github.com/jimbeveridge/loghorn/internal/store"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 	"github.com/jimbeveridge/loghorn/internal/web"
 	"github.com/jimbeveridge/loghorn/internal/wrap"
 )
@@ -284,9 +285,18 @@ func preloadSpans(st *store.Store, dir string, in config.Input) {
 }
 
 // startWeb listens and serves a store of the given mode; it does not print
-// the URL. A live store is preloaded with the stored days first. A listen
-// failure exits, so it must run before any child is launched.
+// the URL. A live store is preloaded with the stored days first. A config
+// base or listen failure exits, so it must run before any child is launched.
+// It prints the one-time notice about a repo's retired .config/loghorn.
 func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart time.Time) *webServer {
+	base, err := svcconf.BaseFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn: -web: config dir:", err)
+		os.Exit(1)
+	}
+	if msg := repoConfigNotice(cwd, base); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
 	st := store.New(mode, runStart)
 	if mode == store.ModeLive {
 		if dir, err := logDir(); err == nil {
@@ -299,7 +309,7 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 		os.Exit(1)
 	}
 	srv := &http.Server{
-		Handler:           web.New(web.Options{Store: st, StartDir: cwd}),
+		Handler:           web.New(web.Options{Store: st, ConfigBase: base}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
