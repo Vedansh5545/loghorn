@@ -634,11 +634,6 @@ let pins = [];
 let pinCounts = new Map();
 let pinsSeq = 0;
 
-// servicePins is one service's pin list as PUT /api/pins sends it.
-function servicePins(svc) {
-  return pins.filter((p) => p.service === svc).map((p) => ({ source: p.source, kind: p.kind }));
-}
-
 // loadPins loads the pins of the selected service, or under All of every
 // service present in the interval, and (under All) the counts of the pinned
 // kinds per service. A newer call supersedes an older one.
@@ -680,14 +675,20 @@ function togglePin(name) {
   // Saves run one after another and each builds its list when it runs, from
   // the list the previous save left, so two quick toggles both land.
   const run = async () => {
-    const list = servicePins(svc);
-    const i = list.findIndex((p) => p.source === source && p.kind === name);
-    if (i >= 0) list.splice(i, 1);
-    else list.push({ source, kind: name });
     try {
+      // The service's list is read from the server, not from the shared pins
+      // array, which after a service switch holds another service's pins.
+      const cur = await api("GET", "/api/pins?service=" + encodeURIComponent(svc));
+      const list = ((cur && cur.pins) || []).map((p) => ({ source: p.source, kind: p.kind }));
+      const i = list.findIndex((p) => p.source === source && p.kind === name);
+      if (i >= 0) list.splice(i, 1);
+      else list.push({ source, kind: name });
       const r = await api("PUT", "/api/pins?service=" + encodeURIComponent(svc), { pins: list });
+      // Merge only while svc is on show; otherwise the next loadPins of the
+      // selected service is the source of truth.
+      if (state.service !== svc) return;
       pins = pins.filter((p) => p.service !== svc).concat(((r && r.pins) || []).map((p) => ({ source: p.source, kind: p.kind, service: svc })));
-      if (state.service === svc) renderKindList();
+      renderKindList();
     } catch (err) {
       showError("saving pins: " + (err.detail || err.message));
     }
@@ -2387,9 +2388,20 @@ async function saveSchema() {
   const status = $("schema-status");
   status.className = "status";
   status.textContent = "saving…";
-  // Only fields that differ from the loaded schema are sent.
-  const loaded = new Map(schemaFields().map((f) => [f.path, JSON.stringify(schemaFieldBody(f))]));
-  const changed = schemaDraft.map(schemaFieldBody).filter((b) => loaded.get(b.path) !== JSON.stringify(b));
+  // Only fields that differ from the loaded schema are sent. Field settings
+  // are source-wide, so the kind's inferred type and visualizer go along only
+  // when this edit changed them (a unit edit needs its type).
+  const loadedFields = new Map(schemaFields().map((f) => [f.path, f]));
+  const changed = [];
+  for (const d of schemaDraft) {
+    const l = loadedFields.get(d.path);
+    const b = schemaFieldBody(d);
+    const lb = l && schemaFieldBody(l);
+    if (lb && JSON.stringify(lb) === JSON.stringify(b)) continue;
+    if (lb && lb.type === b.type && lb.unit === b.unit) b.type = "";
+    if (lb && lb.visualizer === b.visualizer) b.visualizer = "";
+    changed.push(b);
+  }
   if (!changed.length) {
     status.textContent = "no changes";
     return;
