@@ -10,6 +10,7 @@ const DEFAULT_FROM = "this-run";
 // state is the query, in the server's Query JSON shape.
 export const state = {
   stream: "",
+  source: "log", // "log" or "otel": which kind of stream `stream` names
   range: { from: DEFAULT_FROM, to: "now" },
   filters: [],
   search: "",
@@ -39,7 +40,7 @@ const stackable = (plot) => !plot || plot.op === "count" || plot.op === "sum";
 let session = null;
 let streams = [];
 let lastResult = null;
-let lastResultStream = ""; // the stream lastResult belongs to
+let lastResultStream = ""; // the streamKey() lastResult belongs to
 let schemaData = null; // {schema, ops} of state.stream
 
 // el builds an element; text, when given, is set with textContent.
@@ -270,6 +271,17 @@ export function visualize(cell, column) {
 
 // ---- URL state ----
 
+// streamKey identifies the current stream: the same name can exist as a log
+// stream and as a span stream.
+function streamKey() {
+  return state.source + ":" + state.stream;
+}
+
+// schemaURL is the schema endpoint for one (stream, source).
+function schemaURL(stream, source) {
+  return "/api/schema?stream=" + encodeURIComponent(stream) + "&source=" + encodeURIComponent(source);
+}
+
 function saveURL() {
   // stream and columns are written explicitly so a shared URL does not depend
   // on the receiver's defaults.
@@ -277,6 +289,8 @@ function saveURL() {
     stream: state.stream,
     columns: state.columns.length ? state.columns : defaultColumns(),
   });
+  // A missing source means log, so only otel is written.
+  if (full.source !== "otel") delete full.source;
   const q = "?q=" + encodeURIComponent(JSON.stringify(full));
   if (location.search !== q) history.replaceState(null, "", q);
 }
@@ -287,6 +301,7 @@ function applyQuery(q) {
   if (!q || typeof q !== "object") return;
   Object.assign(state, q);
   state.stream = typeof q.stream === "string" ? q.stream : "";
+  state.source = q.source === "otel" ? "otel" : "log";
   state.search = typeof q.search === "string" ? q.search : "";
   state.range = Object.assign({ from: DEFAULT_FROM, to: "now" }, q.range || {});
   state.sort = Object.assign({ field: "", desc: true }, q.sort || {});
@@ -339,7 +354,7 @@ const FROM_PRESETS = ["this-run", "15m", "1h", "24h", "all"];
 const TO_PRESETS = ["now"];
 
 function syncBar() {
-  $("stream").value = state.stream;
+  $("stream").value = streamKey();
   syncRangeControl("from", state.range.from || DEFAULT_FROM, FROM_PRESETS);
   syncRangeControl("to", state.range.to || "now", TO_PRESETS);
   $("search").value = state.search;
@@ -375,7 +390,10 @@ function customChanged(which) {
 function wireBar() {
   $("bar").addEventListener("submit", (e) => e.preventDefault());
   $("stream").addEventListener("change", () => {
-    state.stream = $("stream").value;
+    const v = $("stream").value;
+    const i = v.indexOf(":");
+    state.source = v.slice(0, i) === "otel" ? "otel" : "log";
+    state.stream = v.slice(i + 1);
     state.columns = [];
     state.filters = [];
     state.sort = { field: "", desc: true };
@@ -465,9 +483,13 @@ function renderHeader() {
 function renderStreams() {
   const sel = $("stream");
   sel.replaceChildren();
+  const sources = new Map(); // name -> number of sources it exists under
+  for (const s of streams) sources.set(s.name, (sources.get(s.name) || 0) + 1);
   for (const s of streams) {
-    const o = el("option", "", s.name + " (" + s.count.toLocaleString() + ")");
-    o.value = s.name;
+    const n = s.count.toLocaleString();
+    const label = sources.get(s.name) > 1 ? s.name + " (" + s.source + ", " + n + ")" : s.name + " (" + n + ")";
+    const o = el("option", "", label);
+    o.value = s.source + ":" + s.name;
     sel.append(o);
   }
   const none = streams.length === 0;
@@ -480,8 +502,10 @@ async function loadSession() {
   [session, streams] = await Promise.all([api("GET", "/api/session"), api("GET", "/api/streams")]);
   renderHeader();
   renderStreams();
-  if (streams.length && !streams.some((s) => s.name === state.stream)) {
-    state.stream = streams.reduce((a, b) => (b.count > a.count ? b : a)).name;
+  if (streams.length && !streams.some((s) => s.name === state.stream && s.source === state.source)) {
+    const top = streams.reduce((a, b) => (b.count > a.count ? b : a));
+    state.stream = top.name;
+    state.source = top.source === "otel" ? "otel" : "log";
     state.columns = [];
     state.filters = [];
     state.groupBy = [];
@@ -589,7 +613,7 @@ function renderGraph(result) {
 
 export function render(result) {
   lastResult = result;
-  lastResultStream = state.stream;
+  lastResultStream = streamKey();
   const head = $("head");
   head.replaceChildren();
   for (const c of result.columns) head.append(headerCell(c, result.columns.length));
@@ -742,7 +766,7 @@ const MIN_COL = 40;
 
 function startResize(e, th) {
   if (e.button !== 0) return;
-  if (lastResultStream !== state.stream) return;
+  if (lastResultStream !== streamKey()) return;
   e.preventDefault();
   const path = th.dataset.path;
   const startX = e.clientX;
@@ -855,7 +879,7 @@ async function loadSchema() {
   schemaData = null;
   if (!state.stream) return;
   try {
-    schemaData = await api("GET", "/api/schema?stream=" + encodeURIComponent(state.stream));
+    schemaData = await api("GET", schemaURL(state.stream, state.source));
   } catch (err) {
     showError(err.message);
   }
@@ -878,12 +902,12 @@ function badge(text, cls) {
 // schema belongs to another stream.
 function defaultColumns() {
   const sc = schemaData && schemaData.schema;
-  return sc && sc.stream === state.stream && Array.isArray(sc.columns) ? sc.columns.slice() : [];
+  return sc && sc.stream === state.stream && sc.source === state.source && Array.isArray(sc.columns) ? sc.columns.slice() : [];
 }
 
 // currentColumns is the column paths the table shows now.
 function currentColumns() {
-  if (lastResult && lastResultStream === state.stream && Array.isArray(lastResult.columns)) return lastResult.columns.map((c) => c.path);
+  if (lastResult && lastResultStream === streamKey() && Array.isArray(lastResult.columns)) return lastResult.columns.map((c) => c.path);
   if (state.columns.length) return state.columns.slice();
   return schemaData && schemaData.schema && Array.isArray(schemaData.schema.columns) ? schemaData.schema.columns.slice() : [];
 }
@@ -1126,7 +1150,7 @@ async function commitTriple(t) {
   // Validate the triple on its own, so errors of the whole query (bucket
   // count, plot, aggregates) are not blamed on it.
   try {
-    await api("POST", "/api/query", { stream: state.stream, range: state.range, filters: [f], limit: 1 });
+    await api("POST", "/api/query", { stream: state.stream, source: state.source, range: state.range, filters: [f], limit: 1 });
   } catch (err) {
     if (!triples.includes(t) || !sameFilter(candidate(t), f)) return; // edited meanwhile
     const had = !!t.filter;
@@ -1559,7 +1583,7 @@ let labelCommit = null; // saves the menu's label input if it changed
 function colInfo(path) {
   const f = fieldByPath(path);
   if (f) return f;
-  const c = lastResult && lastResultStream === state.stream && Array.isArray(lastResult.columns)
+  const c = lastResult && lastResultStream === streamKey() && Array.isArray(lastResult.columns)
     ? lastResult.columns.find((x) => x.path === path) : null;
   return { path, type: (c && c.type) || "string", label: (c && c.label) || "" };
 }
@@ -1645,7 +1669,7 @@ function menuRow(label, control) {
 }
 
 function openColumnMenu(path, anchorEl) {
-  if (lastResultStream !== state.stream) return;
+  if (lastResultStream !== streamKey()) return;
   if (menuPath === path && menuAnchor === anchorEl) {
     closeColumnMenu();
     return;
@@ -1767,7 +1791,9 @@ let formatSaves = Promise.resolve();
 // each from the schema the previous one reloaded, so none loses another's edit.
 async function saveFieldFormat(path, patch) {
   const stream = state.stream;
-  if (!stream || !schemaData || !schemaData.schema || schemaData.schema.stream !== stream) return;
+  const source = state.source;
+  const loaded = () => schemaData && schemaData.schema && schemaData.schema.stream === stream && schemaData.schema.source === source;
+  if (!stream || !loaded()) return;
   if (!fieldByPath(path) && Object.keys(patch).length === 1 && (patch.width === 0 || patch.wrap === false)) return;
   // Apply locally first so the page shows the change before the reload, and
   // again when the save runs: an earlier save's reload replaces schemaData.
@@ -1788,18 +1814,19 @@ async function saveFieldFormat(path, patch) {
   const visual = Object.keys(patch).some((k) => k !== "width");
   if (!visual) applyWidths();
   const run = async () => {
-    if (state.stream !== stream || !schemaData || schemaData.schema.stream !== stream) return;
+    if (state.stream !== stream || state.source !== source || !loaded()) return;
     apply();
     const sch = schemaData.schema;
     const body = {
       stream,
+      source,
       columns: Array.isArray(sch.columns) ? sch.columns.slice() : [],
       fields: (sch.fields || []).map(schemaFieldBody),
     };
     try {
-      await api("PUT", "/api/schema?stream=" + encodeURIComponent(stream), body);
-      const fresh = await api("GET", "/api/schema?stream=" + encodeURIComponent(stream));
-      if (state.stream !== stream) return;
+      await api("PUT", schemaURL(stream, source), body);
+      const fresh = await api("GET", schemaURL(stream, source));
+      if (state.stream !== stream || state.source !== source) return;
       schemaData = fresh;
       fillFieldPaths();
       if (visual) {
@@ -1921,7 +1948,7 @@ function renderSchemaTable() {
 
 function fillSchemaDialog() {
   schemaDraft = schemaFields().map((f) => Object.assign({}, f));
-  $("schema-title").textContent = "Schema · " + state.stream;
+  $("schema-title").textContent = "Schema · " + state.stream + (state.source === "otel" ? " (otel)" : "");
   renderSchemaTable();
 }
 
@@ -1940,11 +1967,12 @@ async function saveSchema() {
   const cols = state.columns.length ? state.columns.slice() : ((schemaData && schemaData.schema.columns) || []);
   const body = {
     stream: state.stream,
+    source: state.source,
     columns: cols,
     fields: schemaDraft.map(schemaFieldBody),
   };
   try {
-    const res = await api("PUT", "/api/schema?stream=" + encodeURIComponent(state.stream), body);
+    const res = await api("PUT", schemaURL(state.stream, state.source), body);
     await loadSchema();
     rebuildExplore();
     fillSchemaDialog();
@@ -1987,7 +2015,7 @@ async function loadFavorites() {
     const li = el("li", "fav");
     const load = el("button", "fav-load", f.name);
     load.type = "button";
-    load.title = (f.query && f.query.stream ? f.query.stream + " · " : "") + "load and run";
+    load.title = (f.query && f.query.stream ? f.query.stream + (f.query.source === "otel" ? " (otel)" : "") + " · " : "") + "load and run";
     load.addEventListener("click", () => loadFavorite(f));
     const del = el("button", "chip-x", "×");
     del.type = "button";
@@ -2014,18 +2042,23 @@ function closeFavorites() {
 
 async function loadFavorite(f) {
   closeFavorites();
-  const before = state.stream;
+  const before = streamKey();
+  const prevStream = state.stream;
+  const prevSource = state.source;
   applyQuery(JSON.parse(JSON.stringify(f.query || {})));
-  if (!state.stream) state.stream = before;
+  if (!state.stream) {
+    state.stream = prevStream;
+    state.source = prevSource;
+  }
   closeColumnMenu();
-  if (state.stream !== before) {
+  if (streamKey() !== before) {
     hiddenThisQuery = [];
     tempWidths = {};
   }
   syncBar();
   syncView();
   clearExplore();
-  if (state.stream !== before || !schemaData) await loadSchema();
+  if (streamKey() !== before || !schemaData) await loadSchema();
   rebuildExplore();
   runQuery();
 }
