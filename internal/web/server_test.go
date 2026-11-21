@@ -512,7 +512,7 @@ func TestSpanAndLogStreamsApart(t *testing.T) {
 	for _, s := range got {
 		have[fmt.Sprintf("%s %s %d", s.Name, s.Source, s.Count)] = true
 	}
-	for _, w := range []string{"db log 3", "db otel 2", "gen_ai otel 1", "span otel 2"} {
+	for _, w := range []string{"db log 3", "db otel 2", "gen_ai otel 1", "db open otel 1", "job.run otel 1"} {
 		if !have[w] {
 			t.Errorf("streams missing {%s}: %+v", w, got)
 		}

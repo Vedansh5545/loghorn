@@ -50,11 +50,23 @@ type Store struct {
 	pending  []int // indexes of leading records with no time yet
 	earliest time.Time
 	latest   time.Time
+	fallback string // service of records that name none
 }
 
 // New returns an empty store. runStart is zero for replay modes.
 func New(mode Mode, runStart time.Time) *Store {
-	return &Store{mode: mode, runStart: runStart, streams: map[record.StreamKey]int{}}
+	return &Store{mode: mode, runStart: runStart, streams: map[record.StreamKey]int{}, fallback: record.DefaultService}
+}
+
+// SetFallbackService sets the service given to records added from now on that
+// name none. Safe on a nil store.
+func (s *Store) SetFallbackService(key string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.fallback = key
+	s.mu.Unlock()
 }
 
 // Add appends r, assigning Seq and its effective time. A zero r.Time takes
@@ -64,6 +76,9 @@ func (s *Store) Add(r record.Record, received time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r.Seq = len(s.recs) + 1
+	if r.Service == "" {
+		r.Service = s.fallback
+	}
 	if r.Time.IsZero() {
 		r.TimeInherited = true
 		switch {

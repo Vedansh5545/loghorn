@@ -91,6 +91,22 @@ func SpanStream(kind string, attrs map[string]any) string {
 	return StreamSpan
 }
 
+// DefaultService is the service of a record that names none, until the store
+// is given another fallback.
+const DefaultService = "default"
+
+// ServiceKey returns the service a record belongs to: the first non-empty
+// string among the service namespace, service name and GCP service_name
+// fields, else "".
+func ServiceKey(fields map[string]any) string {
+	for _, k := range []string{"otel.resource.service.namespace", "service.namespace", "service.name", "resource.labels.service_name"} {
+		if v, _ := fields[k].(string); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // isSpan reports whether obj has span shape: string span_id and start, and no
 // labels.schema in any spelling (such a line is a log line).
 func isSpan(obj map[string]any) bool {
@@ -141,13 +157,18 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 		}
 	}
 	start, _ := obj["start"].(string)
+	kind, _ := obj["kind"].(string)
+	attrs, isMap := obj["attributes"].(map[string]any)
+	// span.type is set before the attributes so a colliding attribute is
+	// moved to attributes.span.type by spanKeyTaken.
+	spanType := SpanStream(kind, attrs)
+	fields["span.type"] = spanType
 	fields["timestamp"] = start
 	if s, _ := obj["status"].(string); s == "error" {
 		fields["severity"] = "ERROR"
 	} else {
 		fields["severity"] = "INFO"
 	}
-	attrs, isMap := obj["attributes"].(map[string]any)
 	if !isMap {
 		if v, ok := obj["attributes"]; ok {
 			fields["attributes"] = v
@@ -174,8 +195,14 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 			fields[sk] = v
 		}
 	}
-	kind, _ := obj["kind"].(string)
-	r := Record{Source: SourceOtel, Stream: SpanStream(kind, attrs), Fields: fields, Raw: append([]byte(nil), raw...)}
+	// An unclassified span is its own kind: the stream is its name.
+	stream := spanType
+	if stream == StreamSpan {
+		if name, _ := obj["name"].(string); name != "" {
+			stream = name
+		}
+	}
+	r := Record{Source: SourceOtel, Stream: stream, Service: ServiceKey(fields), Fields: fields, Raw: append([]byte(nil), raw...)}
 	if t, err := time.Parse(time.RFC3339Nano, start); err == nil {
 		r.Time = t
 	}

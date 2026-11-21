@@ -69,7 +69,7 @@ func TestSpanStream(t *testing.T) {
 }
 
 func TestNormalizeSpanFixture(t *testing.T) {
-	want := []string{"gen_ai", "messaging", "rpc", "db", "span", "http.server", "http.client", "span", "db"}
+	want := []string{"gen_ai", "messaging", "rpc", "db", "db open", "http.server", "http.client", "job.run", "db"}
 	lines := spanLines(t)
 	if len(lines) != len(want) {
 		t.Fatalf("fixture has %d lines, want %d", len(lines), len(want))

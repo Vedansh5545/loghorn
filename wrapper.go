@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,11 @@ import (
 func runCommand(o opts, cfg config.Config, cwd string) int {
 	logs := openRecordingLog(o)
 	ws := startLiveWeb(o, cfg, cwd)
+	// The preload is done, so stored lines stay "default"; live records take
+	// the child's service name.
+	if svc := childService(os.Environ()); svc != "" {
+		ws.store().SetFallbackService(svc)
+	}
 	rec := liveRecorder(o, cfg, logs, ws.store())
 
 	// The receiver is bound before the child starts: a failure exits here,
@@ -298,4 +304,16 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 	}
 	go func() { _ = srv.Serve(ln) }()
 	return &webServer{st: st, srv: srv, url: "http://" + ln.Addr().String() + "/"}
+}
+
+// childService returns the value of the last OTEL_SERVICE_NAME entry in env,
+// or "" when there is none.
+func childService(env []string) string {
+	out := ""
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, "OTEL_SERVICE_NAME="); ok {
+			out = v
+		}
+	}
+	return out
 }

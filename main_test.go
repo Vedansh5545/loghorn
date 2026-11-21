@@ -203,7 +203,7 @@ func TestPreloadStoredReadsLogsAndSpans(t *testing.T) {
 	for _, c := range st.Streams() {
 		got[c] = true
 	}
-	for _, w := range []store.StreamCount{{Name: "db", Source: "log", Count: 3}, {Name: "db", Source: "otel", Count: 2}, {Name: "span", Source: "otel", Count: 2}} {
+	for _, w := range []store.StreamCount{{Name: "db", Source: "log", Count: 3}, {Name: "db", Source: "otel", Count: 2}, {Name: "db open", Source: "otel", Count: 1}, {Name: "job.run", Source: "otel", Count: 1}} {
 		if !got[w] {
 			t.Errorf("missing %v in %v", w, st.Streams())
 		}

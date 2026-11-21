@@ -22,6 +22,7 @@ type Record struct {
 	Time          time.Time      // effective time (store fills inherited ones)
 	TimeInherited bool           // Time was not the record's own
 	Stream        string         // labels.schema, or the span stream
+	Service       string         // service key; empty until the store fills it
 	Source        string         // SourceLog or SourceOtel; empty means SourceLog
 	Fields        map[string]any // canonical dotted path -> string | json.Number | bool | nil | []any
 	Raw           []byte         // the line as searched/shown; GitHub prefix stripped
@@ -77,7 +78,7 @@ func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	if stream == "" {
 		return Record{}, false
 	}
-	r := Record{Stream: stream, Source: SourceLog, Fields: n.fields, Raw: append([]byte(nil), raw...)}
+	r := Record{Stream: stream, Source: SourceLog, Service: ServiceKey(n.fields), Fields: n.fields, Raw: append([]byte(nil), raw...)}
 	if ts, ok := n.fields["timestamp"].(string); ok {
 		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			r.Time = t
