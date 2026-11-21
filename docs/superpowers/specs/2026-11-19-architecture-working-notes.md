@@ -382,6 +382,45 @@ LLM's interface to it.
     gets a stream (catch-all `span`), and `trace_id`, `span_id` and
     `parent_span_id` are kept on every span record. Requires a major
     query-engine update; not started.
+36c. **The stream list adapts to the interval [user, 2026-11-21].** The
+    interval-aware list below replaces the fixed per-stream list, which
+    had two problems:
+    - Most kinds of span had no stream of their own. Sweep, token refresh,
+      boot, timer and similar internal spans all fell into the catch-all
+      `span`.
+    - Its counts covered the whole store, not the selected interval.
+
+    The design:
+    - **What the list shows:** the top 10 kinds of span in the selected
+      interval. A kind is the attribute classification (`db`,
+      `http.server`, …); for spans the classification leaves unclassified,
+      it is the span `name`. Each row shows its count in the interval.
+    - **More:** the rest are one click away, with a type-to-filter box.
+    - **Pins:** pinned kinds always show first. A pinned kind with nothing
+      in the interval still shows, greyed with `0`.
+    - **Values within a kind:** the list never lists the values inside one
+      kind, such as each database table. That is the job of Filters or
+      a group-by in Table view.
+    - **Clicking the label** chooses what the list is grouped by. Only
+      low-cardinality fields are offered.
+    - **Columns:** they come from a saved query (a favorite) when there is
+      one. Otherwise they are inferred from the records that match in the
+      interval.
+    - **Formatting:** saved schemas keep only formatting (field types and
+      how each is shown).
+36d. **Config is keyed by service, not by repo [user, 2026-11-21].**
+    loghorn normally runs globally, so a repo's `.config/loghorn/` is not
+    a meaningful home for pins, favorites or formatting.
+    - **The key:** `service.namespace` when it is set, else `service.name`.
+    - **Location:** user-level `~/.config/loghorn/services/<key>/`, with
+      the key escaped for the filesystem.
+    - **Records with no service** (child stdout, piped input) get their key
+      from the child's `OTEL_SERVICE_NAME`, or from the GCP resource labels
+      for GCP logs, or fall into a `default` bucket [proposed].
+    - **Open:** whether the repo `.config/loghorn/` stays as a shared,
+      checked-in override; whether logs and spans share one list or the
+      page switches between them; what pins show when several services
+      are in the interval.
 
 ### Alerts and notifications
 
