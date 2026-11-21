@@ -128,7 +128,6 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .flabel { color: var(--muted); }
 .muted { color: var(--muted); }
 .badge { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px; color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
-.badge-new { color: var(--bad-fg); background: var(--bad-bg); border-color: transparent; }
 .badge-saved { color: var(--sev-notice); border-color: var(--sev-notice); }
 .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 4px; flex-basis: 100%; max-height: 120px; overflow-y: auto; }
@@ -249,3 +248,12 @@ td .muted { color: var(--muted); }
 .kind-sep { border-top: 1px solid var(--line); }
 .sb-body > .kind-more { align-self: flex-start; padding: 0 4px; font-size: 12.5px; }
 .sb-field .sb-body > #kind-filter { width: 100%; }
+
+/* pin toggle of a kind row: on hover or focus, always when pinned */
+.kind-pin { flex: none; border: none; background: transparent; padding: 0 2px; line-height: 1.2; font-size: 11px; cursor: pointer; opacity: 0; filter: grayscale(1); }
+.kind-row:hover .kind-pin, .kind-row:focus-within .kind-pin, .kind-pin.pinned { opacity: 1; }
+.kind-pin.pinned { filter: none; }
+.kind-pin:not(.pinned) { opacity: 0; }
+.kind-row:hover .kind-pin:not(.pinned), .kind-row:focus-within .kind-pin:not(.pinned) { opacity: .6; }
+.kind-pin:disabled { cursor: not-allowed; }
+.kind-row:hover .kind-pin.pinned:disabled { opacity: .5; }

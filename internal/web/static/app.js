@@ -559,6 +559,12 @@ async function loadKinds() {
   if (mine !== kindsSeq) return false;
   kinds = Array.isArray(data.kinds) ? data.kinds : [];
   services = Array.isArray(data.services) ? data.services : [];
+  try {
+    await loadPins();
+  } catch (err) {
+    showError(err.message);
+  }
+  if (mine !== kindsSeq) return false;
   renderServices();
   renderKindList();
   return true;
@@ -598,24 +604,127 @@ function renderServices() {
     sel.append(o);
   }
   sel.value = cur;
+  syncReadOnly();
 }
 
-// pinnedKinds is the names of the mode's pinned kinds, listed first.
+const NEED_SERVICE = "Choose a service to save";
+
+// syncReadOnly disables the save controls under All and re-enables them for
+// one service. (Pin toggles, the column menu and the favorites list read
+// readOnly() as they are drawn.)
+function syncReadOnly() {
+  const ro = readOnly();
+  for (const id of ["fav-save", "fav-save-menu", "schema-save"]) {
+    const b = $(id);
+    b.disabled = ro;
+    if (ro) b.title = NEED_SERVICE;
+    else b.removeAttribute("title");
+  }
+}
+
+// readOnly is true under All: the union of services is shown but nothing is
+// saved, because config is per service.
+const readOnly = () => state.service === ALL_SERVICES;
+
+// pins is every pin of the services on show, [{source, kind, service}]: the
+// selected service's, or under All each present service's.
+let pins = [];
+// pinCounts is, under All, the kind counts of each pinned service, keyed
+// service + "\n" + kind.
+let pinCounts = new Map();
+let pinsSeq = 0;
+
+// pinList is one service's pin list as PUT /api/pins sends it.
+function servicePins(svc) {
+  return pins.filter((p) => p.service === svc).map((p) => ({ source: p.source, kind: p.kind }));
+}
+
+// loadPins loads the pins of the selected service, or under All of every
+// service present in the interval, and (under All) the counts of the pinned
+// kinds per service. A newer call supersedes an older one.
+async function loadPins() {
+  const mine = ++pinsSeq;
+  const all = readOnly();
+  const svcs = all ? services.map((s) => s.key) : [state.service];
+  const got = await Promise.all(svcs.map(async (svc) => {
+    const r = await api("GET", "/api/pins?service=" + encodeURIComponent(svc));
+    return ((r && r.pins) || []).map((p) => ({ source: p.source, kind: p.kind, service: svc }));
+  }));
+  const counts = new Map();
+  if (all) {
+    const withPins = [...new Set(got.flat().filter((p) => p.source === state.source).map((p) => p.service))];
+    await Promise.all(withPins.map(async (svc) => {
+      const r = await api("GET", kindsURL(svc));
+      for (const k of (r && r.kinds) || []) counts.set(svc + "\n" + k.name, k.count);
+    }));
+  }
+  if (mine !== pinsSeq) return false;
+  pins = got.flat();
+  pinCounts = counts;
+  return true;
+}
+
+// pinnedKinds is the mode's pinned kinds, listed first: {name, service}.
 function pinnedKinds() {
-  return [];
+  return pins.filter((p) => p.source === state.source).map((p) => ({ name: p.kind, service: p.service }));
 }
 
-// kindRowExtras adds per-row controls (the pin toggle) to a kind row.
-function kindRowExtras(row, name) {} // a no-op until pins arrive
+// togglePin pins or unpins kind name of the selected service and saves the
+// service's whole pin list.
+async function togglePin(name) {
+  if (readOnly()) return;
+  const svc = state.service;
+  const list = servicePins(svc);
+  const i = list.findIndex((p) => p.source === state.source && p.kind === name);
+  if (i >= 0) list.splice(i, 1);
+  else list.push({ source: state.source, kind: name });
+  try {
+    const r = await api("PUT", "/api/pins?service=" + encodeURIComponent(svc), { pins: list });
+    if (state.service !== svc) return;
+    pins = pins.filter((p) => p.service !== svc).concat(((r && r.pins) || []).map((p) => ({ source: p.source, kind: p.kind, service: svc })));
+    renderKindList();
+  } catch (err) {
+    showError("saving pins: " + (err.detail || err.message));
+  }
+}
+
+// kindRowExtras adds the pin toggle to a kind row: shown on hover, always
+// when pinned, and disabled under All.
+function kindRowExtras(row, k) {
+  const on = !!k.pinned;
+  const b = el("button", "kind-pin" + (on ? " pinned" : ""), "\u{1F4CC}");
+  b.type = "button";
+  b.setAttribute("aria-pressed", String(on));
+  if (readOnly()) {
+    b.disabled = true;
+    b.title = NEED_SERVICE;
+  } else {
+    b.title = on ? "Unpin" : "Pin to the top";
+  }
+  // The filter box redraws the list on blur; without this the press would
+  // move focus and the redraw would swallow the click.
+  b.addEventListener("mousedown", (e) => e.preventDefault());
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    togglePin(k.name);
+  });
+  b.addEventListener("keydown", (e) => e.stopPropagation());
+  row.append(b);
+}
 
 // listedKinds is every row of the list in order: the pinned kinds (count
 // from kinds, else 0), then the other kinds in server order.
 function listedKinds() {
   const counts = new Map(kinds.map((k) => [k.name, k.count]));
-  const pins = pinnedKinds();
-  const pinned = new Set(pins);
-  return pins.map((name) => ({ name, count: counts.get(name) || 0, pinned: true }))
-    .concat(kinds.filter((k) => !pinned.has(k.name)).map((k) => ({ name: k.name, count: k.count })));
+  const pk = pinnedKinds();
+  // Under All a pin belongs to one service, so the kind stays listed too.
+  const pinned = new Set(readOnly() ? [] : pk.map((p) => p.name));
+  return pk.map((p) => ({
+    name: p.name,
+    count: (readOnly() ? pinCounts.get(p.service + "\n" + p.name) : counts.get(p.name)) || 0,
+    pinned: true,
+    service: readOnly() ? p.service : "",
+  })).concat(kinds.filter((k) => !pinned.has(k.name)).map((k) => ({ name: k.name, count: k.count })));
 }
 
 // firstKind is the first listed kind with records, else the first listed
@@ -633,8 +742,9 @@ function kindRow(k, sep) {
   row.setAttribute("role", "option");
   row.setAttribute("aria-selected", String(on));
   row.tabIndex = 0;
-  row.title = k.name;
-  row.append(el("span", "kind-name", k.name), el("span", "kind-count", k.count.toLocaleString()));
+  const label = k.service ? k.name + " · " + k.service : k.name;
+  row.title = label;
+  row.append(el("span", "kind-name", label), el("span", "kind-count", k.count.toLocaleString()));
   row.addEventListener("click", () => {
     if (k.name !== state.stream) selectKind(k.name);
   });
@@ -643,7 +753,7 @@ function kindRow(k, sep) {
     e.preventDefault();
     if (k.name !== state.stream) selectKind(k.name);
   });
-  kindRowExtras(row, k.name);
+  kindRowExtras(row, k);
   return row;
 }
 
@@ -652,14 +762,14 @@ function kindRow(k, sep) {
 // always shown, with 0 when the interval has none of it.
 function renderKindList() {
   const rows = listedKinds();
-  const pins = rows.filter((r) => r.pinned).length;
-  const top = rows.slice(0, pins + TOP_KINDS);
-  const rest = rows.slice(pins + TOP_KINDS);
+  const npin = rows.filter((r) => r.pinned).length;
+  const top = rows.slice(0, npin + TOP_KINDS);
+  const rest = rows.slice(npin + TOP_KINDS);
   const needle = $("kind-filter").value.trim().toLowerCase();
   const open = kindsOpen && rest.length > 0;
   const more = open ? rest.filter((r) => r.name.toLowerCase().includes(needle)) : [];
   const out = [];
-  top.forEach((r, i) => out.push(kindRow(r, pins > 0 && i === pins)));
+  top.forEach((r, i) => out.push(kindRow(r, npin > 0 && i === npin)));
   const sel = state.stream;
   if (sel && !top.some((r) => r.name === sel) && !more.some((r) => r.name === sel)) {
     out.push(kindRow(rest.find((r) => r.name === sel) || { name: sel, count: 0 }, out.length > 0));
@@ -690,6 +800,9 @@ async function selectKind(name) {
     saveURL();
     return;
   }
+  const favs = await serviceFavorites();
+  if (state.stream !== name) return; // a newer selection took over
+  state.columns = favoriteColumns(favs, name);
   if (!(await loadSchema())) return; // a newer selection took over
   rebuildExplore();
   runQuery();
@@ -730,6 +843,7 @@ async function setService(svc) {
   if (svc === state.service) return;
   state.service = svc;
   storeService(svc);
+  syncReadOnly();
   try {
     if (!(await loadKinds())) return;
   } catch (err) {
@@ -1956,10 +2070,18 @@ function openColumnMenu(path, anchorEl) {
   const title = el("div", "menu-title fpath");
   title.append(breakable(path));
   menu.append(title);
-  const vis = selectOf(VISUALIZERS, f.visualizer || defaultVisualizer(path, f.type), (v) => saveFieldFormat(path, { visualizer: v }));
+  const ro = readOnly();
+  const fmt = (control) => {
+    if (ro) {
+      control.disabled = true;
+      control.title = NEED_SERVICE;
+    }
+    return control;
+  };
+  const vis = fmt(selectOf(VISUALIZERS, f.visualizer || defaultVisualizer(path, f.type), (v) => saveFieldFormat(path, { visualizer: v })));
   menu.append(menuRow("visualizer", vis));
   if (UNIT_TYPES.has(f.type)) {
-    menu.append(menuRow("unit", selectOf(UNITS, f.unit || "", (v) => saveFieldFormat(path, { unit: v }))));
+    menu.append(menuRow("unit", fmt(selectOf(UNITS, f.unit || "", (v) => saveFieldFormat(path, { unit: v })))));
   }
   const label = el("input");
   label.type = "text";
@@ -1978,8 +2100,8 @@ function openColumnMenu(path, anchorEl) {
     }
   });
   label.addEventListener("blur", () => labelCommit && labelCommit());
-  menu.append(menuRow("label", label));
-  menu.append(menuRow("long text", selectOf(["crop", "wrap"], f.wrap ? "wrap" : "crop", (v) => saveFieldFormat(path, { wrap: v === "wrap" }))));
+  menu.append(menuRow("label", fmt(label)));
+  menu.append(menuRow("long text", fmt(selectOf(["crop", "wrap"], f.wrap ? "wrap" : "crop", (v) => saveFieldFormat(path, { wrap: v === "wrap" })))));
   menu.append(el("hr"));
   const hide = menuButton("Hide", () => hideColumn(path), shown.length <= 1 || !shown.includes(path));
   if (hide.disabled) hide.title = "the last column cannot be hidden";
@@ -2066,6 +2188,15 @@ async function saveFieldFormat(path, patch) {
   const source = state.source;
   const loaded = () => schemaData && schemaData.schema && schemaData.schema.stream === stream && schemaData.schema.source === source;
   if (!stream || !loaded()) return;
+  if (readOnly()) {
+    // Under All nothing is saved: a width drag only lasts for this query.
+    if ("width" in patch) {
+      if (patch.width) tempWidths[path] = patch.width;
+      else delete tempWidths[path];
+      applyWidths();
+    }
+    return;
+  }
   if (!fieldByPath(path) && Object.keys(patch).length === 1 && (patch.width === 0 || patch.wrap === false)) return;
   // Apply locally first so the page shows the change before the reload, and
   // again when the save runs: an earlier save's reload replaces schemaData.
@@ -2088,13 +2219,9 @@ async function saveFieldFormat(path, patch) {
   const run = async () => {
     if (state.stream !== stream || state.source !== source || !loaded()) return;
     apply();
-    const sch = schemaData.schema;
-    const body = {
-      stream,
-      source,
-      columns: Array.isArray(sch.columns) ? sch.columns.slice() : [],
-      fields: (sch.fields || []).map(schemaFieldBody),
-    };
+    // Only the edited field is sent; the server merges it by path.
+    const edited = schemaData.schema.fields.find((x) => x.path === path);
+    const body = { fields: [schemaFieldBody(edited)] };
     try {
       await api("PUT", schemaURL(stream, source), body);
       const fresh = await api("GET", schemaURL(stream, source));
@@ -2205,7 +2332,6 @@ function renderSchemaTable() {
     hidden.checked = !!f.hidden;
     hidden.addEventListener("change", () => (f.hidden = hidden.checked));
     const badges = el("td");
-    if (f.new) badges.append(badge("new", "new"));
     if (f.saved) badges.append(badge("saved", "saved"));
     const td = (node) => {
       const c = el("td");
@@ -2233,16 +2359,18 @@ async function openSchema() {
 }
 
 async function saveSchema() {
+  if (readOnly()) return;
   const status = $("schema-status");
   status.className = "status";
   status.textContent = "saving…";
-  const cols = state.columns.length ? state.columns.slice() : ((schemaData && schemaData.schema.columns) || []);
-  const body = {
-    stream: state.stream,
-    source: state.source,
-    columns: cols,
-    fields: schemaDraft.map(schemaFieldBody),
-  };
+  // Only fields that differ from the loaded schema are sent.
+  const loaded = new Map(schemaFields().map((f) => [f.path, JSON.stringify(schemaFieldBody(f))]));
+  const changed = schemaDraft.map(schemaFieldBody).filter((b) => loaded.get(b.path) !== JSON.stringify(b));
+  if (!changed.length) {
+    status.textContent = "no changes";
+    return;
+  }
+  const body = { fields: changed };
   try {
     const res = await api("PUT", schemaURL(state.stream, state.source), body);
     await loadSchema();
@@ -2270,16 +2398,51 @@ function favStatus(msg, bad) {
   s.textContent = msg || "";
 }
 
+// favCache is the selected service's favorites, so selecting a kind doesn't
+// refetch them. It is dropped when favorites change.
+let favCache = null;
+
+// serviceFavorites returns the selected service's favorites ([] under All or
+// when they can't be read).
+async function serviceFavorites() {
+  if (readOnly()) return [];
+  const svc = state.service;
+  if (favCache && favCache.service === svc) return favCache.list;
+  try {
+    const list = (await api("GET", withSvc("/api/favorites"))) || [];
+    favCache = { service: svc, list };
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+// favoriteColumns is the columns of the first favorite of this service that
+// names kind name in this mode and has columns, else [] (columns then follow
+// the interval).
+function favoriteColumns(list, name) {
+  const f = list.find((x) => x.query && x.query.stream === name && (x.query.source || "log") === state.source &&
+    Array.isArray(x.query.columns) && x.query.columns.length);
+  return f ? f.query.columns.slice() : [];
+}
+
 async function loadFavorites() {
   const list = $("fav-list");
   list.replaceChildren(el("li", "muted", "loading…"));
-  if (!state.service || state.service === ALL_SERVICES) {
-    list.replaceChildren(el("li", "muted", "choose a service to see its favorites"));
-    return;
-  }
+  const ro = readOnly();
   let favs;
   try {
-    favs = await api("GET", withSvc("/api/favorites"));
+    if (ro) {
+      // Under All: every present service's favorites, labelled with it.
+      const per = await Promise.all(services.map(async (s) => {
+        const r = await api("GET", "/api/favorites?service=" + encodeURIComponent(s.key));
+        return (r || []).map((f) => Object.assign({ service: s.key }, f));
+      }));
+      favs = per.flat();
+    } else {
+      favs = await api("GET", withSvc("/api/favorites"));
+      favCache = { service: state.service, list: favs || [] };
+    }
   } catch (err) {
     list.replaceChildren();
     favStatus(err.detail || err.message, true);
@@ -2289,13 +2452,14 @@ async function loadFavorites() {
   if (!favs || !favs.length) list.append(el("li", "muted", "no favorites yet"));
   for (const f of favs || []) {
     const li = el("li", "fav");
-    const load = el("button", "fav-load", f.name);
+    const load = el("button", "fav-load", ro ? f.name + " · " + f.service : f.name);
     load.type = "button";
     load.title = (f.query && f.query.stream ? f.query.stream + (f.query.source === "otel" ? " (otel)" : "") + " · " : "") + "load and run";
     load.addEventListener("click", () => loadFavorite(f));
     const del = el("button", "chip-x", "×");
     del.type = "button";
-    del.title = "delete";
+    del.title = ro ? NEED_SERVICE : "delete";
+    del.disabled = ro;
     del.setAttribute("aria-label", "delete favorite " + f.name);
     del.addEventListener("click", () => deleteFavorite(f.name));
     li.append(load, del);
@@ -2323,7 +2487,12 @@ async function loadFavorite(f) {
   const prevSource = state.source;
   const prevService = state.service;
   applyQuery(JSON.parse(JSON.stringify(f.query || {})));
-  state.service = prevService; // a favorite belongs to the selected service
+  // A favorite belongs to the selected service; under All, to its own.
+  state.service = f.service || prevService;
+  if (f.service) {
+    storeService(f.service);
+    syncReadOnly();
+  }
   if (!state.stream) {
     state.stream = prevStream;
     state.source = prevSource;
@@ -2343,11 +2512,12 @@ async function loadFavorite(f) {
 }
 
 async function saveFavorite() {
+  if (readOnly()) return;
   const name = prompt("Name for this favorite query:");
   if (name === null || !name.trim()) return;
   const n = name.trim();
-  if (!state.service || state.service === ALL_SERVICES) {
-    favStatus("Choose a service to save", true);
+  if (readOnly()) {
+    favStatus(NEED_SERVICE, true);
     return;
   }
   const path = "/api/favorites/" + encodeURIComponent(n);
@@ -2360,6 +2530,7 @@ async function saveFavorite() {
       if (!confirm("A favorite named \"" + n + "\" exists. Overwrite it?")) return;
       await api("PUT", withSvc(path + "?overwrite=1"), body);
     }
+    favCache = null;
     favStatus("saved \"" + n + "\"");
   } catch (err) {
     favStatus(err.detail || err.message, true);
@@ -2373,6 +2544,7 @@ async function deleteFavorite(name) {
   if (!confirm("Delete favorite \"" + name + "\"?")) return;
   try {
     await api("DELETE", withSvc("/api/favorites/" + encodeURIComponent(name)));
+    favCache = null;
     favStatus("deleted \"" + name + "\"");
   } catch (err) {
     favStatus(err.detail || err.message, true);
