@@ -368,6 +368,19 @@ LLM's interface to it.
     `Query` remains the browser's model.
 36a. **Full-text search speed is acceptable [user]:** ~100–300 ms over 1–7
     days in every layout; no index or special plan in v1.
+36b. **Table ↔ trace navigation [user, 2026-11-20]:** the goal is moving
+    easily from a table of "all spans of a type" (a span stream such as
+    `db` or `http.server`) to the trace hierarchy one row belongs to, shown
+    as a tree and/or a flame graph, and back to the table. A trace view
+    needs *every* span of the trace, across streams, joined by `trace_id`
+    and `parent_span_id`. So the query engine must stop scoping queries to
+    one stream, and the record path must stop depending on `labels.schema`.
+    Today log lines with neither `labels.schema` nor `httpRequest` are
+    dropped, and every query runs inside one (source, stream). Span streams
+    (`2026-11-20-span-streams-design.md`) are the interim step: every span
+    gets a stream (catch-all `span`), and `trace_id`, `span_id` and
+    `parent_span_id` are kept on every span record. Requires a major
+    query-engine update; not started.
 
 ### Alerts and notifications
 
