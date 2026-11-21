@@ -9,6 +9,8 @@ import (
 	"sort"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/jimbeveridge/loghorn/internal/record"
 )
 
 // ErrUnsavableStream is returned when a stream name cannot be used as a file
@@ -91,17 +93,41 @@ func FindConfigDir(start string) (dir string, found bool, err error) {
 	return filepath.Join(gitRoot, ".config", "loghorn"), false, nil
 }
 
-func schemaPath(dir, stream string) string {
-	return filepath.Join(dir, "schemas", stream+".toml")
+// schemaDir is the directory holding saved schemas of source: dir/schemas for
+// log streams and dir/schemas/otel for span streams. ok is false for a source
+// record.ParseSource refuses.
+func schemaDir(dir, source string) (sdir string, ok bool) {
+	src, ok := record.ParseSource(source)
+	if !ok {
+		return "", false
+	}
+	if src == record.SourceOtel {
+		return filepath.Join(dir, "schemas", "otel"), true
+	}
+	return filepath.Join(dir, "schemas"), true
 }
 
-// LoadSaved reads dir/schemas/<stream>.toml. It returns nil, nil when the
-// file is absent or the stream name is not saveable.
-func LoadSaved(dir, stream string) (*Schema, error) {
-	if !ValidStream(stream) {
+// schemaPath is the saved-schema file of (source, stream); "" if source is
+// unknown. A log stream named "otel" saves to schemas/otel.toml, a file
+// beside the schemas/otel/ directory, so neither shadows the other.
+func schemaPath(dir, source, stream string) string {
+	sdir, ok := schemaDir(dir, source)
+	if !ok {
+		return ""
+	}
+	return filepath.Join(sdir, stream+".toml")
+}
+
+// LoadSaved reads the saved schema of (source, stream):
+// dir/schemas/<stream>.toml for log, dir/schemas/otel/<stream>.toml for otel.
+// It returns nil, nil when the file is absent, the source is unknown or the
+// stream name is not saveable.
+func LoadSaved(dir, source, stream string) (*Schema, error) {
+	src, ok := record.ParseSource(source)
+	if !ok || !ValidStream(stream) {
 		return nil, nil
 	}
-	path := schemaPath(dir, stream)
+	path := schemaPath(dir, src, stream)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -126,6 +152,7 @@ func LoadSaved(dir, stream string) (*Schema, error) {
 	if s.Stream == "" {
 		s.Stream = stream
 	}
+	s.Source = src
 	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
 	for i := range s.Fields {
 		s.Fields[i].Saved = true
@@ -133,18 +160,26 @@ func LoadSaved(dir, stream string) (*Schema, error) {
 	return &s, nil
 }
 
-// SaveSchema writes s to dir/schemas/<stream>.toml via a temp file and rename
-// in the same directory, and returns the path.
+// SaveSchema writes s to its saved-schema file (dir/schemas/<stream>.toml for
+// a log stream, dir/schemas/otel/<stream>.toml for a span stream, chosen by
+// s.Source) via a temp file and rename in the same directory, and returns the
+// path. An unknown source is ErrUnsavableStream.
 func SaveSchema(dir string, s Schema) (path string, err error) {
-	if !ValidStream(s.Stream) {
+	src, ok := record.ParseSource(s.Source)
+	if !ok || !ValidStream(s.Stream) {
 		return "", ErrUnsavableStream
+	}
+	// Log schemas save with no source line, as before sources existed.
+	s.Source = ""
+	if src == record.SourceOtel {
+		s.Source = src
 	}
 	for _, f := range s.Fields {
 		if err := validateField(f); err != nil {
 			return "", err
 		}
 	}
-	sdir := filepath.Join(dir, "schemas")
+	sdir, _ := schemaDir(dir, src)
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
 		return "", err
 	}
@@ -168,7 +203,7 @@ func SaveSchema(dir string, s Schema) (path string, err error) {
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	path = schemaPath(dir, s.Stream)
+	path = schemaPath(dir, src, s.Stream)
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return "", err
 	}
@@ -181,7 +216,7 @@ func SaveSchema(dir string, s Schema) (path string, err error) {
 // from a non-nil saved schema are flagged New. Hidden fields stay in Fields
 // but are dropped from the columns.
 func Effective(inferred Schema, saved *Schema) Schema {
-	out := Schema{Stream: inferred.Stream}
+	out := Schema{Stream: inferred.Stream, Source: inferred.Source}
 	byPath := map[string]int{}
 	for _, f := range inferred.Fields {
 		byPath[f.Path] = len(out.Fields)

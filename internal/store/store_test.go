@@ -77,7 +77,7 @@ func TestStreamsSorted(t *testing.T) {
 		s.Add(rec(n, t0), time.Time{})
 	}
 	got := s.Streams()
-	want := []StreamCount{{"api", 1}, {"db", 2}, {"server", 1}}
+	want := []StreamCount{{Name: "api", Source: "log", Count: 1}, {Name: "db", Source: "log", Count: 2}, {Name: "server", Source: "log", Count: 1}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -103,7 +103,7 @@ func TestPreloadReadsFixtures(t *testing.T) {
 	}
 	// pino.log: 3 db, 2 api, 2 server records (one server line untimed); the
 	// npm banner line has no stream label and is dropped.
-	want := []StreamCount{{"api", 2}, {"db", 3}, {"server", 2}}
+	want := []StreamCount{{Name: "api", Source: "log", Count: 2}, {Name: "db", Source: "log", Count: 3}, {Name: "server", Source: "log", Count: 2}}
 	if got := s.Streams(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -148,5 +148,23 @@ func TestConcurrentAddAndRead(t *testing.T) {
 	wg.Wait()
 	if s.Info().Count != 10000 {
 		t.Fatal("lost records")
+	}
+}
+
+func TestStreamsBySource(t *testing.T) {
+	s := New(ModeHistorical, time.Time{})
+	for _, r := range []record.Record{
+		{Stream: "db"},
+		{Stream: "db", Source: "otel"},
+		{Stream: "db", Source: "otel"},
+		{Stream: "api", Source: "log"},
+	} {
+		r.Time, r.Fields = t0, map[string]any{}
+		s.Add(r, time.Time{})
+	}
+	got := s.Streams()
+	want := []StreamCount{{Name: "api", Source: "log", Count: 1}, {Name: "db", Source: "log", Count: 1}, {Name: "db", Source: "otel", Count: 2}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v want %v", got, want)
 	}
 }

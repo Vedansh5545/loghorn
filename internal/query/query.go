@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
@@ -52,7 +53,9 @@ type Aggregate struct {
 
 // Query is the saved/serialised query model.
 type Query struct {
-	Stream  string   `json:"stream" toml:"stream"`
+	Stream string `json:"stream" toml:"stream"`
+	// Source is record.SourceLog or record.SourceOtel; "" means log.
+	Source  string   `json:"source,omitempty" toml:"source,omitempty"`
 	Range   Range    `json:"range" toml:"range"`
 	Filters []Filter `json:"filters" toml:"filters"`
 	Search  string   `json:"search" toml:"search"`
@@ -178,9 +181,12 @@ func parseTime(v string) (time.Time, error) {
 	return time.ParseInLocation("2006-01-02 15:04:05", v, time.Local)
 }
 
-// Validate rejects an operator that does not fit the field's type, a value
-// that does not parse for it, and an unparseable range.
+// Validate rejects an unknown source, an operator that does not fit the
+// field's type, a value that does not parse for it, and an unparseable range.
 func (q Query) Validate(s schema.Schema) error {
+	if _, ok := record.ParseSource(q.Source); !ok {
+		return fmt.Errorf("unknown source %q", q.Source)
+	}
 	for _, f := range q.Filters {
 		t := fieldType(s, f.Field)
 		if !hasOp(t, f.Op) {

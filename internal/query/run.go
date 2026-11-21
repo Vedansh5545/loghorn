@@ -196,6 +196,12 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	if stream == "" {
 		stream = s.Stream
 	}
+	src := q.Source
+	if src == "" {
+		src = s.Source
+	}
+	src, _ = record.ParseSource(src) // Validate checked q.Source
+	key := record.StreamKey{Source: src, Name: stream}
 	filters := compile(s, q)
 	needle := []byte(strings.ToLower(q.Search))
 
@@ -209,7 +215,7 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	var matched []*record.Record
 	for i := range recs {
 		r := &recs[i]
-		if stream != "" && r.Stream != stream {
+		if stream != "" && r.Key() != key {
 			continue
 		}
 		res.StreamTotal++

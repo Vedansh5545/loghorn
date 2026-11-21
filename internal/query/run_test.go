@@ -285,7 +285,7 @@ func TestEndToEndPino(t *testing.T) {
 			recs = append(recs, r)
 		}
 	}
-	s := schema.Infer("db", recs)
+	s := schema.Infer("", "db", recs)
 	q := Query{Stream: "db", Range: Range{From: "all"}, Filters: []Filter{{Field: "latency", Op: ">", Values: []string{"50ms"}}}}
 	res := run(t, recs, s, q)
 	if res.Matched != 1 {
@@ -321,5 +321,26 @@ func TestRun50kUnder200ms(t *testing.T) {
 	}
 	if res.Matched == 0 {
 		t.Error("nothing matched")
+	}
+}
+
+func TestRunFiltersBySource(t *testing.T) {
+	recs := []record.Record{
+		{Seq: 1, Time: t0, Stream: "db", Source: "log", Fields: map[string]any{"a": "x"}},
+		{Seq: 2, Time: t0, Stream: "db", Source: "otel", Fields: map[string]any{"b": "y"}},
+	}
+	s := schema.Infer("otel", "db", recs)
+	res := run(t, recs, s, Query{Stream: "db", Source: "otel", Range: Range{From: "all"}})
+	if res.StreamTotal != 1 || res.Matched != 1 || res.Rows[0].Seq != 2 {
+		t.Fatalf("otel: %+v", res)
+	}
+	s = schema.Infer("", "db", recs)
+	res = run(t, recs, s, Query{Stream: "db", Range: Range{From: "all"}})
+	if res.StreamTotal != 1 || res.Matched != 1 || res.Rows[0].Seq != 1 {
+		t.Fatalf("log: %+v", res)
+	}
+	err := Query{Stream: "db", Source: "x", Range: Range{From: "all"}}.Validate(s)
+	if err == nil || err.Error() != `unknown source "x"` {
+		t.Fatalf("validate bad source: %v", err)
 	}
 }

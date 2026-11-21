@@ -105,12 +105,18 @@ func (a *acc) typ() Type {
 	return TString
 }
 
-// Infer builds a schema for stream from its records. It never reads a saved
-// schema; merging is the caller's job.
-func Infer(stream string, recs []record.Record) Schema {
+// Infer builds a schema for the stream (source, stream) from its records;
+// "" means the log source. A source record.ParseSource refuses matches no
+// records. It never reads a saved schema; merging is the caller's job.
+func Infer(source, stream string, recs []record.Record) Schema {
+	src, ok := record.ParseSource(source)
+	if !ok {
+		src = source
+	}
+	key := record.StreamKey{Source: src, Name: stream}
 	accs := map[string]*acc{}
 	for i := range recs {
-		if recs[i].Stream != stream {
+		if !ok || recs[i].Key() != key {
 			continue
 		}
 		for path, v := range recs[i].Fields {
@@ -124,7 +130,7 @@ func Infer(stream string, recs []record.Record) Schema {
 		}
 	}
 
-	s := Schema{Stream: stream, Fields: make([]Field, 0, len(accs))}
+	s := Schema{Stream: stream, Source: src, Fields: make([]Field, 0, len(accs))}
 	for path, a := range accs {
 		t := a.typ()
 		if path == "timestamp" || path == "receiveTimestamp" {

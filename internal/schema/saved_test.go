@@ -95,7 +95,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if path != filepath.Join(dir, "schemas", "pino.toml") {
 		t.Fatalf("path %q", path)
 	}
-	got, err := LoadSaved(dir, "pino")
+	got, err := LoadSaved(dir, "", "pino")
 	if err != nil || got == nil {
 		t.Fatalf("load: %v %v", got, err)
 	}
@@ -105,6 +105,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		}
 		got.Fields[i].Saved = false
 	}
+	s.Source = "log" // LoadSaved sets the source it read from
 	if !reflect.DeepEqual(*got, s) {
 		t.Fatalf("round trip:\n got %+v\nwant %+v", *got, s)
 	}
@@ -112,7 +113,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("leftover files: %v", entries)
 	}
-	if got, err := LoadSaved(dir, "absent"); got != nil || err != nil {
+	if got, err := LoadSaved(dir, "", "absent"); got != nil || err != nil {
 		t.Fatalf("absent: %v %v", got, err)
 	}
 }
@@ -125,7 +126,7 @@ func TestSaveRefusesBadStream(t *testing.T) {
 		if _, err := SaveSchema(dir, s); !errors.Is(err, ErrUnsavableStream) {
 			t.Errorf("%q: err %v", name, err)
 		}
-		if got, err := LoadSaved(dir, name); got != nil || err != nil {
+		if got, err := LoadSaved(dir, "", name); got != nil || err != nil {
 			t.Errorf("load %q: %v %v", name, got, err)
 		}
 	}
@@ -167,7 +168,7 @@ func TestLoadSavedRejectsUnknownVisualizer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schemas", "x.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadSaved(dir, "x")
+	_, err := LoadSaved(dir, "", "x")
 	if err == nil || !contains(err.Error(), "x.toml") || !contains(err.Error(), `"a"`) {
 		t.Fatalf("err %v", err)
 	}
@@ -180,7 +181,7 @@ func TestLoadSavedDefaultsMissingVisualizer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schemas", "x.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSaved(dir, "x")
+	got, err := LoadSaved(dir, "", "x")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,7 @@ func TestSavedWidthRoundTrip(t *testing.T) {
 	if _, err := SaveSchema(dir, s); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSaved(dir, "pino")
+	got, err := LoadSaved(dir, "", "pino")
 	if err != nil || got == nil || got.Fields[0].Width != 140 {
 		t.Fatalf("got %+v %v", got, err)
 	}
@@ -305,7 +306,7 @@ func TestLoadSavedWithoutWidth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "schemas", "x.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSaved(dir, "x")
+	got, err := LoadSaved(dir, "", "x")
 	if err != nil || got.Fields[0].Width != 0 {
 		t.Fatalf("got %+v %v", got, err)
 	}
@@ -346,7 +347,7 @@ func TestSavedWrapRoundTrip(t *testing.T) {
 	if strings.Count(string(data), "wrap") != 1 {
 		t.Fatalf("want one wrap line:\n%s", data)
 	}
-	got, err := LoadSaved(dir, "pino")
+	got, err := LoadSaved(dir, "", "pino")
 	if err != nil || got == nil || !got.Fields[0].Wrap {
 		t.Fatalf("got %+v %v", got, err)
 	}
@@ -370,8 +371,87 @@ func TestValidStreamAllowsDots(t *testing.T) {
 	if _, err := SaveSchema(dir, Schema{Stream: "app.db", Columns: []string{"a"}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSaved(dir, "app.db")
+	got, err := LoadSaved(dir, "", "app.db")
 	if err != nil || got == nil || got.Stream != "app.db" {
 		t.Fatalf("LoadSaved = %+v, %v", got, err)
+	}
+}
+
+func TestSaveLoadOtelSchemaPath(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	s := Schema{Stream: "db", Source: "otel", Columns: []string{"db.query.text"},
+		Fields: []Field{{Path: "db.query.text", Type: TString, Visualizer: VRaw}}}
+	path, err := SaveSchema(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(dir, "schemas", "otel", "db.toml") {
+		t.Fatalf("path %q", path)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "schemas", "db.toml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("log path written: %v", err)
+	}
+	got, err := LoadSaved(dir, "otel", "db")
+	if err != nil || got == nil {
+		t.Fatalf("load: %v %v", got, err)
+	}
+	if got.Source != "otel" || got.Stream != "db" || len(got.Fields) != 1 || got.Fields[0].Path != "db.query.text" {
+		t.Fatalf("round trip: %+v", got)
+	}
+	if got, err := LoadSaved(dir, "log", "db"); got != nil || err != nil {
+		t.Fatalf("log db loaded the otel file: %+v %v", got, err)
+	}
+	if got, err := LoadSaved(dir, "bogus", "db"); got != nil || err != nil {
+		t.Fatalf("bogus source: %+v %v", got, err)
+	}
+	s.Source = "bogus"
+	if _, err := SaveSchema(dir, s); !errors.Is(err, ErrUnsavableStream) {
+		t.Fatalf("bogus source save: %v", err)
+	}
+}
+
+func TestLogStreamNamedOtelSavesBesideOtelDir(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	logS := Schema{Stream: "otel", Columns: []string{"msg"},
+		Fields: []Field{{Path: "msg", Type: TString, Visualizer: VRaw}}}
+	spanS := Schema{Stream: "db", Source: "otel", Columns: []string{"db.system"},
+		Fields: []Field{{Path: "db.system", Type: TString, Visualizer: VRaw}}}
+	if _, err := SaveSchema(dir, logS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SaveSchema(dir, spanS); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"otel.toml", filepath.Join("otel", "db.toml")} {
+		if _, err := os.Stat(filepath.Join(dir, "schemas", p)); err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	gotLog, err := LoadSaved(dir, "log", "otel")
+	if err != nil || gotLog == nil || gotLog.Source != "log" || gotLog.Fields[0].Path != "msg" {
+		t.Fatalf("log otel: %+v %v", gotLog, err)
+	}
+	gotSpan, err := LoadSaved(dir, "otel", "db")
+	if err != nil || gotSpan == nil || gotSpan.Source != "otel" || gotSpan.Fields[0].Path != "db.system" {
+		t.Fatalf("otel db: %+v %v", gotSpan, err)
+	}
+}
+
+func TestSavedLogSchemaHasNoSourceKey(t *testing.T) {
+	dir := filepath.Join(evalDir(t), ".config", "loghorn")
+	for _, src := range []string{"", "log"} {
+		s := sampleSchema()
+		s.Source = src
+		path, err := SaveSchema(dir, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "source =") {
+			t.Fatalf("source %q: log schema file has a source key:\n%s", src, data)
+		}
 	}
 }

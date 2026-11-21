@@ -9,6 +9,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -44,7 +45,7 @@ type server struct {
 	writeMu sync.Mutex // serialises schema and favorites file writes
 
 	cacheMu sync.Mutex
-	cache   map[string]cachedSchema // inferred schema per stream
+	cache   map[record.StreamKey]cachedSchema // inferred schema per (source, stream)
 }
 
 type cachedSchema struct {
@@ -66,7 +67,7 @@ func New(o Options) http.Handler {
 	if err != nil {
 		panic(err) // the embed directive guarantees static/ exists
 	}
-	s := &server{o: o, static: sub, cache: map[string]cachedSchema{}}
+	s := &server{o: o, static: sub, cache: map[record.StreamKey]cachedSchema{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(sub)))
@@ -187,36 +188,38 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 }
 
 type streamJSON struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	Count  int    `json:"count"`
 }
 
 func (s *server) streams(w http.ResponseWriter, r *http.Request) {
 	out := []streamJSON{}
 	for _, sc := range s.o.Store.Streams() {
-		out = append(out, streamJSON{sc.Name, sc.Count})
+		out = append(out, streamJSON{sc.Name, sc.Source, sc.Count})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
-// effective returns the snapshot and the effective schema of stream: the
+// effective returns the snapshot and the effective schema of stream k: the
 // inferred schema (cached per snapshot version) merged with the saved one.
-func (s *server) effective(stream string) ([]record.Record, schema.Schema, error) {
+// k.Source must already be parsed (record.ParseSource).
+func (s *server) effective(k record.StreamKey) ([]record.Record, schema.Schema, error) {
 	recs, version := s.o.Store.Snapshot()
 	s.cacheMu.Lock()
-	c, ok := s.cache[stream]
+	c, ok := s.cache[k]
 	s.cacheMu.Unlock()
 	if !ok || c.version != version {
-		c = cachedSchema{version, schema.Infer(stream, recs)}
+		c = cachedSchema{version, schema.Infer(k.Source, k.Name, recs)}
 		s.cacheMu.Lock()
-		s.cache[stream] = c
+		s.cache[k] = c
 		s.cacheMu.Unlock()
 	}
 	dir, _, err := s.configDir()
 	if err != nil {
 		return nil, schema.Schema{}, err
 	}
-	saved, err := schema.LoadSaved(dir, stream)
+	saved, err := schema.LoadSaved(dir, k.Source, k.Name)
 	if err != nil {
 		return nil, schema.Schema{}, err
 	}
@@ -225,13 +228,28 @@ func (s *server) effective(stream string) ([]record.Record, schema.Schema, error
 
 var allTypes = []schema.Type{schema.TInt, schema.TFloat, schema.TBool, schema.TString, schema.TDuration, schema.TTimestamp, schema.TJSON}
 
+// sourceParam parses the optional ?source= (default log). On an unknown
+// source it writes a 400 and returns false.
+func sourceParam(w http.ResponseWriter, r *http.Request) (string, bool) {
+	v := r.URL.Query().Get("source")
+	src, ok := record.ParseSource(v)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown source %q", v))
+	}
+	return src, ok
+}
+
 func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 	stream := r.URL.Query().Get("stream")
 	if stream == "" {
 		writeError(w, http.StatusBadRequest, "stream is required")
 		return
 	}
-	_, sch, err := s.effective(stream)
+	src, ok := sourceParam(w, r)
+	if !ok {
+		return
+	}
+	_, sch, err := s.effective(record.StreamKey{Source: src, Name: stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -252,6 +270,10 @@ func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, schema.ErrUnsavableStream.Error())
 		return
 	}
+	src, ok := sourceParam(w, r)
+	if !ok {
+		return
+	}
 	var sch schema.Schema
 	if err := decode(r, &sch); err != nil {
 		writeError(w, http.StatusBadRequest, "bad schema: "+err.Error())
@@ -261,7 +283,11 @@ func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "body stream does not match ?stream=")
 		return
 	}
-	sch.Stream = stream
+	if bsrc, ok := record.ParseSource(sch.Source); sch.Source != "" && (!ok || bsrc != src) {
+		writeError(w, http.StatusBadRequest, "body source does not match ?source=")
+		return
+	}
+	sch.Stream, sch.Source = stream, src
 	dir, _, err := s.configDir()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -299,7 +325,12 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream is required")
 		return
 	}
-	recs, sch, err := s.effective(q.Stream)
+	src, ok := record.ParseSource(q.Source)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown source %q", q.Source))
+		return
+	}
+	recs, sch, err := s.effective(record.StreamKey{Source: src, Name: q.Stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -343,7 +374,7 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	if json.Indent(&buf, rec.Raw, "", "  ") == nil {
 		raw = buf.String()
 	}
-	_, sch, err := s.effective(rec.Stream)
+	_, sch, err := s.effective(rec.Key())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

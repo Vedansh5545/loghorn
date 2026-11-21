@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -496,4 +497,116 @@ func TestStaticAssetsServed(t *testing.T) {
 			t.Fatalf("GET %s body lacks %q", c.path, c.want)
 		}
 	}
+}
+
+const spans = "../../testdata/web/spans.jsonl"
+
+func TestSpanAndLogStreamsApart(t *testing.T) {
+	f := newFixture(t, pino, spans)
+	var got []struct {
+		Name, Source string
+		Count        int
+	}
+	f.getJSON(t, "/api/streams", &got)
+	have := map[string]bool{}
+	for _, s := range got {
+		have[fmt.Sprintf("%s %s %d", s.Name, s.Source, s.Count)] = true
+	}
+	for _, w := range []string{"db log 3", "db otel 2", "gen_ai otel 1", "span otel 2"} {
+		if !have[w] {
+			t.Errorf("streams missing {%s}: %+v", w, got)
+		}
+	}
+
+	type result struct {
+		Matched, StreamTotal int
+		Columns              []struct{ Path string }
+	}
+	q := `{"stream":"db","source":"otel","range":{"from":"all"},"columns":["db.query.text","duration_ms"]}`
+	code, b := f.do(t, http.MethodPost, "/api/query", q, "")
+	if code != 200 {
+		t.Fatalf("otel query = %d %s", code, b)
+	}
+	var res result
+	if err := json.Unmarshal(b, &res); err != nil {
+		t.Fatal(err)
+	}
+	hasCol := false
+	for _, c := range res.Columns {
+		hasCol = hasCol || c.Path == "db.query.text"
+	}
+	if res.Matched != 2 || res.StreamTotal != 2 || !hasCol {
+		t.Fatalf("otel result = %s", b)
+	}
+	code, b = f.do(t, http.MethodPost, "/api/query", `{"stream":"db","range":{"from":"all"}}`, "")
+	res = result{}
+	if code != 200 || json.Unmarshal(b, &res) != nil || res.StreamTotal != 3 {
+		t.Fatalf("log query = %d %s", code, b)
+	}
+	code, b = f.do(t, http.MethodPost, "/api/query", `{"stream":"db","source":"bogus","range":{"from":"all"}}`, "")
+	wantError(t, code, 400, b)
+
+	var sch struct {
+		Schema struct {
+			Source string
+			Fields []struct{ Path string }
+		}
+	}
+	f.getJSON(t, "/api/schema?stream=db&source=otel", &sch)
+	hasField := false
+	for _, fl := range sch.Schema.Fields {
+		hasField = hasField || fl.Path == "db.query.text"
+	}
+	if !hasField || sch.Schema.Source != "otel" {
+		t.Fatalf("otel schema = %+v", sch)
+	}
+	code, b = f.do(t, http.MethodGet, "/api/schema?stream=db&source=bogus", "", "")
+	wantError(t, code, 400, b)
+}
+
+func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
+	f := newFixture(t, pino, spans)
+	code, b := f.do(t, http.MethodGet, "/api/schema?stream=db&source=otel", "", "")
+	if code != 200 {
+		t.Fatalf("GET = %d %s", code, b)
+	}
+	var resp struct{ Schema json.RawMessage }
+	if err := json.Unmarshal(b, &resp); err != nil {
+		t.Fatal(err)
+	}
+	body := string(resp.Schema)
+	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=otel", body, "")
+	if code != 200 {
+		t.Fatalf("PUT = %d %s", code, b)
+	}
+	var res struct{ Path string }
+	if err := json.Unmarshal(b, &res); err != nil || !strings.HasSuffix(res.Path, filepath.Join("schemas", "otel", "db.toml")) {
+		t.Fatalf("response %s", b)
+	}
+	if _, err := os.Stat(filepath.Join(f.repo, ".config", "loghorn", "schemas", "db.toml")); !os.IsNotExist(err) {
+		t.Fatalf("log schema file written: %v", err)
+	}
+	var got schemaResp
+	f.getJSON(t, "/api/schema?stream=db&source=otel", &got)
+	saved := 0
+	for _, fl := range got.Schema.Fields {
+		if fl.Saved {
+			saved++
+		}
+	}
+	if saved == 0 {
+		t.Fatalf("otel fields not saved: %+v", got.Schema.Fields)
+	}
+	got = schemaResp{}
+	f.getJSON(t, "/api/schema?stream=db", &got)
+	for _, fl := range got.Schema.Fields {
+		if fl.Saved {
+			t.Fatalf("log field marked saved: %+v", fl)
+		}
+	}
+	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=otel",
+		`{"stream":"db","source":"log","columns":[],"fields":[]}`, "")
+	wantError(t, code, 400, b)
+	code, b = f.do(t, http.MethodPut, "/api/schema?stream=db&source=bogus", body, "")
+	wantError(t, code, 400, b)
 }

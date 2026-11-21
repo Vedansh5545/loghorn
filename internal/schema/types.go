@@ -79,7 +79,10 @@ type Field struct {
 
 // Schema is the field list and default columns of one stream.
 type Schema struct {
-	Stream  string   `toml:"stream" json:"stream"`
+	Stream string `toml:"stream" json:"stream"`
+	// Source is record.SourceLog or record.SourceOtel; "" means log. Log
+	// schemas save without it.
+	Source  string   `toml:"source,omitempty" json:"source"`
 	Columns []string `toml:"columns" json:"columns"`
 	Fields  []Field  `toml:"field" json:"fields"` // sorted by Path
 }

@@ -253,7 +253,8 @@ its own row and the other filters keep working). Three modes share it:
 The URL carries the query, and a favorite saves the mode with it.
 
 Schemas (field types, display and column widths) and favorite queries are saved as TOML in
-the repo's `.config/loghorn/`: `schemas/<stream>.toml` and `queries.toml`.
+the repo's `.config/loghorn/`: `schemas/<stream>.toml` for log streams,
+`schemas/otel/<stream>.toml` for span streams, and `queries.toml`.
 Nothing is written under your home directory.
 
 ## Flags

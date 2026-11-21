@@ -32,10 +32,12 @@ type Info struct {
 	Count            int
 }
 
-// StreamCount is a stream name and its record count.
+// StreamCount is a stream's name, source and record count. The same name
+// under two sources is two streams.
 type StreamCount struct {
-	Name  string
-	Count int
+	Name   string
+	Source string
+	Count  int
 }
 
 // Store holds the session's records.
@@ -44,7 +46,7 @@ type Store struct {
 	mode     Mode
 	runStart time.Time
 	recs     []record.Record
-	streams  map[string]int
+	streams  map[record.StreamKey]int
 	pending  []int // indexes of leading records with no time yet
 	earliest time.Time
 	latest   time.Time
@@ -52,7 +54,7 @@ type Store struct {
 
 // New returns an empty store. runStart is zero for replay modes.
 func New(mode Mode, runStart time.Time) *Store {
-	return &Store{mode: mode, runStart: runStart, streams: map[string]int{}}
+	return &Store{mode: mode, runStart: runStart, streams: map[record.StreamKey]int{}}
 }
 
 // Add appends r, assigning Seq and its effective time. A zero r.Time takes
@@ -81,7 +83,7 @@ func (s *Store) Add(r record.Record, received time.Time) {
 		s.widen(r.Time)
 	}
 	s.recs = append(s.recs, r)
-	s.streams[r.Stream]++
+	s.streams[r.Key()]++
 }
 
 func (s *Store) widen(t time.Time) {
@@ -102,15 +104,20 @@ func (s *Store) Snapshot() ([]record.Record, uint64) {
 	return out, uint64(len(out))
 }
 
-// Streams returns per-stream counts sorted by name.
+// Streams returns per-stream counts sorted by name, then source.
 func (s *Store) Streams() []StreamCount {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]StreamCount, 0, len(s.streams))
-	for n, c := range s.streams {
-		out = append(out, StreamCount{n, c})
+	for k, c := range s.streams {
+		out = append(out, StreamCount{Name: k.Name, Source: k.Source, Count: c})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Source < out[j].Source
+	})
 	return out
 }
 
