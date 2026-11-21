@@ -188,7 +188,7 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	if err := q.Validate(s); err != nil {
 		return Result{}, err
 	}
-	from, to, err := q.Range.resolve(now, runStart)
+	from, to, err := q.Range.Resolve(now, runStart)
 	if err != nil {
 		return Result{}, err
 	}
@@ -216,6 +216,9 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	for i := range recs {
 		r := &recs[i]
 		if stream != "" && r.Key() != key {
+			continue
+		}
+		if q.Service != "" && q.Service != "*" && r.Service != q.Service {
 			continue
 		}
 		res.StreamTotal++
@@ -279,7 +282,7 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 
 	paths := q.Columns
 	if len(paths) == 0 {
-		paths = s.Columns
+		paths = intervalColumns(matched, s)
 	}
 	fields := make([]schema.Field, len(paths))
 	for i, p := range paths {
@@ -303,6 +306,25 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		res.Rows = append(res.Rows, row)
 	}
 	return res, nil
+}
+
+// intervalColumns is the default column list inferred from the matched
+// records: each schema field's Count becomes the number of matched records
+// holding the path, and fields with none are dropped. Types come from s.
+func intervalColumns(matched []*record.Record, s schema.Schema) []string {
+	counts := map[string]int{}
+	for _, r := range matched {
+		for p := range r.Fields {
+			counts[p]++
+		}
+	}
+	fs := make([]schema.Field, 0, len(s.Fields))
+	for _, f := range s.Fields {
+		if f.Count = counts[f.Path]; f.Count > 0 {
+			fs = append(fs, f)
+		}
+	}
+	return schema.DefaultColumns(s.Source, fs)
 }
 
 // containsFold reports whether b contains the lower-case needle, ignoring

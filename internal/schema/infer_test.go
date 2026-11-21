@@ -38,7 +38,7 @@ func TestInferTypes(t *testing.T) {
 		}),
 		rec("other", map[string]any{"message": 5}),
 	}
-	s := Infer("", "db", recs)
+	s := Infer("*", "", "db", recs)
 	want := map[string]Type{
 		"databaseContext.metadata.rowsAffected": TInt, "databaseContext.metadata.latency": TDuration,
 		"timestamp": TTimestamp, "message": TString, "ok": TBool, "tags": TJSON, "ratio": TFloat,
@@ -60,7 +60,7 @@ func TestInferTypes(t *testing.T) {
 }
 
 func TestInferMixedIsString(t *testing.T) {
-	s := Infer("", "a", []record.Record{
+	s := Infer("*", "", "a", []record.Record{
 		rec("a", map[string]any{"rows": json.Number("3")}),
 		rec("a", map[string]any{"rows": "n/a"}),
 	})
@@ -70,7 +70,7 @@ func TestInferMixedIsString(t *testing.T) {
 }
 
 func TestInferNumberNeverTimestamp(t *testing.T) {
-	s := Infer("", "a", []record.Record{rec("a", map[string]any{"at": json.Number("1763400000123"), "bare": "42"})})
+	s := Infer("*", "", "a", []record.Record{rec("a", map[string]any{"at": json.Number("1763400000123"), "bare": "42"})})
 	if got := typeOf(t, s, "at"); got != TInt {
 		t.Errorf("at=%s", got)
 	}
@@ -78,14 +78,14 @@ func TestInferNumberNeverTimestamp(t *testing.T) {
 		t.Errorf("bare=%s", got)
 	}
 	// the well-known timestamp fields are timestamps whatever they hold
-	s = Infer("", "a", []record.Record{rec("a", map[string]any{"receiveTimestamp": json.Number("1")})})
+	s = Infer("*", "", "a", []record.Record{rec("a", map[string]any{"receiveTimestamp": json.Number("1")})})
 	if got := typeOf(t, s, "receiveTimestamp"); got != TTimestamp {
 		t.Errorf("receiveTimestamp=%s", got)
 	}
 }
 
 func TestInferNullsIgnored(t *testing.T) {
-	s := Infer("", "a", []record.Record{
+	s := Infer("*", "", "a", []record.Record{
 		rec("a", map[string]any{"n": nil}), rec("a", map[string]any{"n": json.Number("3")}), rec("a", map[string]any{"n": ""}),
 	})
 	f, _ := s.Field("n")
@@ -101,13 +101,13 @@ func TestDefaultColumns(t *testing.T) {
 	}
 	r1 := rec("a", f)
 	r2 := rec("a", map[string]any{"f09": "v", "f08": "v"})
-	s := Infer("", "a", []record.Record{r1, r2})
+	s := Infer("*", "", "a", []record.Record{r1, r2})
 	want := []string{"timestamp", "severity", "message", "f08", "f09", "f00", "f01", "f02"}
 	if !reflect.DeepEqual(s.Columns, want) {
 		t.Fatalf("columns=%v want %v", s.Columns, want)
 	}
 	// absent well-known columns are skipped
-	s = Infer("", "a", []record.Record{rec("a", map[string]any{"x": "1"})})
+	s = Infer("*", "", "a", []record.Record{rec("a", map[string]any{"x": "1"})})
 	if !reflect.DeepEqual(s.Columns, []string{"x"}) {
 		t.Errorf("columns=%v", s.Columns)
 	}
@@ -146,15 +146,45 @@ func TestInferBySource(t *testing.T) {
 		{Stream: "db", Source: "log", Fields: map[string]any{"a": "x"}},
 		{Stream: "db", Source: "otel", Fields: map[string]any{"b": "y"}},
 	}
-	s := Infer("otel", "db", recs)
+	s := Infer("*", "otel", "db", recs)
 	if len(s.Fields) != 1 || s.Fields[0].Path != "b" || s.Source != "otel" {
 		t.Fatalf("otel: %+v", s)
 	}
-	s = Infer("", "db", recs)
+	s = Infer("*", "", "db", recs)
 	if len(s.Fields) != 1 || s.Fields[0].Path != "a" || s.Source != "log" {
 		t.Fatalf("log: %+v", s)
 	}
-	if s := Infer("bogus", "db", recs); len(s.Fields) != 0 {
+	if s := Infer("*", "bogus", "db", recs); len(s.Fields) != 0 {
 		t.Fatalf("bogus source matched records: %+v", s)
+	}
+}
+
+func TestDefaultColumnsSpanLead(t *testing.T) {
+	var fs []Field
+	for i, p := range []string{"timestamp", "name", "duration_ms", "severity", "trace_id"} {
+		fs = append(fs, Field{Path: p, Type: TString, Count: 10 - i})
+	}
+	got := DefaultColumns("otel", fs)
+	if !reflect.DeepEqual(got[:3], []string{"timestamp", "name", "duration_ms"}) {
+		t.Fatalf("otel lead = %v", got)
+	}
+	got = DefaultColumns("", fs)
+	if got[0] != "timestamp" || got[1] != "severity" {
+		t.Fatalf("log lead = %v", got)
+	}
+}
+
+func TestInferService(t *testing.T) {
+	a := record.Record{Service: "a", Source: "otel", Stream: "db", Fields: map[string]any{"x": "1"}}
+	b := record.Record{Service: "b", Source: "otel", Stream: "db", Fields: map[string]any{"x": "1", "y": "2"}}
+	recs := []record.Record{a, b, b}
+	s := Infer("a", "otel", "db", recs)
+	if len(s.Fields) != 1 || s.Fields[0].Count != 1 {
+		t.Fatalf("service a: %+v", s.Fields)
+	}
+	for _, svc := range []string{"", "*"} {
+		if s := Infer(svc, "otel", "db", recs); len(s.Fields) != 2 || s.Fields[0].Count != 3 {
+			t.Fatalf("service %q: %+v", svc, s.Fields)
+		}
 	}
 }

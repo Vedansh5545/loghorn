@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -190,7 +192,7 @@ func TestSearchNonASCII(t *testing.T) {
 func TestJSONCellIsExactText(t *testing.T) {
 	s := sch(schema.Field{Path: "ids", Type: schema.TJSON})
 	recs := []record.Record{rec(1, t0, "", "ids", []any{json.Number("1763400000123456789"), "x"})}
-	b, _ := json.Marshal(run(t, recs, s, Query{}).Rows[0].Cells)
+	b, _ := json.Marshal(run(t, recs, s, Query{Columns: []string{"ids"}}).Rows[0].Cells)
 	if string(b) != `[{"v":"[1763400000123456789,\"x\"]"}]` {
 		t.Errorf("cells = %s", b)
 	}
@@ -285,7 +287,7 @@ func TestEndToEndPino(t *testing.T) {
 			recs = append(recs, r)
 		}
 	}
-	s := schema.Infer("", "db", recs)
+	s := schema.Infer("*", "", "db", recs)
 	q := Query{Stream: "db", Range: Range{From: "all"}, Filters: []Filter{{Field: "latency", Op: ">", Values: []string{"50ms"}}}}
 	res := run(t, recs, s, q)
 	if res.Matched != 1 {
@@ -329,12 +331,12 @@ func TestRunFiltersBySource(t *testing.T) {
 		{Seq: 1, Time: t0, Stream: "db", Source: "log", Fields: map[string]any{"a": "x"}},
 		{Seq: 2, Time: t0, Stream: "db", Source: "otel", Fields: map[string]any{"b": "y"}},
 	}
-	s := schema.Infer("otel", "db", recs)
+	s := schema.Infer("*", "otel", "db", recs)
 	res := run(t, recs, s, Query{Stream: "db", Source: "otel", Range: Range{From: "all"}})
 	if res.StreamTotal != 1 || res.Matched != 1 || res.Rows[0].Seq != 2 {
 		t.Fatalf("otel: %+v", res)
 	}
-	s = schema.Infer("", "db", recs)
+	s = schema.Infer("*", "", "db", recs)
 	res = run(t, recs, s, Query{Stream: "db", Range: Range{From: "all"}})
 	if res.StreamTotal != 1 || res.Matched != 1 || res.Rows[0].Seq != 1 {
 		t.Fatalf("log: %+v", res)
@@ -342,5 +344,40 @@ func TestRunFiltersBySource(t *testing.T) {
 	err := Query{Stream: "db", Source: "x", Range: Range{From: "all"}}.Validate(s)
 	if err == nil || err.Error() != `unknown source "x"` {
 		t.Fatalf("validate bad source: %v", err)
+	}
+}
+
+func TestRunServiceFilter(t *testing.T) {
+	a := rec(1, t0, "x")
+	a.Service = "a"
+	b := rec(2, t0, "x")
+	b.Service = "b"
+	recs := []record.Record{a, b}
+	s := sch(schema.Field{Path: "x", Type: schema.TString})
+	for svc, want := range map[string][]int{"a": {1}, "b": {2}, "*": {1, 2}, "": {1, 2}} {
+		got := seqs(run(t, recs, s, Query{Service: svc}))
+		sort.Ints(got)
+		eq(t, got, want)
+	}
+}
+
+func TestRunIntervalColumns(t *testing.T) {
+	old := rec(1, t0.Add(-time.Hour), "x", "foo", "1")
+	in := rec(2, t0.Add(-time.Minute), "x", "bar", "1")
+	recs := []record.Record{old, in}
+	s := schema.Infer("*", "", "a", recs)
+	q := Query{Range: Range{From: "10m"}}
+	res := run(t, recs, s, q)
+	var got []string
+	for _, c := range res.Columns {
+		got = append(got, c.Path)
+	}
+	if !reflect.DeepEqual(got, []string{"bar"}) {
+		t.Fatalf("interval columns = %v, want [bar]", got)
+	}
+	q.Columns = []string{"foo"}
+	res = run(t, recs, s, q)
+	if len(res.Columns) != 1 || res.Columns[0].Path != "foo" {
+		t.Fatalf("explicit columns = %+v", res.Columns)
 	}
 }

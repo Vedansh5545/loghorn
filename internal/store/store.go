@@ -164,3 +164,60 @@ func Preload(s *Store, paths []string, in config.Input) error {
 	}
 	return nil
 }
+
+// Count is a name and how many records carry it.
+type Count struct {
+	Name  string
+	Count int
+}
+
+// Kinds counts, in one pass under the read lock, the records of source ("" is
+// log) whose time is in [from, to). A zero bound is unbounded; a record with
+// no time counts only when from is zero. services counts per service,
+// ignoring service; kinds counts per Stream, limited to service unless it is
+// "*". Both sort by count descending, then name, and are never nil.
+func (s *Store) Kinds(source, service string, from, to time.Time) (kinds, services []Count) {
+	src, ok := record.ParseSource(source)
+	kc := map[string]int{}
+	sc := map[string]int{}
+	if ok {
+		s.mu.RLock()
+		for i := range s.recs {
+			r := &s.recs[i]
+			rs := r.Source
+			if rs == "" {
+				rs = record.SourceLog
+			}
+			if rs != src {
+				continue
+			}
+			if r.Time.IsZero() {
+				if !from.IsZero() {
+					continue
+				}
+			} else if (!from.IsZero() && r.Time.Before(from)) || (!to.IsZero() && !r.Time.Before(to)) {
+				continue
+			}
+			sc[r.Service]++
+			if service == "*" || r.Service == service {
+				kc[r.Stream]++
+			}
+		}
+		s.mu.RUnlock()
+	}
+	return sortedCounts(kc), sortedCounts(sc)
+}
+
+func sortedCounts(m map[string]int) []Count {
+	out := make([]Count, 0, len(m))
+	for n, c := range m {
+		out = append(out, Count{Name: n, Count: c})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}

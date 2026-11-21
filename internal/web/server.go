@@ -210,7 +210,7 @@ func (s *server) effective(k record.StreamKey) ([]record.Record, schema.Schema, 
 	c, ok := s.cache[k]
 	s.cacheMu.Unlock()
 	if !ok || c.version != version {
-		c = cachedSchema{version, schema.Infer(k.Source, k.Name, recs)}
+		c = cachedSchema{version, schema.Infer("*", k.Source, k.Name, recs)}
 		s.cacheMu.Lock()
 		s.cache[k] = c
 		s.cacheMu.Unlock()

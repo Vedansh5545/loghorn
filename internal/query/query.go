@@ -55,7 +55,10 @@ type Aggregate struct {
 type Query struct {
 	Stream string `json:"stream" toml:"stream"`
 	// Source is record.SourceLog or record.SourceOtel; "" means log.
-	Source  string   `json:"source,omitempty" toml:"source,omitempty"`
+	Source string `json:"source,omitempty" toml:"source,omitempty"`
+	// Service restricts a run to one service's records; "" and "*" mean
+	// every service. It is not saved with a favorite.
+	Service string   `json:"service,omitempty" toml:"-"`
 	Range   Range    `json:"range" toml:"range"`
 	Filters []Filter `json:"filters" toml:"filters"`
 	Search  string   `json:"search" toml:"search"`
@@ -213,7 +216,7 @@ func (q Query) Validate(s schema.Schema) error {
 			}
 		}
 	}
-	if _, _, err := q.Range.resolve(time.Now(), time.Time{}); err != nil {
+	if _, _, err := q.Range.Resolve(time.Now(), time.Time{}); err != nil {
 		return err
 	}
 	return q.validateExplore(s)
@@ -275,10 +278,10 @@ func (q Query) validateExplore(s schema.Schema) error {
 	return nil
 }
 
-// resolve turns the range into bounds. A zero from is unbounded; a zero to is
+// Resolve turns the range into bounds. A zero from is unbounded; a zero to is
 // unbounded above (the window ends "now", and records never arrive from the
 // future on purpose, so a clock-skewed one is kept rather than hidden).
-func (r Range) resolve(now, runStart time.Time) (from, to time.Time, err error) {
+func (r Range) Resolve(now, runStart time.Time) (from, to time.Time, err error) {
 	switch f := strings.TrimSpace(r.From); f {
 	case "", "all":
 	case "this-run":

@@ -106,9 +106,10 @@ func (a *acc) typ() Type {
 }
 
 // Infer builds a schema for the stream (source, stream) from its records;
-// "" means the log source. A source record.ParseSource refuses matches no
+// "" means the log source. service restricts it to one service's records;
+// "" or "*" means every service. A source record.ParseSource refuses matches no
 // records. It never reads a saved schema; merging is the caller's job.
-func Infer(source, stream string, recs []record.Record) Schema {
+func Infer(service, source, stream string, recs []record.Record) Schema {
 	src, ok := record.ParseSource(source)
 	if !ok {
 		src = source
@@ -117,6 +118,9 @@ func Infer(source, stream string, recs []record.Record) Schema {
 	accs := map[string]*acc{}
 	for i := range recs {
 		if !ok || recs[i].Key() != key {
+			continue
+		}
+		if service != "" && service != "*" && recs[i].Service != service {
 			continue
 		}
 		for path, v := range recs[i].Fields {
@@ -142,18 +146,27 @@ func Infer(source, stream string, recs []record.Record) Schema {
 		})
 	}
 	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
-	s.Columns = defaultColumns(s.Fields)
+	s.Columns = DefaultColumns(src, s.Fields)
 	return s
 }
 
-func defaultColumns(fields []Field) []string {
+// DefaultColumns picks the columns shown when a query names none: the
+// source's lead fields that are present (timestamp, severity, message for
+// log; timestamp, name, duration_ms for otel), then the rest by Count
+// descending, capped at maxDefaultColumns. Hidden, labels.* and json fields
+// are skipped.
+func DefaultColumns(source string, fields []Field) []string {
+	lead := []string{"timestamp", "severity", "message"}
+	if src, _ := record.ParseSource(source); src == record.SourceOtel {
+		lead = []string{"timestamp", "name", "duration_ms"}
+	}
 	byPath := map[string]Field{}
 	for _, f := range fields {
 		byPath[f.Path] = f
 	}
 	var cols []string
 	used := map[string]bool{}
-	for _, p := range []string{"timestamp", "severity", "message"} {
+	for _, p := range lead {
 		if _, ok := byPath[p]; ok {
 			cols = append(cols, p)
 			used[p] = true
@@ -161,7 +174,7 @@ func defaultColumns(fields []Field) []string {
 	}
 	rest := make([]Field, 0, len(fields))
 	for _, f := range fields {
-		if used[f.Path] || strings.HasPrefix(f.Path, "labels.") || f.Type == TJSON {
+		if used[f.Path] || f.Hidden || strings.HasPrefix(f.Path, "labels.") || f.Type == TJSON {
 			continue
 		}
 		rest = append(rest, f)
