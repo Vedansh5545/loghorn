@@ -72,6 +72,12 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 		}
 	}
 
+	if ws != nil && kind == kindHistorical {
+		if dir, err := logDir(); err == nil {
+			preloadSpans(ws.st, dir, cfg.Input)
+		}
+	}
+
 	if ws != nil {
 		fmt.Fprintf(os.Stderr, "loghorn: web view at %s\n", ws.url)
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

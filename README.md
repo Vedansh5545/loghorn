@@ -103,8 +103,8 @@ Spans the command exports are stored one JSON object per line in
 Each line has `trace_id`, `span_id`, `parent_span_id`, `name`, `kind`, `start`, `end`,
 `duration_ms`, `status`, `status_message`, `attributes`, `events`, `links`,
 `service.name`, `loghorn.run.id`, `otel.resource` and the instrumentation scope (empty
-fields are left out). Spans are not part of `loghorn.log`, `-web`, `-filter` or
-`-notify`, and they don't count as OTLP logs below.
+fields are left out). Spans appear in `-web` as span streams, live and from stored days, but are not part of
+`loghorn.log`, `-filter` or `-notify`, and they don't count as OTLP logs below.
 
 Once the first OTLP record arrives, the command's stdout lines that are JSON objects
 are no longer stored, since they are most likely the same events logged twice; other

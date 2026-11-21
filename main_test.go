@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +74,7 @@ func TestSpanSinkWithNoWriterIsNil(t *testing.T) {
 	if openSpanLog(nil) != nil {
 		t.Fatal("openSpanLog(nil) != nil")
 	}
-	if spanSink(nil, func(error) {}) != nil {
+	if spanSink(nil, nil, func(error) {}) != nil {
 		t.Fatal("spanSink(nil) must be nil so the receiver discards traces")
 	}
 }
@@ -97,7 +99,7 @@ func TestSpanSinkWritesCompanionAndFailsOnce(t *testing.T) {
 		t.Fatal("openSpanLog returned nil")
 	}
 	var failures int
-	sink := spanSink(spans, func(error) { failures++ })
+	sink := spanSink(spans, nil, func(error) { failures++ })
 	sink([]byte(`{"name":"a"}`))
 	b, err := os.ReadFile(filepath.Join(dir, logfile.SpansBase+logfile.SpansSuffix))
 	if err != nil || string(b) != "{\"name\":\"a\"}\n" {
@@ -115,6 +117,100 @@ func TestSpanSinkWritesCompanionAndFailsOnce(t *testing.T) {
 	sink([]byte(`{"name":"c"}`))
 	if failures != 1 {
 		t.Fatalf("onFail called %d times, want 1", failures)
+	}
+}
+
+func spanFixture(t *testing.T) [][]byte {
+	t.Helper()
+	b, err := os.ReadFile("testdata/web/spans.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.Split(bytes.TrimSpace(b), []byte("\n"))
+}
+
+func TestSpanSinkStoreOnly(t *testing.T) {
+	st := store.New(store.ModeLive, time.Now())
+	sink := spanSink(nil, st, func(error) { t.Error("onFail") })
+	if sink == nil {
+		t.Fatal("store-only spanSink is nil")
+	}
+	sink(spanFixture(t)[3])
+	sink([]byte(`{"msg":"not a span"}`))
+	want := []store.StreamCount{{Name: "db", Source: "otel", Count: 1}}
+	if got := st.Streams(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Streams = %v, want %v", got, want)
+	}
+}
+
+func TestSpanSinkAddsWhenFileFails(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	clock := &fakeClock{t: time.Date(2026, 9, 14, 22, 0, 0, 0, loc)}
+	logs, err := logfile.Open(dir, clock.Now, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { logs.Close() })
+	spans := openSpanLog(logs)
+	st := store.New(store.ModeLive, time.Now())
+	var failures int
+	sink := spanSink(spans, st, func(error) { failures++ })
+	lines := spanFixture(t)
+	sink(lines[0])
+	if err := os.Mkdir(filepath.Join(dir, "loghorn-2026-09-14"+logfile.SpansSuffix), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	clock.t = time.Date(2026, 9, 15, 1, 0, 0, 0, loc)
+	sink(lines[1])
+	sink(lines[2])
+	if failures != 1 {
+		t.Fatalf("onFail called %d times, want 1", failures)
+	}
+	n := 0
+	for _, c := range st.Streams() {
+		n += c.Count
+	}
+	if n != 3 {
+		t.Fatalf("store holds %d spans (%v), want 3", n, st.Streams())
+	}
+}
+
+func TestPreloadStoredReadsLogsAndSpans(t *testing.T) {
+	dir := t.TempDir()
+	pino, err := os.ReadFile("testdata/web/pino.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := spanFixture(t)
+	join := func(ls [][]byte) []byte { return append(bytes.Join(ls, []byte("\n")), '\n') }
+	files := map[string][]byte{
+		"loghorn-2026-11-17.log":          pino,
+		"loghorn-2026-11-17.traces.jsonl": join(lines[:4]),
+		"loghorn.traces.jsonl":            join(lines[4:]),
+	}
+	for name, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := store.New(store.ModeLive, time.Now())
+	preloadStored(st, dir, config.Input{})
+	got := map[store.StreamCount]bool{}
+	for _, c := range st.Streams() {
+		got[c] = true
+	}
+	for _, w := range []store.StreamCount{{Name: "db", Source: "log", Count: 3}, {Name: "db", Source: "otel", Count: 2}, {Name: "span", Source: "otel", Count: 2}} {
+		if !got[w] {
+			t.Errorf("missing %v in %v", w, st.Streams())
+		}
+	}
+	recs, _ := st.Snapshot()
+	if id := recs[len(recs)-1].Fields["span_id"]; id != "a000000000000009" {
+		t.Errorf("last record span_id = %v, want a000000000000009", id)
 	}
 }
 

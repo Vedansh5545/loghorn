@@ -18,6 +18,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/otlp"
+	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 	"github.com/jimbeveridge/loghorn/internal/runner"
 	"github.com/jimbeveridge/loghorn/internal/store"
@@ -51,7 +52,9 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		// (after rcv.Drain) closes it. Without a log file, traces are
 		// accepted and discarded.
 		spans := openSpanLog(logs)
-		rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, func(err error) {
+		// The store was preloaded inside startLiveWeb above, before this
+		// receiver exists, so a span is preloaded or hooked, never both.
+		rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, ws.store(), func(err error) {
 			fmt.Fprintln(os.Stderr, "loghorn: span file stopped:", err)
 		}), nil)
 		rcv.Serve(ln)
@@ -153,17 +156,26 @@ func openSpanLog(logs *logfile.Writer) *logfile.Writer {
 }
 
 // spanSink returns the receiver's span callback: each line (already compact
-// JSON) is appended to w. A nil writer gives a nil callback, so the receiver
-// discards traces. onFail runs at most once, for the writer's first failure;
-// the writer ignores spans after it.
-func spanSink(w *logfile.Writer, onFail func(error)) func(line []byte) {
-	if w == nil {
+// JSON) is appended to w if there is one, and added to st if there is one. A
+// nil writer and nil store give a nil callback, so the receiver discards
+// traces. onFail runs at most once, for the writer's first failure; the
+// writer ignores spans after it. The store gets the span whatever happened
+// to the file write.
+func spanSink(w *logfile.Writer, st *store.Store, onFail func(error)) func(line []byte) {
+	if w == nil && st == nil {
 		return nil
 	}
 	var once sync.Once
 	return func(line []byte) {
-		if err := w.Write(line); err != nil {
-			once.Do(func() { onFail(err) })
+		if w != nil {
+			if err := w.Write(line); err != nil {
+				once.Do(func() { onFail(err) })
+			}
+		}
+		if st != nil {
+			if r, ok := record.NormalizeSpan(line); ok {
+				st.Add(r, time.Now())
+			}
 		}
 	}
 }
@@ -245,6 +257,26 @@ func startLiveWeb(o opts, cfg config.Config, cwd string) *webServer {
 	return ws
 }
 
+// preloadStored loads the stored log files, then the stored span files, into
+// st. Errors are reported and do not stop startup.
+func preloadStored(st *store.Store, dir string, in config.Input) {
+	if paths, err := logfile.HistoricalFiles(dir); err == nil {
+		if err := store.Preload(st, paths, in); err != nil {
+			fmt.Fprintln(os.Stderr, "loghorn: -web: preload:", err)
+		}
+	}
+	preloadSpans(st, dir, in)
+}
+
+// preloadSpans loads the stored span files in dir into st.
+func preloadSpans(st *store.Store, dir string, in config.Input) {
+	if paths, err := logfile.HistoricalSpanFiles(dir); err == nil {
+		if err := store.Preload(st, paths, in); err != nil {
+			fmt.Fprintln(os.Stderr, "loghorn: -web: preload:", err)
+		}
+	}
+}
+
 // startWeb listens and serves a store of the given mode; it does not print
 // the URL. A live store is preloaded with the stored days first. A listen
 // failure exits, so it must run before any child is launched.
@@ -252,11 +284,7 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 	st := store.New(mode, runStart)
 	if mode == store.ModeLive {
 		if dir, err := logDir(); err == nil {
-			if paths, err := logfile.HistoricalFiles(dir); err == nil {
-				if err := store.Preload(st, paths, cfg.Input); err != nil {
-					fmt.Fprintln(os.Stderr, "loghorn: -web: preload:", err)
-				}
-			}
+			preloadStored(st, dir, cfg.Input)
 		}
 	}
 	ln, err := web.Listen(o.webPort)

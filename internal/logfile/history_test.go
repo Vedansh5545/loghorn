@@ -3,6 +3,7 @@ package logfile
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -112,5 +113,36 @@ func TestHistoricalFilesIgnoresSpanFiles(t *testing.T) {
 	want := []string{filepath.Join(dir, "loghorn-2026-09-14.log"), filepath.Join(dir, "loghorn.log")}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestHistoricalSpanFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"loghorn.log", "loghorn-2026-11-18.log", "loghorn.traces.jsonl", "loghorn-2026-11-19.traces.jsonl", "loghorn-2026-11-18.traces.jsonl", "loghorn.lock"} {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "loghorn-2026-11-17.traces.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := func(ps []string) []string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, filepath.Base(p))
+		}
+		return out
+	}
+	got, err := HistoricalSpanFiles(dir)
+	want := []string{"loghorn-2026-11-18.traces.jsonl", "loghorn-2026-11-19.traces.jsonl", "loghorn.traces.jsonl"}
+	if err != nil || !reflect.DeepEqual(base(got), want) {
+		t.Fatalf("HistoricalSpanFiles = %v, %v; want %v", base(got), err, want)
+	}
+	logs, err := HistoricalFiles(dir)
+	if err != nil || !reflect.DeepEqual(base(logs), []string{"loghorn-2026-11-18.log", "loghorn.log"}) {
+		t.Fatalf("HistoricalFiles = %v, %v", base(logs), err)
+	}
+	if got, err := HistoricalSpanFiles(filepath.Join(dir, "nope")); got != nil || err != nil {
+		t.Fatalf("missing dir = %v, %v", got, err)
 	}
 }

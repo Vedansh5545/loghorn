@@ -18,6 +18,16 @@ import (
 // error: it simply has no stored files. Any other os.ReadDir failure, such
 // as a permissions problem, is returned unchanged.
 func HistoricalFiles(dir string) ([]string, error) {
+	return historicalFiles(dir, LogBase, LogSuffix)
+}
+
+// HistoricalSpanFiles is HistoricalFiles for the span companion files:
+// loghorn-YYYY-MM-DD.traces.jsonl oldest first, then loghorn.traces.jsonl.
+func HistoricalSpanFiles(dir string) ([]string, error) {
+	return historicalFiles(dir, SpansBase, SpansSuffix)
+}
+
+func historicalFiles(dir, base, suffix string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -30,7 +40,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 	haveCurrent := false
 	for _, e := range entries {
 		name := e.Name()
-		if name == LogBase+LogSuffix {
+		if name == base+suffix {
 			haveCurrent = true
 			continue
 		}
@@ -39,7 +49,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 			// skip it before parseArchiveDay gets a chance to match its name.
 			continue
 		}
-		if _, ok := parseArchiveDay(LogBase, LogSuffix, name, time.UTC); ok {
+		if _, ok := parseArchiveDay(base, suffix, name, time.UTC); ok {
 			archives = append(archives, name)
 		}
 	}
@@ -50,8 +60,8 @@ func HistoricalFiles(dir string) ([]string, error) {
 	// cutoff, so UTC is enough here — unlike prune, which must parse in the
 	// writer's own location (see parseArchiveDay in writer.go).
 	sort.Slice(archives, func(i, j int) bool {
-		di, _ := parseArchiveDay(LogBase, LogSuffix, archives[i], time.UTC)
-		dj, _ := parseArchiveDay(LogBase, LogSuffix, archives[j], time.UTC)
+		di, _ := parseArchiveDay(base, suffix, archives[i], time.UTC)
+		dj, _ := parseArchiveDay(base, suffix, archives[j], time.UTC)
 		return di.Before(dj)
 	})
 
@@ -60,7 +70,7 @@ func HistoricalFiles(dir string) ([]string, error) {
 		files = append(files, filepath.Join(dir, name))
 	}
 	if haveCurrent {
-		files = append(files, filepath.Join(dir, LogBase+LogSuffix))
+		files = append(files, filepath.Join(dir, base+suffix))
 	}
 	return files, nil
 }
