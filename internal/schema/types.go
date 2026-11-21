@@ -47,7 +47,10 @@ const (
 )
 
 // ValidUnit reports whether unit is acceptable for a field of type t. The
-// empty unit is valid for every type.
+// empty unit is valid for every type. A time unit is valid only on timestamp
+// and duration fields, so a field that holds milliseconds must be typed
+// duration: an int field with unit "ms" fails validation (a 400 from
+// PUT /api/schema).
 func ValidUnit(t Type, unit string) bool {
 	switch unit {
 	case "":

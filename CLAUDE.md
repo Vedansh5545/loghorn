@@ -41,6 +41,21 @@ after launch leaves it running.
 - Schema edits from the page queue one after another; each must re-apply its
   patch when it runs, because the previous save's reload replaces
   `schemaData` (see `saveFieldFormat`).
+- Field settings in `fields-<source>.toml` apply to every kind of that source,
+  so a field save must send only what the user changed. Send `type` and
+  `visualizer` only when the user set them; otherwise a width or label edit
+  freezes one kind's inferred type for all kinds.
+- Every async loader in `app.js` (`loadKinds`, `loadPins`, `loadSchema`,
+  `runQuery`) takes a sequence number and drops its answer when a newer call
+  superseded it, and its callers bail out on a superseded load. A new loader
+  must do the same, or a slow answer for the previous service or range
+  overwrites the current state.
+- Pins, favorites and field settings belong to the selected service. Read
+  and write them for `state.service` only. Under All (`*`) they are
+  read-only, and the page skips per-service writes.
+- Tests and demos must not touch the real `~/.config/loghorn`. Point `HOME`
+  at a temp dir (`svcconf` puts config under `$HOME/.config/loghorn` when
+  `XDG_CONFIG_HOME` is unset).
 
 ## Go modules
 
