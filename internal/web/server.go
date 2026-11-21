@@ -219,7 +219,7 @@ func (s *server) effective(k record.StreamKey) ([]record.Record, schema.Schema, 
 	if err != nil {
 		return nil, schema.Schema{}, err
 	}
-	saved, err := schema.LoadSaved(dir, k.Source, k.Name)
+	saved, err := schema.LoadFields(dir, k.Source)
 	if err != nil {
 		return nil, schema.Schema{}, err
 	}
@@ -266,8 +266,8 @@ func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
 	stream := r.URL.Query().Get("stream")
-	if !schema.ValidStream(stream) {
-		writeError(w, http.StatusBadRequest, schema.ErrUnsavableStream.Error())
+	if stream == "" {
+		writeError(w, http.StatusBadRequest, "stream is required")
 		return
 	}
 	src, ok := sourceParam(w, r)
@@ -294,7 +294,7 @@ func (s *server) putSchema(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeMu.Lock()
-	path, err := schema.SaveSchema(dir, sch)
+	path, err := schema.MergeFields(dir, src, sch.Fields)
 	s.writeMu.Unlock()
 	if err != nil {
 		writeError(w, saveStatus(err), err.Error())

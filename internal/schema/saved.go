@@ -3,24 +3,16 @@ package schema
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/jimbeveridge/loghorn/internal/record"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 )
-
-// ErrUnsavableStream is returned when a stream name cannot be used as a file
-// name under .config/loghorn/schemas.
-var ErrUnsavableStream = errors.New("stream name cannot be saved")
-
-var streamRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
-
-// ValidStream reports whether stream may be saved.
-func ValidStream(stream string) bool { return streamRe.MatchString(stream) }
 
 var validTypes = map[Type]bool{
 	TInt: true, TFloat: true, TBool: true, TString: true,
@@ -93,41 +85,28 @@ func FindConfigDir(start string) (dir string, found bool, err error) {
 	return filepath.Join(gitRoot, ".config", "loghorn"), false, nil
 }
 
-// schemaDir is the directory holding saved schemas of source: dir/schemas for
-// log streams and dir/schemas/otel for span streams. ok is false for a source
-// record.ParseSource refuses.
-func schemaDir(dir, source string) (sdir string, ok bool) {
+// ErrBadSource is returned for a source that is neither log nor otel.
+var ErrBadSource = errors.New("unknown source")
+
+func fieldsPath(dir, source string) (string, error) {
 	src, ok := record.ParseSource(source)
 	if !ok {
-		return "", false
+		return "", ErrBadSource
 	}
-	if src == record.SourceOtel {
-		return filepath.Join(dir, "schemas", "otel"), true
-	}
-	return filepath.Join(dir, "schemas"), true
+	return filepath.Join(dir, "fields-"+src+".toml"), nil
 }
 
-// schemaPath is the saved-schema file of (source, stream); "" if source is
-// unknown. A log stream named "otel" saves to schemas/otel.toml, a file
-// beside the schemas/otel/ directory, so neither shadows the other.
-func schemaPath(dir, source, stream string) string {
-	sdir, ok := schemaDir(dir, source)
-	if !ok {
-		return ""
-	}
-	return filepath.Join(sdir, stream+".toml")
+type fieldsFile struct {
+	Fields []Field `toml:"field"`
 }
 
-// LoadSaved reads the saved schema of (source, stream):
-// dir/schemas/<stream>.toml for log, dir/schemas/otel/<stream>.toml for otel.
-// It returns nil, nil when the file is absent, the source is unknown or the
-// stream name is not saveable.
-func LoadSaved(dir, source, stream string) (*Schema, error) {
-	src, ok := record.ParseSource(source)
-	if !ok || !ValidStream(stream) {
-		return nil, nil
+// LoadFields reads dir/fields-<source>.toml (log or otel). An absent file is
+// nil, nil. Fields are validated, sorted by path and flagged Saved.
+func LoadFields(dir, source string) ([]Field, error) {
+	path, err := fieldsPath(dir, source)
+	if err != nil {
+		return nil, err
 	}
-	path := schemaPath(dir, src, stream)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -135,126 +114,91 @@ func LoadSaved(dir, source, stream string) (*Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	var s Schema
-	if err := toml.Unmarshal(data, &s); err != nil {
+	var f fieldsFile
+	if err := toml.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	for i := range s.Fields {
+	for i := range f.Fields {
 		// A hand-edited file may leave the visualizer out; use the default
-		// for the field's type rather than locking out the whole stream.
-		if f := &s.Fields[i]; f.Visualizer == "" {
-			f.Visualizer = DefaultVisualizer(f.Path, f.Type)
+		// for the field's type rather than locking out the whole file.
+		if x := &f.Fields[i]; x.Visualizer == "" {
+			x.Visualizer = DefaultVisualizer(x.Path, x.Type)
 		}
-		if err := validateField(s.Fields[i]); err != nil {
+		if err := validateField(f.Fields[i]); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
+		f.Fields[i].Saved = true
 	}
-	if s.Stream == "" {
-		s.Stream = stream
-	}
-	s.Source = src
-	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
-	for i := range s.Fields {
-		s.Fields[i].Saved = true
-	}
-	return &s, nil
+	sort.Slice(f.Fields, func(i, j int) bool { return f.Fields[i].Path < f.Fields[j].Path })
+	return f.Fields, nil
 }
 
-// SaveSchema writes s to its saved-schema file (dir/schemas/<stream>.toml for
-// a log stream, dir/schemas/otel/<stream>.toml for a span stream, chosen by
-// s.Source) via a temp file and rename in the same directory, and returns the
-// path. An unknown source is ErrUnsavableStream.
-func SaveSchema(dir string, s Schema) (path string, err error) {
-	src, ok := record.ParseSource(s.Source)
-	if !ok || !ValidStream(s.Stream) {
-		return "", ErrUnsavableStream
+// MergeFields replaces or adds each of fields (by Path) in
+// dir/fields-<source>.toml, leaving every other saved field alone, and returns
+// the file path. The input is validated and the existing file read first; an
+// error from either writes nothing. Callers serialise concurrent merges.
+func MergeFields(dir, source string, fields []Field) (path string, err error) {
+	path, err = fieldsPath(dir, source)
+	if err != nil {
+		return "", err
 	}
-	// Log schemas save with no source line, as before sources existed.
-	s.Source = ""
-	if src == record.SourceOtel {
-		s.Source = src
-	}
-	for _, f := range s.Fields {
+	for _, f := range fields {
 		if err := validateField(f); err != nil {
 			return "", err
 		}
 	}
-	sdir, _ := schemaDir(dir, src)
-	if err := os.MkdirAll(sdir, 0o755); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(sdir, ".schema-*.tmp")
+	cur, err := LoadFields(dir, source)
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
-	if err := toml.NewEncoder(tmp).Encode(s); err != nil {
-		tmp.Close()
-		return "", err
+	byPath := map[string]int{}
+	for i, f := range cur {
+		byPath[f.Path] = i
 	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return "", err
+	for _, f := range fields {
+		if i, ok := byPath[f.Path]; ok {
+			cur[i] = f
+			continue
+		}
+		byPath[f.Path] = len(cur)
+		cur = append(cur, f)
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	path = schemaPath(dir, src, s.Stream)
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	sort.Slice(cur, func(i, j int) bool { return cur[i].Path < cur[j].Path })
+	err = svcconf.WriteAtomic(path, func(w io.Writer) error {
+		return toml.NewEncoder(w).Encode(fieldsFile{Fields: cur})
+	})
+	if err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-// Effective merges a saved schema over an inferred one. Saved
-// Type/Unit/Visualizer/Label/Hidden/Width/Wrap win for fields present in both; saved
-// fields not seen in the data are kept with Count 0; inferred fields absent
-// from a non-nil saved schema are flagged New. Hidden fields stay in Fields
-// but are dropped from the columns.
-func Effective(inferred Schema, saved *Schema) Schema {
+// Effective applies saved field settings over an inferred schema. Saved
+// Type/Unit/Visualizer/Label/Hidden/Width/Wrap win for fields present in both
+// (flagged Saved); saved paths absent from inferred are ignored, since the
+// saved file is source-wide. Columns are inferred.Columns minus hidden fields.
+func Effective(inferred Schema, saved []Field) Schema {
 	out := Schema{Stream: inferred.Stream, Source: inferred.Source}
 	byPath := map[string]int{}
 	for _, f := range inferred.Fields {
 		byPath[f.Path] = len(out.Fields)
 		out.Fields = append(out.Fields, f)
 	}
-	if saved != nil {
-		seen := map[string]bool{}
-		for _, sf := range saved.Fields {
-			seen[sf.Path] = true
-			if i, ok := byPath[sf.Path]; ok {
-				f := out.Fields[i]
-				f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width, f.Wrap = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width, sf.Wrap
-				f.Saved = true
-				out.Fields[i] = f
-				continue
-			}
-			sf.Count, sf.New, sf.Saved = 0, false, true
-			out.Fields = append(out.Fields, sf)
-		}
-		for i := range out.Fields {
-			if !seen[out.Fields[i].Path] {
-				out.Fields[i].New = true
-			}
+	for _, sf := range saved {
+		if i, ok := byPath[sf.Path]; ok {
+			f := &out.Fields[i]
+			f.Type, f.Unit, f.Visualizer, f.Label, f.Hidden, f.Width, f.Wrap = sf.Type, sf.Unit, sf.Visualizer, sf.Label, sf.Hidden, sf.Width, sf.Wrap
+			f.Saved = true
 		}
 	}
 	sort.Slice(out.Fields, func(i, j int) bool { return out.Fields[i].Path < out.Fields[j].Path })
-
-	cols := inferred.Columns
-	if saved != nil && len(saved.Columns) > 0 {
-		cols = saved.Columns
-	}
 	hidden := map[string]bool{}
 	for _, f := range out.Fields {
 		if f.Hidden {
 			hidden[f.Path] = true
 		}
 	}
-	for _, c := range cols {
+	for _, c := range inferred.Columns {
 		if !hidden[c] {
 			out.Columns = append(out.Columns, c)
 		}

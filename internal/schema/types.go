@@ -73,7 +73,6 @@ type Field struct {
 	Wrap     bool `toml:"wrap,omitempty" json:"wrap,omitempty"`
 	Inferred Type `toml:"-" json:"inferred"`
 	Count    int  `toml:"-" json:"count"`
-	New      bool `toml:"-" json:"new"`
 	Saved    bool `toml:"-" json:"saved"`
 }
 

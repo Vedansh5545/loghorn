@@ -219,7 +219,7 @@ func TestSchemaPutWritesFile(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("PUT = %d %s", code, b)
 	}
-	want := filepath.Join(f.repo, ".config", "loghorn", "schemas", "db.toml")
+	want := filepath.Join(f.repo, ".config", "loghorn", "fields-log.toml")
 	var res struct{ Path string }
 	if err := json.Unmarshal(b, &res); err != nil || res.Path != want {
 		t.Fatalf("response %s; want path %s", b, want)
@@ -248,9 +248,6 @@ func TestSchemaPutWritesFile(t *testing.T) {
 func TestSchemaPutBadStream400(t *testing.T) {
 	f := newFixture(t, pino)
 	cases := []struct{ stream, body string }{
-		{url.QueryEscape("../evil"), `{"fields":[]}`},
-		{"a%2Fb", `{"fields":[]}`},
-		{"UPPER", `{"fields":[]}`},
 		{"", `{"fields":[]}`},
 		{"db", `{"stream":"api","fields":[]}`}, // body names another stream
 		{"db", `{"fields":[{"path":"latency","type":"weird","visualizer":"text"}]}`},        // validation
@@ -268,12 +265,12 @@ func TestSchemaPutBadStream400(t *testing.T) {
 
 func TestRecordSQLFormatted(t *testing.T) {
 	f := newFixture(t, pino)
-	sdir := filepath.Join(f.repo, ".config", "loghorn", "schemas")
+	sdir := filepath.Join(f.repo, ".config", "loghorn")
 	if err := os.MkdirAll(sdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	toml := "stream = \"db\"\n[[field]]\npath = \"databaseContext.metadata.query\"\ntype = \"string\"\nvisualizer = \"sql\"\n"
-	if err := os.WriteFile(filepath.Join(sdir, "db.toml"), []byte(toml), 0o644); err != nil {
+	toml := "[[field]]\npath = \"databaseContext.metadata.query\"\ntype = \"string\"\nvisualizer = \"sql\"\n"
+	if err := os.WriteFile(filepath.Join(sdir, "fields-log.toml"), []byte(toml), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var got struct {
@@ -580,10 +577,10 @@ func TestSchemaPutOtelWritesOtelDir(t *testing.T) {
 		t.Fatalf("PUT = %d %s", code, b)
 	}
 	var res struct{ Path string }
-	if err := json.Unmarshal(b, &res); err != nil || !strings.HasSuffix(res.Path, filepath.Join("schemas", "otel", "db.toml")) {
+	if err := json.Unmarshal(b, &res); err != nil || !strings.HasSuffix(res.Path, "fields-otel.toml") {
 		t.Fatalf("response %s", b)
 	}
-	if _, err := os.Stat(filepath.Join(f.repo, ".config", "loghorn", "schemas", "db.toml")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(f.repo, ".config", "loghorn", "fields-log.toml")); !os.IsNotExist(err) {
 		t.Fatalf("log schema file written: %v", err)
 	}
 	var got schemaResp
