@@ -47,3 +47,4 @@ go.work.sum
 /loghorn.log
 /loghorn-*.log
 /loghorn.lock
+.claude/worktrees/
