@@ -154,11 +154,25 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 		}
 	}
 	for _, k := range sortedKeys(attrs) {
-		key := k
-		if _, exists := fields[key]; exists {
-			key = "attributes." + k
+		// Flatten into a scratch map first: a map-valued attribute expands to
+		// dotted keys that can collide with a span key even when k itself
+		// does not.
+		scratch := map[string]any{}
+		flatten(scratch, k, attrs[k])
+		collides := false
+		for sk := range scratch {
+			if spanKeyTaken(fields, sk) {
+				collides = true
+				break
+			}
 		}
-		flatten(fields, key, attrs[k])
+		if collides {
+			scratch = map[string]any{}
+			flatten(scratch, "attributes."+k, attrs[k])
+		}
+		for sk, v := range scratch {
+			fields[sk] = v
+		}
 	}
 	kind, _ := obj["kind"].(string)
 	r := Record{Source: SourceOtel, Stream: SpanStream(kind, attrs), Fields: fields, Raw: append([]byte(nil), raw...)}
@@ -166,4 +180,25 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 		r.Time = t
 	}
 	return r, true
+}
+
+// spanKeyTaken reports whether key, an ancestor path of it, or a key beneath
+// it is already a field.
+func spanKeyTaken(fields map[string]any, key string) bool {
+	if _, ok := fields[key]; ok {
+		return true
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] == '.' {
+			if _, ok := fields[key[:i]]; ok {
+				return true
+			}
+		}
+	}
+	for k := range fields {
+		if strings.HasPrefix(k, key+".") {
+			return true
+		}
+	}
+	return false
 }

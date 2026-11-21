@@ -136,6 +136,21 @@ func TestNormalizeSpanAttributeCollision(t *testing.T) {
 	}
 }
 
+func TestNormalizeSpanMapAttributeCollision(t *testing.T) {
+	line := `{"span_id":"s1","start":"2026-11-17T17:01:00Z","service.name":"svc","otel":{"resource":"r"},"attributes":{"service":{"name":"x"},"otel":{"resource":{"a":"b"}},"ok":{"n":1}}}`
+	r, ok := NormalizeSpan([]byte(line))
+	if !ok {
+		t.Fatal("not a span")
+	}
+	f := r.Fields
+	if f["service.name"] != "svc" || f["otel.resource"] != "r" {
+		t.Errorf("top-level overwritten: %v", f)
+	}
+	if f["attributes.service.name"] != "x" || f["attributes.otel.resource.a"] != "b" || f["ok.n"] == nil {
+		t.Errorf("attributes not kept: %v", f)
+	}
+}
+
 func TestNormalizeRoutesSpans(t *testing.T) {
 	in := config.Default().Input
 	line := spanLines(t)[3]

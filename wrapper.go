@@ -50,7 +50,7 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		endpoint := "http://" + ln.Addr().String()
 		// The span writer lives under the log writer's lock, and closeLog
 		// (after rcv.Drain) closes it. Without a log file, traces are
-		// accepted and discarded.
+		// not written, but with -web they still reach the store.
 		spans := openSpanLog(logs)
 		// The store was preloaded inside startLiveWeb above, before this
 		// receiver exists, so a span is preloaded or hooked, never both.
