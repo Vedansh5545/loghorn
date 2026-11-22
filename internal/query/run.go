@@ -282,9 +282,12 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	if limit > MaxLimit {
 		limit = MaxLimit
 	}
-	if len(matched) > limit {
-		matched = matched[:limit]
+	off := min(q.Offset, len(matched))
+	if len(matched)-off > limit {
+		matched = matched[off : off+limit]
 		res.Truncated = true
+	} else {
+		matched = matched[off:]
 	}
 
 	paths := q.Columns

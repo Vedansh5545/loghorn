@@ -14,7 +14,7 @@ import (
 
 // Row limits.
 const (
-	DefaultLimit = 1000
+	DefaultLimit = 100
 	MaxLimit     = 10000
 )
 
@@ -65,6 +65,9 @@ type Query struct {
 	Columns []string `json:"columns" toml:"columns"`
 	Sort    Sort     `json:"sort" toml:"sort"`
 	Limit   int      `json:"limit" toml:"limit"`
+	// Offset skips that many sorted rows of a samples query, for the page's
+	// "load more". It is not saved with a favorite.
+	Offset int `json:"offset,omitempty" toml:"-"`
 
 	// Explore views. View is samples (default), table or graph. GroupBy and
 	// Aggregates drive table and graph; Bucket and Plot drive graph.
@@ -243,6 +246,9 @@ func (q Query) validateExplore(s schema.Schema) error {
 		if t := fieldType(s, a.Field); !isNumericType(t) {
 			return fmt.Errorf("aggregate %q needs a numeric field; %q is %s", a.Op, a.Field, t)
 		}
+	}
+	if q.Offset < 0 {
+		return fmt.Errorf("offset %d: want 0 or more", q.Offset)
 	}
 	if q.Top < 0 || q.Top > MaxLimit {
 		return fmt.Errorf("top %d: want 1 to %d", q.Top, MaxLimit)

@@ -233,6 +233,43 @@ func TestLimitTruncated(t *testing.T) {
 	}
 }
 
+func TestOffsetPages(t *testing.T) {
+	s := sch(schema.Field{Path: "x", Type: schema.TString})
+	var recs []record.Record
+	for i := 1; i <= 5; i++ {
+		recs = append(recs, rec(i, t0.Add(time.Duration(i)*time.Second), ""))
+	}
+	// Newest first: 5 4 | 3 2 | 1.
+	for _, c := range []struct {
+		offset int
+		want   []int
+		trunc  bool
+	}{{0, []int{5, 4}, true}, {2, []int{3, 2}, true}, {4, []int{1}, false}, {5, []int{}, false}, {9, []int{}, false}} {
+		res := run(t, recs, s, Query{Limit: 2, Offset: c.offset})
+		eq(t, seqs(res), c.want)
+		if res.Truncated != c.trunc || res.Matched != 5 {
+			t.Errorf("offset %d: trunc=%v matched=%d", c.offset, res.Truncated, res.Matched)
+		}
+	}
+}
+
+func TestDefaultLimit(t *testing.T) {
+	s := sch(schema.Field{Path: "x", Type: schema.TString})
+	var recs []record.Record
+	for i := 1; i <= DefaultLimit+1; i++ {
+		recs = append(recs, rec(i, t0.Add(time.Duration(i)*time.Second), ""))
+	}
+	if res := run(t, recs, s, Query{}); len(res.Rows) != 100 || !res.Truncated {
+		t.Errorf("default: %d rows trunc=%v, want 100 and truncated", len(res.Rows), res.Truncated)
+	}
+}
+
+func TestOffsetNegative(t *testing.T) {
+	if err := (Query{Offset: -1}).Validate(sch()); err == nil {
+		t.Error("offset -1 accepted")
+	}
+}
+
 func TestFiltersAnd(t *testing.T) {
 	s := sch(schema.Field{Path: "a", Type: schema.TInt}, schema.Field{Path: "b", Type: schema.TString})
 	recs := []record.Record{

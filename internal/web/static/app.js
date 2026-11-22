@@ -34,6 +34,10 @@ const VIEWS = ["samples", "table", "graph"];
 const CHARTS = ["line", "stacked"];
 const DEFAULT_TOP = 10;
 const TOPS = [5, 10, 20, 50, 100, 500, 1000];
+// DEFAULT_LIMIT and MAX_LIMIT match the server's samples row limits; a limit
+// of 0 in state means the default.
+const DEFAULT_LIMIT = 100;
+const MAX_LIMIT = 10000;
 const MAX_GRAPH_TOP = 50; // the server draws at most this many series
 
 // stackable: only metrics that add up across groups can be stacked; a stack
@@ -388,6 +392,8 @@ function applyQuery(q) {
   state.bucket = typeof q.bucket === "string" && q.bucket ? q.bucket : "auto";
   state.chart = CHARTS.includes(q.chart) ? q.chart : "line";
   state.top = Number.isInteger(q.top) && q.top > 0 ? q.top : DEFAULT_TOP;
+  state.limit = validLimit(q.limit) ? q.limit : 0;
+  delete state.offset; // a batch offset is never part of a saved query
 }
 
 function loadURL() {
@@ -879,6 +885,7 @@ function clearResults() {
   $("head").replaceChildren();
   $("body").replaceChildren();
   $("graph").replaceChildren();
+  $("more").hidden = true;
   $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
 }
 
@@ -1015,6 +1022,7 @@ function cellNode(row, cell, col) {
 // renderResult shows a query result in the view it was run for.
 function renderResult(result) {
   const view = result.view || "samples";
+  $("more").hidden = true; // render shows it for a samples batch that has more
   $("table").hidden = view === "graph";
   $("graph").hidden = view !== "graph";
   if (view === "table") renderTable(result);
@@ -1102,25 +1110,90 @@ export function render(result) {
   head.replaceChildren();
   const names = shortNames(result.columns.map((c) => c.path));
   for (const c of result.columns) head.append(headerCell(c, names));
+  $("body").replaceChildren();
+  appendRows(result.rows, result.columns);
+  renderSamplesFooter(result);
+  renderColumnNames();
+  applyWidths();
+}
+
+function appendRows(rows, columns) {
   const body = $("body");
-  body.replaceChildren();
-  for (const row of result.rows) {
+  for (const row of rows) {
     const tr = el("tr", "row");
     tr.dataset.seq = String(row.seq);
-    result.columns.forEach((c, i) => {
+    columns.forEach((c, i) => {
       const td = el("td", NUMERIC.has(c.type) ? "num" : "");
       td.append(traceLinked(cellNode(row, row.cells[i], c), row.cells[i], c.path, row));
       tr.append(td);
     });
-    tr.addEventListener("click", () => toggleDetail(tr, result.columns.length));
+    tr.addEventListener("click", () => toggleDetail(tr, columns.length));
     body.append(tr);
   }
+}
+
+// renderSamplesFooter shows the counts, and the Load next button while the
+// sorted matches go on past the rows shown.
+function renderSamplesFooter(result) {
+  const shown = result.rows.length;
   let foot = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
-    state.stream + " records match · showing " + result.rows.length.toLocaleString();
-  if (result.truncated) foot += " · limit reached";
+    state.stream + " records match · showing " + shown.toLocaleString();
   $("footer-text").textContent = foot;
-  renderColumnNames();
-  applyWidths();
+  $("limit").value = String(state.limit || DEFAULT_LIMIT);
+  const more = $("more");
+  more.hidden = !result.truncated;
+  if (result.truncated) {
+    const next = Math.min(state.limit || DEFAULT_LIMIT, result.matched - shown);
+    $("more-btn").textContent = "Load next " + next.toLocaleString() + " · " + shown.toLocaleString() + " of " + result.matched.toLocaleString() + " shown";
+  }
+}
+
+// loadMore fetches the batch after the rows shown, with the shown columns,
+// and appends it. A new query (or a newer Load next) drops its answer.
+let moreSeq = 0;
+
+async function loadMore() {
+  const base = lastResult;
+  if (!base || base.view && base.view !== "samples") return;
+  const q0 = querySeq;
+  const mine = ++moreSeq;
+  const btn = $("more-btn");
+  btn.disabled = true;
+  try {
+    const columns = base.columns.map((c) => c.path);
+    const res = await api("POST", "/api/query", Object.assign({}, state, { columns, offset: base.rows.length }));
+    if (q0 !== querySeq || mine !== moreSeq || lastResult !== base) return;
+    appendRows(res.rows, base.columns);
+    base.rows = base.rows.concat(res.rows);
+    base.truncated = res.truncated;
+    base.matched = res.matched;
+    base.streamTotal = res.streamTotal;
+    renderSamplesFooter(base);
+    applyWidths();
+  } catch (err) {
+    if (q0 === querySeq && mine === moreSeq) showError(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function validLimit(n) {
+  return Number.isInteger(n) && n >= 1 && n <= MAX_LIMIT;
+}
+
+function wireLimit() {
+  const input = $("limit");
+  input.value = String(state.limit || DEFAULT_LIMIT);
+  input.addEventListener("change", () => {
+    const n = Number(input.value);
+    if (!validLimit(n)) {
+      input.value = String(state.limit || DEFAULT_LIMIT);
+      return;
+    }
+    state.limit = n === DEFAULT_LIMIT ? 0 : n;
+    runQuery();
+  });
+  $("more-btn").addEventListener("click", loadMore);
 }
 
 // VAGUE_TAILS are last path parts too generic to show alone: the part before
@@ -3010,6 +3083,7 @@ async function init() {
   wireBar();
   syncView();
   wireColumns();
+  wireLimit();
   wireSchema();
   wireFavorites();
   watchTableShown();

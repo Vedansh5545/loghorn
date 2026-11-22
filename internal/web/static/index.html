@@ -76,6 +76,10 @@
         <input id="to-custom" type="datetime-local" step="0.001" aria-label="to time" hidden>
       </div>
     </div>
+    <div id="sb-limit" class="sb-field" data-views="samples">
+      <label class="sb-l" for="limit">Rows</label>
+      <div class="sb-body"><input id="limit" type="number" min="1" max="10000" step="1" inputmode="numeric" title="rows per batch; Load next shows the following batch"></div>
+    </div>
     <div id="sb-group" class="sb-field" data-views="table graph">
       <span class="sb-l" id="sb-group-label">Group by</span>
       <div id="sb-group-body" class="sb-body" role="group" aria-labelledby="sb-group-label"></div>
@@ -132,6 +136,7 @@
     <thead><tr id="head"></tr></thead>
     <tbody id="body"></tbody>
   </table>
+  <div id="more" class="more" hidden><button id="more-btn" type="button"></button></div>
   <div id="graph" hidden></div>
 </main>
 <footer id="footer" class="footer">
