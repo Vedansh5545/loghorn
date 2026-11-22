@@ -53,6 +53,7 @@ type Result struct {
 	Columns     []Column  `json:"columns"`
 	Rows        []Row     `json:"rows"`
 	Graph       *Graph    `json:"graph,omitempty"`
+	Heatmap     *Heatmap  `json:"heatmap,omitempty"`
 	Matched     int       `json:"matched"`
 	StreamTotal int       `json:"streamTotal"`
 	Truncated   bool      `json:"truncated"`
@@ -255,6 +256,9 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 				break
 			}
 		}
+		if ok && q.Cell != nil {
+			ok = q.Cell.contains(r)
+		}
 		if ok {
 			matched = append(matched, r)
 		}
@@ -272,6 +276,15 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 			return Result{}, err
 		}
 		res.Graph = g
+		res.Columns = []Column{}
+		res.Rows = []Row{}
+		return res, nil
+	case "heatmap":
+		h, err := runHeatmap(matched, q, from, to, time.Local)
+		if err != nil {
+			return Result{}, err
+		}
+		res.Heatmap = h
 		res.Columns = []Column{}
 		res.Rows = []Row{}
 		return res, nil

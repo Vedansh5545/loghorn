@@ -1010,3 +1010,56 @@ func TestServerQueryAllKinds(t *testing.T) {
 		t.Fatalf("result = %s (%v)", b, err)
 	}
 }
+
+func TestServerHeatmap(t *testing.T) {
+	f := newFixture(t, "../../testdata/web/aggregate.jsonl")
+	body := `{"stream":"*","source":"otel","service":"*","view":"heatmap","range":{"from":"all"}}`
+	code, b := f.do(t, http.MethodPost, "/api/query", body, "")
+	if code != 200 {
+		t.Fatalf("query = %d %s", code, b)
+	}
+	var res struct {
+		Heatmap struct {
+			BucketSeconds float64
+			Starts        []time.Time
+			Bands         []struct{ Lo, Hi float64 }
+			Counts        [][]int
+			Total         int
+		}
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		t.Fatal(err)
+	}
+	h := res.Heatmap
+	if len(h.Starts) == 0 || len(h.Counts) != len(h.Starts) || h.Total == 0 {
+		t.Fatalf("heatmap = %s", b)
+	}
+	// The first non-empty cell, selected as the page does, lists its count.
+	for ti, row := range h.Counts {
+		for bi, n := range row {
+			if n == 0 {
+				continue
+			}
+			to := h.Starts[ti].Add(time.Duration(h.BucketSeconds * float64(time.Second)))
+			cell := fmt.Sprintf(`"cell":{"from":%q,"to":%q,"hi":%v`, h.Starts[ti].Format(time.RFC3339Nano), to.Format(time.RFC3339Nano), h.Bands[bi].Hi)
+			if bi > 0 {
+				cell += fmt.Sprintf(`,"lo":%v`, h.Bands[bi].Lo)
+			}
+			body := `{"stream":"*","source":"otel","service":"*","range":{"from":"all"},"limit":1000,` + cell + `}}`
+			code, b := f.do(t, http.MethodPost, "/api/query", body, "")
+			var list struct{ Matched int }
+			if code != 200 || json.Unmarshal(b, &list) != nil || list.Matched != n {
+				t.Fatalf("cell query = %d %s, want %d matched", code, b, n)
+			}
+			return
+		}
+	}
+}
+
+func TestServerHeatmapLogs(t *testing.T) {
+	f := newFixture(t, "../../testdata/web/aggregate.jsonl")
+	code, _ := f.do(t, http.MethodPost, "/api/query", `{"stream":"app","view":"heatmap"}`, "")
+	if code != http.StatusBadRequest {
+		t.Fatalf("log heatmap = %d, want 400", code)
+	}
+}

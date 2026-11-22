@@ -70,7 +70,8 @@ type Query struct {
 	// "load more". It is not saved with a favorite.
 	Offset int `json:"offset,omitempty" toml:"-"`
 
-	// Explore views. View is samples (default), table or graph. GroupBy and
+	// Explore views. View is samples (default), table, graph or heatmap
+	// (spans only). GroupBy and
 	// Aggregates drive table and graph; Bucket and Plot drive graph.
 	GroupBy    []string    `json:"groupBy,omitempty" toml:"groupBy,omitempty"`
 	Aggregates []Aggregate `json:"aggregates,omitempty" toml:"aggregates,omitempty"`
@@ -85,6 +86,9 @@ type Query struct {
 	// 0 means DefaultTop. The table falls back to Limit when Top is 0 and
 	// Limit is set. The graph keeps at most MaxGraphTop.
 	Top int `json:"top,omitempty" toml:"top,omitempty,omitzero"`
+	// Cell narrows any view to one heatmap cell, after the range, filters
+	// and search. It is not saved with a favorite.
+	Cell *HeatCell `json:"cell,omitempty" toml:"-"`
 }
 
 // Charts are the graph styles the page can draw.
@@ -229,8 +233,17 @@ func (q Query) Validate(s schema.Schema) error {
 func (q Query) validateExplore(s schema.Schema) error {
 	switch q.View {
 	case "", "samples", "table", "graph":
+	case "heatmap":
+		if src, _ := record.ParseSource(q.Source); src != record.SourceOtel {
+			return fmt.Errorf("view heatmap needs spans (source otel)")
+		}
 	default:
-		return fmt.Errorf("view %q: want samples, table or graph", q.View)
+		return fmt.Errorf("view %q: want samples, table, graph or heatmap", q.View)
+	}
+	if q.Cell != nil {
+		if err := q.Cell.validate(); err != nil {
+			return err
+		}
 	}
 	for _, g := range q.GroupBy {
 		if g == "" {
