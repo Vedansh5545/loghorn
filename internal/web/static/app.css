@@ -273,7 +273,6 @@ td .muted { color: var(--muted); }
 .menu-icon { display: inline-flex; padding: 4px 6px; border-color: transparent; background: transparent; color: var(--fg); }
 .menu-icon:hover:not(:disabled) { background: var(--row-hover); color: var(--accent); }
 .menu-icon:disabled { color: var(--muted); opacity: 0.4; cursor: default; }
-.cell-tip { position: fixed; z-index: 40; max-width: min(640px, calc(100vw - 16px)); max-height: 50vh; overflow: hidden; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--fg); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
 .menu-item { text-align: left; border-color: transparent; background: transparent; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item:hover:not(:disabled) { background: var(--row-hover); }
 .menu-item.checked { color: var(--accent); }

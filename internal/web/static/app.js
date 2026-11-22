@@ -1294,7 +1294,7 @@ function applyWidths(extra) {
   for (const tr of $("body").children) {
     if (tr.classList.contains("detail")) continue;
     Array.from(tr.children).forEach((td, i) => {
-      if (cut[i] && !td.dataset.full && td.scrollWidth > td.clientWidth) td.dataset.full = td.textContent;
+      if (cut[i] && !td.title && td.scrollWidth > td.clientWidth) td.title = td.textContent;
     });
   }
 }
@@ -1303,43 +1303,6 @@ function watchTableShown() {
   new ResizeObserver(() => {
     if (widthsStale && $("table").getClientRects().length) applyWidths();
   }).observe($("results"));
-}
-
-// The full text of a cut-off cell shows in the page's own tip: a native
-// title tooltip waits as long as the browser likes, and that can't be set.
-const TIP_DELAY_MS = 375;
-
-function wireCellTips() {
-  const tip = el("div", "cell-tip");
-  tip.hidden = true;
-  document.body.append(tip);
-  let timer = 0;
-  let cell = null;
-  const hide = () => {
-    clearTimeout(timer);
-    cell = null;
-    tip.hidden = true;
-  };
-  $("body").addEventListener("mouseover", (e) => {
-    const td = e.target.closest("td[data-full]");
-    if (td === cell) return;
-    hide();
-    if (!td) return;
-    cell = td;
-    timer = setTimeout(() => {
-      tip.textContent = td.dataset.full;
-      tip.hidden = false;
-      const r = td.getBoundingClientRect();
-      const t = tip.getBoundingClientRect();
-      let left = Math.min(r.left, window.innerWidth - 8 - t.width);
-      let top = r.bottom + 4;
-      if (top + t.height > window.innerHeight - 8) top = Math.max(8, r.top - 4 - t.height);
-      tip.style.left = Math.max(8, left) + "px";
-      tip.style.top = top + "px";
-    }, TIP_DELAY_MS);
-  });
-  $("body").addEventListener("mouseleave", hide);
-  document.addEventListener("scroll", hide, true);
 }
 
 const MIN_COL = 40;
@@ -2931,7 +2894,6 @@ async function init() {
   wireSchema();
   wireFavorites();
   watchTableShown();
-  wireCellTips();
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();
