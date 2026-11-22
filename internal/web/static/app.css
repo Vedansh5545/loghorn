@@ -422,8 +422,8 @@ body.splitting { cursor: row-resize; user-select: none; }
 .copy-btn.copy-failed { color: var(--err-fg); }
 .sum-copy { margin-left: 6px; }
 td.has-copy { position: relative; }
-.cell-copy { position: absolute; top: 1px; right: 4px; display: none; background: var(--panel); border-color: var(--line); }
-tr:hover > td.has-copy > .cell-copy, .cell-copy:focus-visible, .cell-copy.copied, .cell-copy.copy-failed { display: inline-flex; }
+.cell-copy { position: absolute; top: 1px; right: 4px; opacity: 0; background: var(--panel); border-color: var(--line); }
+tr:hover > td.has-copy > .cell-copy, .cell-copy:focus-visible, .cell-copy.copied, .cell-copy.copy-failed { opacity: 1; }
 
 /* ---- aggregate operation view ---- */
 .agg-grid { grid-template-columns: minmax(240px, 35%) repeat(6, max-content) 1fr; }

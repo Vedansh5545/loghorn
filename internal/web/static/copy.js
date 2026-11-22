@@ -29,7 +29,8 @@ export function neutralize(s) {
 export function toMarkdown(headers, rows) {
   const cell = (v) => {
     const s = v === null || v === undefined ? "" : String(v);
-    return s.replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, " ");
+    // A backslash before a pipe or at the end would escape that pipe.
+    return s.replace(/\\(?=\||$)/g, "\\\\").replace(/\|/g, "\\|").replace(/\r\n|\r|\n/g, " ");
   };
   const line = (r) => "| " + r.map(cell).join(" | ") + " |";
   const out = [line(headers), "|" + headers.map(() => " --- |").join("")];
@@ -89,14 +90,17 @@ export function copyButton(text, { title = "copy SQL", cls = "" } = {}) {
       b.replaceChildren(copyIcon("check"));
       b.classList.add("copied");
       b.title = "Copied";
+      b.setAttribute("aria-label", "Copied");
     } catch (err) {
       b.classList.add("copy-failed");
       b.title = "Copy failed: " + (err && err.message ? err.message : err);
+      b.setAttribute("aria-label", b.title);
     }
     timer = setTimeout(() => {
       b.replaceChildren(copyIcon());
       b.classList.remove("copied", "copy-failed");
       b.title = title;
+      b.setAttribute("aria-label", title);
     }, 1500);
   });
   return b;

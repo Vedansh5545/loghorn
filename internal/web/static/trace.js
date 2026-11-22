@@ -525,16 +525,15 @@ function initSplit() {
     const grab = e.clientY - bar.getBoundingClientRect().top; // keep the bar under the pointer
     document.body.classList.add("splitting");
     const move = (ev) => moveSplit(ev.clientY - grab);
+    // lostpointercapture follows pointerup and pointercancel, and also fires
+    // when the view closes mid-drag.
     const up = () => {
       bar.removeEventListener("pointermove", move);
-      bar.removeEventListener("pointerup", up);
-      bar.removeEventListener("pointercancel", up);
       document.body.classList.remove("splitting");
       saveSplit();
     };
     bar.addEventListener("pointermove", move);
-    bar.addEventListener("pointerup", up);
-    bar.addEventListener("pointercancel", up);
+    bar.addEventListener("lostpointercapture", up, { once: true });
   });
   bar.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
@@ -543,9 +542,10 @@ function initSplit() {
     moveSplit(bar.getBoundingClientRect().top + step);
     saveSplit();
   });
-  window.addEventListener("resize", () => {
+  // The window, the sidebar toggle or the error banner can move the pane.
+  new ResizeObserver(() => {
     if (isOpen()) layoutSplit();
-  });
+  }).observe($("trace"));
 }
 
 function saveSplit() {
@@ -792,6 +792,7 @@ function selectNode(id, { scroll = false } = {}) {
   // detached box instead of over this one.
   const detailBox = d.el("div");
   $("trace-detail").replaceChildren(detailBox);
+  $("trace-lower").scrollTop = 0; // the new detail, not the self-time table below it
   if (n.kind === "missing") {
     detailBox.append(
       d.el("p", "ph-title", "This span is not in the data"),
