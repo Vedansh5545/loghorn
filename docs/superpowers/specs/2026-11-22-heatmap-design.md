@@ -166,7 +166,7 @@ cell's count and avoids filter validation against an `int`-typed field.
   existing table renderer. Its column menu hides "group by" and "filter by"
   (the grouping is fixed). Clicking a row's name selects the Spans tab with a
   `name = <that name>` filter added (and the service filter, if not already
-  narrowed), keeping the cell selection. *(proposed; see open question)*
+  narrowed), keeping the cell selection. *(decided with the user)*
 - Every new loader follows the sequence-number rule in `CLAUDE.md`.
 
 ## Constraints
