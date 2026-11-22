@@ -87,7 +87,7 @@ func analyze(t *Trace) {
 	// Critical path.
 	start := -1
 	for _, i := range tops {
-		if t.Nodes[i].Kind == KindLog {
+		if isLeaf(t.Nodes[i].Kind) {
 			continue
 		}
 		if start < 0 || end(i) > end(start) {
@@ -101,7 +101,7 @@ func analyze(t *Trace) {
 		}
 		var cs []int
 		for _, k := range kids[t.Nodes[i].ID] {
-			if t.Nodes[k].Kind != KindLog {
+			if !isLeaf(t.Nodes[k].Kind) {
 				cs = append(cs, k)
 			}
 		}

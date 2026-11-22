@@ -872,7 +872,7 @@ func TestTraceAPIByTrace(t *testing.T) {
 		Nodes   []json.RawMessage
 	}
 	f.getJSON(t, "/api/trace?trace="+traceT1, &got)
-	if got.TraceID != traceT1 || len(got.Nodes) != 22 {
+	if got.TraceID != traceT1 || len(got.Nodes) != 24 {
 		t.Errorf("traceId %q, %d nodes", got.TraceID, len(got.Nodes))
 	}
 }
@@ -920,7 +920,7 @@ func TestTraceAPIErrors(t *testing.T) {
 	}
 	var got struct{ Nodes []json.RawMessage }
 	f.getJSON(t, "/api/trace?service=pricing&trace="+traceT1, &got)
-	if len(got.Nodes) != 22 {
+	if len(got.Nodes) != 24 {
 		t.Errorf("service filter changed the trace: %d nodes", len(got.Nodes))
 	}
 }

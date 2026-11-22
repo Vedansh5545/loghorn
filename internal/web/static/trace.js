@@ -44,8 +44,13 @@ const isOpen = () => !$("trace").hidden && tv.data !== null;
 
 const LOGS_KEY = "loghorn.traceLogs";
 
-// shown reports whether a node gets a row: logs only when they are in the tree.
-const shown = (n) => n.kind !== "log" || tv.logs === "tree";
+// isLeaf reports whether a node is a log line or a span event: a point in
+// time that the Logs & events toggle shows or hides.
+const isLeaf = (n) => n.kind === "log" || n.kind === "event";
+
+// shown reports whether a node gets a row: logs and events only when they are
+// in the tree.
+const shown = (n) => !isLeaf(n) || tv.logs === "tree";
 
 function selectedNode() {
   return tv.selected ? byId.get(tv.selected) || null : null;
@@ -107,7 +112,7 @@ export function initTrace(deps) {
       localStorage.setItem(LOGS_KEY, tv.logs);
     } catch {}
     const sel = selectedNode();
-    if (tv.logs === "hidden" && sel && sel.kind === "log") {
+    if (tv.logs === "hidden" && sel && isLeaf(sel)) {
       tv.selected = null;
       $("trace-detail").replaceChildren();
       writeURL(false);
@@ -312,14 +317,17 @@ function plural(n, word) {
 }
 
 // findMatches are the ids, in pre-order, of the spans whose name contains the
-// find text (case-insensitive) and, with logs in the tree, the logs whose
-// message does.
+// find text (case-insensitive) and, with logs and events in the tree, the logs
+// whose message does and the events whose name or exception message does.
 function findMatches() {
   const q = tv.find.q.trim().toLowerCase();
   if (!q || !tv.data) return [];
   const out = [];
   for (const n of tv.data.nodes || []) {
-    const text = n.kind === "span" ? n.name : n.kind === "log" && tv.logs === "tree" ? n.message : "";
+    let text = "";
+    if (n.kind === "span") text = n.name;
+    else if (n.kind === "log" && tv.logs === "tree") text = n.message;
+    else if (n.kind === "event" && tv.logs === "tree") text = (n.name || "") + "\n" + (n.message || "");
     if (text && text.toLowerCase().includes(q)) out.push(n.id);
   }
   return out;
@@ -334,7 +342,7 @@ function refreshFind() {
   if (!f.q.trim()) count.textContent = "";
   else if (!f.matches.length) count.textContent = "no matches";
   else count.textContent = (f.i < 0 ? "–" : f.i + 1) + " of " + f.matches.length;
-  $("trace-find").placeholder = tv.logs === "tree" ? "find spans and logs" : "find spans";
+  $("trace-find").placeholder = tv.logs === "tree" ? "find spans, logs and events" : "find spans";
 }
 
 function goToMatch(i) {
@@ -363,7 +371,7 @@ function renderTrace() {
   refreshFind();
   $("trace").classList.toggle("critical-on", tv.critical);
   $("trace-critical").setAttribute("aria-pressed", tv.critical ? "true" : "false");
-  $("trace-logs").textContent = tv.logs === "tree" ? "Logs: in tree" : "Logs: hidden";
+  $("trace-logs").textContent = tv.logs === "tree" ? "Logs & events: in tree" : "Logs & events: hidden";
   const matched = new Set(tv.find.matches);
   const runOf = new Map(); // span id -> its run; first span id -> its run
   const runFirst = new Map();
@@ -389,8 +397,9 @@ function renderTrace() {
   }
   head.append(d.el("span", "", fmtMs(data.durationMs || 0)));
   head.append(d.el("span", "muted",
-    plural(data.spanCount || 0, "span") + " · " + plural(data.logCount || 0, "log") + " · " + plural(services.length, "service")));
-  if (data.truncated) head.append(d.el("span", "trace-note", "showing the first 10000 spans and logs"));
+    plural(data.spanCount || 0, "span") + " · " + plural(data.logCount || 0, "log") +
+    (data.eventCount ? " · " + plural(data.eventCount, "event") : "") + " · " + plural(services.length, "service")));
+  if (data.truncated) head.append(d.el("span", "trace-note", "showing the first 10000 spans, logs and events"));
 
   // legend: only the groups present
   const present = new Set();
@@ -554,14 +563,23 @@ function traceRow(n, guides, { D, multi, run, inRun }) {
     name.append(d.el("span", "tw-pad"));
   }
   const isLog = n.kind === "log";
+  const isEvent = n.kind === "event";
   const msg = String(n.message || "");
-  const text = isLog ? msg.split("\n")[0] : n.kind === "missing" ? "(Missing span " + n.name + ")" : n.name || n.id;
+  let text = n.kind === "missing" ? "(Missing span " + n.name + ")" : n.name || n.id;
+  if (isLog) text = msg.split("\n")[0];
+  // An exception event shows "type: message"; other events their name.
+  else if (isEvent) text = (n.error && msg ? msg.split("\n")[0] : n.name) || "(event)";
   if (isLog) {
     row.classList.add("log");
     name.append(d.el("span", "sev sev-" + d.severityClass(n.severity), n.severity || ""));
   }
+  if (isEvent) {
+    row.classList.add("event");
+    if (n.error) row.classList.add("event-error");
+    name.append(d.el("span", "ev-mark", "◆"));
+  }
   const label = d.el("span", "tr-label", text);
-  label.title = isLog ? msg : text;
+  label.title = isLog ? msg : isEvent ? (n.name || "") + (msg ? "\n" + msg : "") : text;
   name.append(label);
   if (run) {
     const chip = d.el("span", "serial-chip", run.count + " serial queries, " + fmtMs(run.wallMs));
@@ -573,18 +591,20 @@ function traceRow(n, guides, { D, multi, run, inRun }) {
   if (multi) row.append(d.el("div", "tr-svc", n.service || ""));
 
   const cell = d.el("div", "tr-bar");
-  if (isLog) {
-    const mark = d.el("span", "tmark");
+  if (isLog || isEvent) {
+    const mark = d.el("span", isEvent ? "tmark emark" + (n.error ? " err" : "") : "tmark");
     mark.style.left = (Math.max(n.startMs || 0, 0) / D) * 100 + "%";
-    mark.title = (n.severity || "") + " · " + fmtMs(n.startMs || 0);
+    mark.title = (isEvent ? n.name || "event" : n.severity || "") + " · " + fmtMs(n.startMs || 0);
     cell.append(mark);
     row.append(cell);
     row.addEventListener("click", () => selectNode(n.id, { scroll: false }));
     return row;
   }
-  for (const t of n.logTicks || []) {
-    const tick = d.el("span", "ttick");
-    tick.style.left = (Math.max(t, 0) / D) * 100 + "%";
+  const ticks = (n.logTicks || []).map((ms) => [ms, "ttick"]);
+  for (const t of n.eventTicks || []) ticks.push([t.ms, "ttick etick" + (t.error ? " err" : "")]);
+  for (const [ms, cls] of ticks) {
+    const tick = d.el("span", cls);
+    tick.style.left = (Math.max(ms, 0) / D) * 100 + "%";
     cell.append(tick);
   }
   const start = Math.max(n.startMs || 0, 0);
@@ -643,9 +663,37 @@ function selectNode(id, { scroll = false } = {}) {
       d.el("p", "ph-line", "ID: " + n.name),
       d.el("p", "ph-line", "Children: " + (n.children || 0)),
     );
+  } else if (n.kind === "event") {
+    eventDetail(detailBox, n);
   } else if (n.seq) {
     detailBox.append(d.el("span", "muted", "loading…"));
     d.fillRecordDetail(detailBox, n.seq);
   }
   if (scroll && rowEl) rowEl.scrollIntoView({ block: "center" });
+}
+
+// eventDetail fills box with a span event: its name, time, parent span (a
+// link that selects it) and attributes.
+function eventDetail(box, n) {
+  box.append(d.el("p", "ph-title", "Event: " + (n.name || "(no name)")));
+  const at = new Date(n.time);
+  const when = n.time && !isNaN(at.getTime()) ? d.localTime(at) + " · " : "";
+  const time = d.el("p", "ph-line", "Time: " + when + "+" + fmtMs(n.startMs || 0));
+  if (n.time) time.title = n.time;
+  box.append(time);
+  const span = byId.get(n.parent);
+  const line = d.el("p", "ph-line", "Span: ");
+  const link = d.el("button", "ev-span", n.parent + (span && span.name ? " (" + span.name + ")" : ""));
+  link.type = "button";
+  link.title = "select this span";
+  link.addEventListener("click", () => selectNode(n.parent, { scroll: true }));
+  line.append(link);
+  box.append(line);
+  const keys = Object.keys(n.attributes || {}).sort();
+  if (!keys.length) return;
+  box.append(d.el("p", "ph-line ev-attrs-head", "Attributes:"));
+  for (const k of keys) {
+    const v = n.attributes[k];
+    box.append(d.el("p", "ph-line ev-attr", k + ": " + (typeof v === "string" ? v : JSON.stringify(v))));
+  }
 }

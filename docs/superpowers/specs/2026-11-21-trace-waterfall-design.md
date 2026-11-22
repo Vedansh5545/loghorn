@@ -134,10 +134,10 @@ span, both normalised. For span records it returns the span's own IDs.
 - **Placement.** The view replaces the search bar, results and footer inside
   `.content`; the sidebar stays as it is.
 - **Header:** trace start (local time, ISO in the tooltip), total duration,
-  span count, log count, service count, and a truncation note. A **Reload**
+  span count, log count, event count (when there are events), service count, and a truncation note. A **Reload**
   button refetches (live runs); there is no auto-refresh.
-- **Toolbar:** Close, Reload, Collapse all, Expand all, `Logs: in tree /
-  hidden`, `Critical path` toggle, the find box with ◀ ▶ and `n of m`.
+- **Toolbar:** Close, Reload, Collapse all, Expand all, `Logs & events: in
+  tree / hidden`, `Critical path` toggle, the find box with ◀ ▶ and `n of m`.
 - **Grid:** one row per visible node — name column (tree connectors, a ▸/▾
   twisty on nodes with children, name with ellipsis and full name in the
   tooltip), a service column **only when the trace has more than one
@@ -156,12 +156,26 @@ span, both normalised. For span records it returns the span's own IDs.
   but **keeps the ticks**, which is the "markers only" mode — there is no
   separate third mode. The choice is remembered in `localStorage`
   (`loghorn.traceLogs`, read in try/catch).
+- **Span events** (the span line's `events` array) are child nodes of their
+  span (kind `event`, ID `event:<span id>:<index>`, capped at 10 000 like
+  spans and logs), ordered by time with the span's logs. A row shows a ◆ and
+  the event name; an `exception` event is drawn in the error colour and shows
+  `exception.type: exception.message`. The span's bar gets a tick at each
+  event's time (red for an exception). An event outside its span's range keeps
+  its real time and stretches the trace; one without a valid time sits at the
+  span's start. Events are points: they add no self time and are not on the
+  critical path. The `Logs & events` toggle hides event rows as it does log
+  rows (ticks stay), and find matches event names and exception messages.
+  Selecting an event shows its name, time, parent span (a link that selects
+  it) and attributes. The table does not expand events into rows; each span
+  record carries a derived `span.event_count` field, and the full array stays
+  in the record JSON.
 - **Selection** highlights the row and shows its record in a detail pane below
   the grid, using the same rendering as the table's detail row (SQL fields
   formatted and coloured, then the record JSON). A placeholder shows
   `This span is not in the data` with its ID and child count.
-- **Find** matches span names and, when logs are in the tree, log messages
-  (case-insensitive substring). Enter / ▶ goes to the next match, Shift+Enter /
+- **Find** matches span names and, when logs and events are in the tree, log
+  messages, event names and exception messages (case-insensitive substring). Enter / ▶ goes to the next match, Shift+Enter /
   ◀ the previous; going to a match expands its ancestors, selects it and
   scrolls it into view. Matching rows are marked.
 - **Serial runs** show as a chip `6 serial queries, 48 ms` in the name cell of
@@ -185,7 +199,6 @@ span, both normalised. For span records it returns the span's own IDs.
 | Critical-path segments within a span | deferred | Whole-span flags answer "which spans matter" in v1. |
 | Keyboard tree navigation (↑ ↓ ← →) | deferred | Mouse and find cover v1; add with accessibility pass. |
 | Virtualised rendering for very large traces | deferred | v1 renders every row and caps at 10 000 spans + 10 000 logs. |
-| Span events as rows / markers | deferred | Events stay in the record JSON in the detail pane. |
 | Decimal (Cloud Trace v1) span IDs | deferred | Not seen in current data. |
 | Resizable name column, zoom/brush on the axis | deferred | Fixed proportions first; revisit with real traces. |
 | Index of records by trace ID | deferred | One linear scan of the in-memory snapshot per open is fast enough for a local tool. |

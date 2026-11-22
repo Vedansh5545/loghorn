@@ -277,7 +277,7 @@ page, or paste their `[[field]]` entries into `fields-log.toml` /
 `fields-otel.toml`. `.config/loghorn/config.toml` stays where it is.
 
 **Trace waterfall** — in the web view, click a `trace_id` or `span_id` cell to see
-that trace as a tree of timed bars, with its log lines, serial query runs, the
+that trace as a tree of timed bars, with its log lines, span events, serial query runs, the
 critical path and a self-time table. The page URL carries the view, so it can be
 shared or reloaded: `/?q=<json>&trace=<id>&span=<id>`. See `docs/features.md`.
 

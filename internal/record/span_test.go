@@ -115,6 +115,9 @@ func TestNormalizeSpanFields(t *testing.T) {
 	if ev, ok := r8.Fields["events"].([]any); !ok || len(ev) != 1 {
 		t.Errorf("events = %#v", r8.Fields["events"])
 	}
+	if r8.Fields["span.event_count"] != json.Number("1") || f["span.event_count"] != json.Number("0") {
+		t.Errorf("span.event_count = %v, %v", r8.Fields["span.event_count"], f["span.event_count"])
+	}
 }
 
 func TestNormalizeSpanAttributeCollision(t *testing.T) {

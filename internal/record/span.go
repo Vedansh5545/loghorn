@@ -3,6 +3,7 @@ package record
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -164,6 +165,9 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 	// moved to attributes.span.type by spanKeyTaken.
 	spanType := SpanStream(kind, attrs)
 	fields["span.type"] = spanType
+	// span.event_count makes the number of span events a column.
+	evs, _ := obj["events"].([]any)
+	fields["span.event_count"] = json.Number(strconv.Itoa(len(evs)))
 	fields["timestamp"] = start
 	if s, _ := obj["status"].(string); s == "error" {
 		fields["severity"] = "ERROR"
@@ -216,7 +220,7 @@ var spanOwnFields = map[string]bool{
 	"trace_id": true, "span_id": true, "parent_span_id": true, "name": true, "kind": true,
 	"start": true, "end": true, "duration_ms": true, "status": true, "status_message": true,
 	"events": true, "links": true, "service.name": true, "loghorn.run.id": true,
-	"span.type": true, "timestamp": true, "severity": true, "attributes": true,
+	"span.type": true, "span.event_count": true, "timestamp": true, "severity": true, "attributes": true,
 }
 
 // IsSpanAttribute reports whether a span record field came from the span's

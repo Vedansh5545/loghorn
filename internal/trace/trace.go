@@ -1,6 +1,6 @@
 // Package trace builds the tree of one trace from the session's records: its
-// spans, the log lines that carry its trace ID, and a placeholder for each
-// span that other records name but the session never saw.
+// spans and their events, the log lines that carry its trace ID, and a
+// placeholder for each span that other records name but the session never saw.
 package trace
 
 import (
@@ -14,7 +14,8 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/record"
 )
 
-// Limit is the most spans, and the most logs, one trace answer holds.
+// Limit is the most spans, the most logs, and the most span events one trace
+// answer holds.
 const Limit = 10000
 
 // maxMessage is the longest log message a node carries, in runes.
@@ -25,6 +26,7 @@ const (
 	KindSpan    = "span"
 	KindLog     = "log"
 	KindMissing = "missing"
+	KindEvent   = "event"
 )
 
 // Trace is the answer for one trace: nodes in pre-order.
@@ -34,6 +36,7 @@ type Trace struct {
 	DurationMs float64     `json:"durationMs"`
 	SpanCount  int         `json:"spanCount"`
 	LogCount   int         `json:"logCount"`
+	EventCount int         `json:"eventCount"`
 	Services   []string    `json:"services"` // sorted, non-empty strings only
 	Truncated  bool        `json:"truncated"`
 	Nodes      []Node      `json:"nodes"`      // pre-order
@@ -41,25 +44,34 @@ type Trace struct {
 	SelfTime   []NameTime  `json:"selfTime"`   // set by analyze
 }
 
-// Node is a span, a log line or a placeholder for an absent span.
+// Node is a span, a span event, a log line or a placeholder for an absent span.
 type Node struct {
-	ID         string    `json:"id"`     // span ID, "missing:<id>", "log:<seq>"
-	Parent     string    `json:"parent"` // "" at top level
-	Depth      int       `json:"depth"`
-	Kind       string    `json:"kind"` // "span" | "log" | "missing"
-	Seq        int       `json:"seq,omitempty"`
-	Name       string    `json:"name,omitempty"`     // span name; missing: the absent ID
-	Type       string    `json:"type,omitempty"`     // span.type
-	Service    string    `json:"service,omitempty"`  //
-	StartMs    float64   `json:"startMs"`            // from Trace.Start
-	DurationMs float64   `json:"durationMs"`         // 0 for logs
-	SelfMs     float64   `json:"selfMs"`             // set by analyze
-	Error      bool      `json:"error,omitempty"`    // span status "error"
-	Critical   bool      `json:"critical,omitempty"` // set by analyze
-	Children   int       `json:"children"`           // direct children, spans + logs
-	LogTicks   []float64 `json:"logTicks,omitempty"` // StartMs of direct child logs
-	Severity   string    `json:"severity,omitempty"` // logs
-	Message    string    `json:"message,omitempty"`  // logs: message, else msg, else raw
+	ID         string         `json:"id"`     // span ID, "missing:<id>", "log:<seq>", "event:<span id>:<index>"
+	Parent     string         `json:"parent"` // "" at top level
+	Depth      int            `json:"depth"`
+	Kind       string         `json:"kind"`                 // "span" | "log" | "missing" | "event"
+	Seq        int            `json:"seq,omitempty"`        // not set for events
+	Name       string         `json:"name,omitempty"`       // span or event name; missing: the absent ID
+	Type       string         `json:"type,omitempty"`       // span.type
+	Service    string         `json:"service,omitempty"`    //
+	StartMs    float64        `json:"startMs"`              // from Trace.Start
+	DurationMs float64        `json:"durationMs"`           // 0 for logs and events
+	SelfMs     float64        `json:"selfMs"`               // set by analyze
+	Error      bool           `json:"error,omitempty"`      // span status "error"; an "exception" event
+	Critical   bool           `json:"critical,omitempty"`   // set by analyze
+	Children   int            `json:"children"`             // direct children, spans + logs + events
+	LogTicks   []float64      `json:"logTicks,omitempty"`   // StartMs of direct child logs
+	EventTicks []EventTick    `json:"eventTicks,omitempty"` // direct child events
+	Severity   string         `json:"severity,omitempty"`   // logs
+	Message    string         `json:"message,omitempty"`    // logs: message, else msg, else raw; exception events: "type: message"
+	Time       string         `json:"time,omitempty"`       // events: the time as stored
+	Attributes map[string]any `json:"attributes,omitempty"` // events
+}
+
+// EventTick marks a child event on its span's bar.
+type EventTick struct {
+	Ms    float64 `json:"ms"`
+	Error bool    `json:"error,omitempty"`
 }
 
 // SerialRun is a run of sibling spans that follow one another.
@@ -141,7 +153,7 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 
 	// Spans: one per span ID (lowest Seq), then the limit.
 	spans := map[string]*item{}
-	var spanItems []*item
+	var spanItems, eventItems []*item
 	parentOf := map[string]string{}
 	for _, r := range spanRecs {
 		_, sid := record.TraceRef(r.Fields)
@@ -157,6 +169,15 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 		spanItems = append(spanItems, it)
 		p, _ := r.Fields["parent_span_id"].(string)
 		parentOf[sid] = record.NormalizeSpanID(p)
+		// Its events are its children, under their own limit.
+		for _, ev := range eventItemsOf(it, r.Fields["events"]) {
+			if len(eventItems) >= limit {
+				out.Truncated = true
+				break
+			}
+			eventItems = append(eventItems, ev)
+			it.kids = append(it.kids, ev)
+		}
 	}
 	var logItems []*item
 	logSpan := map[*item]string{}
@@ -170,10 +191,10 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 		logItems = append(logItems, it)
 		logSpan[it] = sid
 	}
-	out.SpanCount, out.LogCount = len(spanItems), len(logItems)
+	out.SpanCount, out.LogCount, out.EventCount = len(spanItems), len(logItems), len(eventItems)
 
 	// Trace start: the earliest real time.
-	for _, it := range append(append([]*item{}, spanItems...), logItems...) {
+	for _, it := range append(append(append([]*item{}, spanItems...), logItems...), eventItems...) {
 		if !it.start.IsZero() && (out.Start.IsZero() || it.start.Before(out.Start)) {
 			out.Start = it.start
 		}
@@ -236,10 +257,10 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 		return finite(float64(t.Sub(out.Start)) / float64(time.Millisecond))
 	}
 	var traceEnd time.Time
-	all := append(append(append([]*item{}, spanItems...), logItems...), phs...)
+	all := append(append(append(append([]*item{}, spanItems...), logItems...), eventItems...), phs...)
 	for _, it := range all {
 		it.StartMs = ms(it.start)
-		if it.Kind != KindLog {
+		if !isLeaf(it.Kind) {
 			it.DurationMs = math.Max(ms(it.end)-it.StartMs, 0)
 		}
 		if it.end.After(traceEnd) {
@@ -260,8 +281,8 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 			if !a.start.Equal(b.start) {
 				return a.start.Before(b.start)
 			}
-			if (a.Kind == KindLog) != (b.Kind == KindLog) {
-				return b.Kind == KindLog
+			if isLeaf(a.Kind) != isLeaf(b.Kind) {
+				return isLeaf(b.Kind)
 			}
 			return a.Seq < b.Seq
 		})
@@ -282,8 +303,11 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 				continue
 			}
 			out.Nodes[idx].Children++
-			if k.Kind == KindLog {
+			switch k.Kind {
+			case KindLog:
 				out.Nodes[idx].LogTicks = append(out.Nodes[idx].LogTicks, k.StartMs)
+			case KindEvent:
+				out.Nodes[idx].EventTicks = append(out.Nodes[idx].EventTicks, EventTick{Ms: k.StartMs, Error: k.Error})
 			}
 			walk(k, it.ID, depth+1)
 		}
@@ -356,6 +380,53 @@ func spanItem(r *record.Record, sid string) *item {
 	return it
 }
 
+// eventItemsOf returns the nodes of a span's events field (a JSON array of
+// {time, name, attributes} objects), in array order. An entry that is not an
+// object is skipped; one with no valid time sits at the span's start.
+func eventItemsOf(sp *item, v any) []*item {
+	evs, _ := v.([]any)
+	var out []*item
+	for i, e := range evs {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		it := &item{Node: Node{ID: "event:" + sp.ID + ":" + strconv.Itoa(i), Kind: KindEvent, Service: sp.Service}}
+		it.Name, _ = m["name"].(string)
+		it.Attributes, _ = m["attributes"].(map[string]any)
+		it.start = sp.start
+		if s, _ := m["time"].(string); s != "" {
+			if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+				it.start, it.Time = t, s
+			}
+		}
+		it.end = it.start
+		if it.Name == "exception" {
+			it.Error = true
+			var parts []string
+			for _, k := range []string{"exception.type", "exception.message"} {
+				if s, _ := it.Attributes[k].(string); s != "" {
+					parts = append(parts, s)
+				}
+			}
+			it.Message = truncate(strings.Join(parts, ": "))
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// isLeaf reports whether a node kind is a point in time with no children.
+func isLeaf(kind string) bool { return kind == KindLog || kind == KindEvent }
+
+// truncate cuts s to maxMessage runes.
+func truncate(s string) string {
+	if rs := []rune(s); len(rs) > maxMessage {
+		return string(rs[:maxMessage])
+	}
+	return s
+}
+
 func logItem(r *record.Record) *item {
 	f := r.Fields
 	it := &item{Node: Node{ID: "log:" + strconv.Itoa(r.Seq), Kind: KindLog, Seq: r.Seq}}
@@ -371,10 +442,7 @@ func logItem(r *record.Record) *item {
 	if msg == "" {
 		msg = strings.TrimSpace(string(r.Raw))
 	}
-	if rs := []rune(msg); len(rs) > maxMessage {
-		msg = string(rs[:maxMessage])
-	}
-	it.Message = msg
+	it.Message = truncate(msg)
 	it.start, it.end = r.Time, r.Time
 	return it
 }
