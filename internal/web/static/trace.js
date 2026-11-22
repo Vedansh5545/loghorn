@@ -699,7 +699,7 @@ function selectNode(id, { scroll = false } = {}) {
     eventDetail(detailBox, n);
   } else if (n.seq) {
     detailBox.append(d.el("span", "muted", "loading…"));
-    d.fillRecordDetail(detailBox, n.seq);
+    d.fillRecordDetail(detailBox, n.seq, { recordOpen: false });
   }
   if (scroll && rowEl) rowEl.scrollIntoView({ block: "center" });
 }

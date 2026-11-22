@@ -39,12 +39,12 @@
   --trace-gen_ai: var(--series-5);
   --trace-span: var(--series-6);
   --trace-missing: var(--series-other);
-  /* SQL colours: the terminal UI's hues, darkened to 4.5:1 on --bg. */
-  --sql-kw: #884cff;
-  --sql-type: #007da6;
-  --sql-param: #de0094;
-  --sql-str: #418341;
-  --sql-num: #9c6b00;
+  /* SQL and JSON colours: vivid hues, kept readable on --bg. */
+  --sql-kw: #7c3aed;
+  --sql-type: #0077e6;
+  --sql-param: #e0158f;
+  --sql-str: #15963d;
+  --sql-num: #d16a00;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -77,12 +77,12 @@
     --series-9: #2a9fc0;
     --series-10: #a88a10;
     --series-other: #7d7b75;
-    /* The terminal UI's SQL colours as it showed them on a dark background. */
-    --sql-kw: #af87ff;
-    --sql-type: #5fd7ff;
-    --sql-param: #ff87d7;
-    --sql-str: #5faf5f;
-    --sql-num: #ffaf00;
+    /* SQL and JSON colours, bright on a dark background. */
+    --sql-kw: #c3a6ff;
+    --sql-type: #5cc8ff;
+    --sql-param: #ff7ac6;
+    --sql-str: #4ee08a;
+    --sql-num: #ffc23d;
   }
 }
 * { box-sizing: border-box; }
@@ -142,6 +142,8 @@ td.num { text-align: right; }
 .sev-error { background: var(--sev-error); }
 tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px; }
 .detail h3 { font: 600 12px system-ui, sans-serif; color: var(--muted); margin: 6px 0 4px; }
+.detail-sec > summary { font: 600 12px system-ui, sans-serif; color: var(--muted); margin: 6px 0 4px; cursor: pointer; user-select: none; }
+.detail-sec > summary:hover { color: var(--fg); }
 .detail pre { margin: 0 0 8px; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; white-space: pre; font-size: 12px; }
 .footer { color: var(--muted); padding: 8px 0; border-top: 1px solid var(--line); margin-top: 4px; }
 .top { justify-content: space-between; }

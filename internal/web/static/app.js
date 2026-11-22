@@ -1546,9 +1546,19 @@ async function toggleDetail(tr, span) {
   await fillRecordDetail(td, tr.dataset.seq);
 }
 
+// detailSection is a collapsible titled block of a record's detail.
+function detailSection(title, body, open) {
+  const box = el("details", "detail-sec");
+  box.open = open;
+  box.append(el("summary", "", title), body);
+  return box;
+}
+
 // fillRecordDetail replaces container's children with record seq: its SQL
-// fields formatted and coloured, then the raw record. An error shows in place.
-export async function fillRecordDetail(container, seq) {
+// fields formatted and coloured, then the raw record, each in a section that
+// opens and closes; recordOpen sets whether the raw record starts open. An
+// error shows in place.
+export async function fillRecordDetail(container, seq, { recordOpen = true } = {}) {
   try {
     const rec = await api("GET", "/api/record?seq=" + encodeURIComponent(seq));
     container.replaceChildren();
@@ -1559,14 +1569,14 @@ export async function fillRecordDetail(container, seq) {
         pre = el("pre");
         pre.append(sqlSpan(toks, rec.sql[path]));
       }
-      container.append(el("h3", "", path + " (SQL)"), pre);
+      container.append(detailSection(path + " (SQL)", pre, true));
     }
     let raw = preOf(rec.raw);
     if (Array.isArray(rec.rawTokens)) {
       raw = el("pre");
       raw.append(sqlSpan(rec.rawTokens, rec.raw));
     }
-    container.append(el("h3", "", "record"), raw);
+    container.append(detailSection("record", raw, recordOpen));
   } catch (err) {
     container.replaceChildren(el("span", "bad", err.message));
   }
