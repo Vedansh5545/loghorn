@@ -1048,15 +1048,20 @@ export function render(result) {
   applyWidths();
 }
 
+// VAGUE_TAILS are last path parts too generic to show alone: the part before
+// is kept too, so db.query.text shows as query.text.
+const VAGUE_TAILS = new Set(["text"]);
+
 // shortNames maps each path to its shortest dot-separated tail that no other
 // path in paths shares as a tail, so otel.attributes.httpRequest.status shows
 // as status, and latency next to otel.attributes.httpRequest.latency shows as
-// httpRequest.latency.
+// httpRequest.latency. A vague last part (VAGUE_TAILS) keeps the part before.
 export function shortNames(paths) {
   const out = {};
   paths.forEach((p, i) => {
     const parts = p.split(".");
-    for (let n = 1; n <= parts.length; n++) {
+    const first = parts.length > 1 && VAGUE_TAILS.has(parts[parts.length - 1]) ? 2 : 1;
+    for (let n = first; n <= parts.length; n++) {
       const tail = parts.slice(-n).join(".");
       if (!paths.some((q, j) => j !== i && (q === tail || q.endsWith("." + tail)))) {
         out[p] = tail;
