@@ -30,6 +30,13 @@
   --series-9: #0e8fb3;
   --series-10: #8a6d00;
   --series-other: #9a9891;
+  /* Heatmap cells, fewest spans to most: one blue ramp, light to dark,
+     validated (ordinal: monotone, step gaps, light end >= 2:1) against --bg. */
+  --heat-1: #86b6ef;
+  --heat-2: #5598e7;
+  --heat-3: #2a78d6;
+  --heat-4: #1c5cab;
+  --heat-5: #0d366b;
   /* Trace waterfall bar colours, one per span type group. They refer to the
      series tokens, so the dark block's series values apply to them too. */
   --trace-db: var(--series-1);
@@ -77,6 +84,12 @@
     --series-9: #2a9fc0;
     --series-10: #a88a10;
     --series-other: #7d7b75;
+    /* Heatmap: the same blue ramp, dark (near the surface) to light. */
+    --heat-1: #184f95;
+    --heat-2: #2a78d6;
+    --heat-3: #5598e7;
+    --heat-4: #86b6ef;
+    --heat-5: #cde2fb;
     /* SQL and JSON colours, bright on a dark background. */
     --sql-kw: #c3a6ff;
     --sql-type: #5cc8ff;
@@ -196,7 +209,9 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .tabs { flex-direction: row; gap: 0; }
 .tab { flex: none; padding: 2px 10px; font-size: 13px; border-radius: 0; margin-left: -1px; }
 .tab:first-child { border-radius: 4px 0 0 4px; margin-left: 0; }
-.tab:last-child { border-radius: 0 4px 4px 0; }
+.tab:last-child, .tab:has(+ .tab[hidden]:last-child) { border-radius: 0 4px 4px 0; }
+/* Four view tabs share the sidebar's width. */
+#sb-view .tab { flex: 1 1 auto; padding: 2px 5px; font-size: 12.5px; white-space: nowrap; }
 .tab.active { color: #fff; background: var(--accent); border-color: var(--accent); position: relative; }
 .triples { display: flex; flex-direction: column; gap: 6px; }
 /* Each filter triple is a tinted card, as in Scuba: the field picker in an
@@ -238,9 +253,36 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .graph-key-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-key-count { color: var(--muted); font-family: var(--mono); }
 .graph-swatch { flex: none; width: 10px; height: 10px; border-radius: 2px; }
+/* Heatmap view: the chart pane above a splitter, the span list below. The
+   trace and aggregate views hide the query bar, and with it the chart. */
+#bar[hidden] ~ #heatmap { display: none; }
+.heatmap { display: flex; flex-direction: column; flex: none; min-height: 0; }
+.heat-chart { display: flex; flex-direction: column; height: 320px; min-height: 0; padding-top: 6px; }
+.heat-chart > .empty { margin: auto; }
+.heat-plot { position: relative; flex: 1; min-height: 0; }
+.heat-plot svg { display: block; position: absolute; inset: 0; }
+.heat-grid line { stroke: var(--line); stroke-width: 1; }
+.heat-grid line.heat-base { stroke: var(--muted); }
+.heat-grid text { fill: var(--muted); font-size: 11px; font-family: system-ui, sans-serif; }
+.heat-dim rect { opacity: 0.3; }
+.heat-dim rect.heat-on { opacity: 1; }
+.heat-sel { fill: none; stroke: var(--fg); stroke-width: 2; pointer-events: none; }
+.heat-hover { fill: none; stroke: var(--fg); stroke-width: 1; pointer-events: none; }
+.heat-hit { fill: transparent; stroke: none; }
+.heat-tip { white-space: nowrap; max-width: none; font-family: var(--mono); }
+.heat-legend { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; padding: 4px 0 2px; font-size: 12.5px; color: var(--muted); }
+.heat-key { display: flex; align-items: center; gap: 6px; }
+.heat-key-title { color: var(--fg); }
+.heat-key-n { font-family: var(--mono); }
+.heat-ramp { display: flex; gap: 1px; }
+.heat-swatch { width: 18px; height: 10px; }
+.heat-swatch:first-child { border-radius: 2px 0 0 2px; }
+.heat-swatch:last-child { border-radius: 0 2px 2px 0; }
+.heat-zone { margin-left: auto; }
 @media (max-width: 800px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .trace-split { display: none; }
+  .heat-chart { height: 320px !important; }
   .trace-pane { height: auto !important; }
 }
 /* Wide screens: the page is one viewport tall and the results scroll inside

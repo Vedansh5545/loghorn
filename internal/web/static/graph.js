@@ -70,7 +70,7 @@ function sameDay(a, b) {
 
 // xTicks picks local-time ticks between t0 and t1 (ms), about one per
 // `pixels / 90` and labelled at the precision the step needs.
-function xTicks(t0, t1, pixels) {
+export function xTicks(t0, t1, pixels) {
   const want = Math.max(2, Math.floor(pixels / 90));
   const span = Math.max(t1 - t0, SEC);
   const step = TIME_STEPS.find((s) => span / s <= want) || TIME_STEPS[TIME_STEPS.length - 1];

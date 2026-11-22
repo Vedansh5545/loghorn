@@ -2,6 +2,8 @@
 // textContent or attributes, never innerHTML.
 
 import { drawGraph } from "./graph.js";
+import { renderHeatmap } from "./heatmap.js";
+import { makeSplit } from "./split.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
 import { copyButton, copyTableBar } from "./copy.js";
 import { aggURLParams, cancelAggregate, initAggregate, openAggregate, restoreAggregateFromURL } from "./agg.js";
@@ -31,7 +33,7 @@ export const state = {
   bucket: "auto",
 };
 
-const VIEWS = ["samples", "table", "graph"];
+const VIEWS = ["samples", "table", "graph", "heatmap"];
 const CHARTS = ["line", "stacked"];
 const DEFAULT_TOP = 10;
 const TOPS = [5, 10, 20, 50, 100, 500, 1000];
@@ -392,6 +394,7 @@ function applyQuery(q) {
   state.filters = Array.isArray(q.filters) ? q.filters : [];
   state.columns = Array.isArray(q.columns) ? q.columns : [];
   state.view = VIEWS.includes(q.view) ? q.view : "samples";
+  if (state.view === "heatmap" && state.source !== "otel") state.view = "samples"; // logs have no durations
   state.groupBy = Array.isArray(q.groupBy) ? q.groupBy : [];
   state.aggregates = Array.isArray(q.aggregates) ? q.aggregates : [];
   state.plot = q.plot && typeof q.plot === "object" && q.plot.op ? q.plot : { op: "count" };
@@ -587,13 +590,101 @@ function syncView() {
   }
   $("table").hidden = state.view === "graph";
   $("graph").hidden = state.view !== "graph";
+  $("heatmap").hidden = state.view !== "heatmap";
+  document.querySelector('#sb-view [data-view="heatmap"]').hidden = state.source !== "otel";
 }
 
 function setView(v) {
   if (!VIEWS.includes(v) || v === state.view) return;
+  if (v === "heatmap" && state.source !== "otel") return;
   state.view = v;
   syncView();
+  if (v === "heatmap" && state.stream !== ALL_KINDS) {
+    enterAllKinds();
+    return;
+  }
   runQuery();
+}
+
+// enterAllKinds selects the All kinds stream on entering the Heatmap view.
+// Unlike selectKind it keeps the filters, columns and sort: the All kinds
+// schema has every kind's fields.
+async function enterAllKinds() {
+  state.stream = ALL_KINDS;
+  closeColumnMenu();
+  hiddenThisQuery = [];
+  tempWidths = {};
+  renderKindList();
+  if (!(await loadSchema())) return; // a newer selection took over
+  rebuildExplore();
+  runQuery();
+}
+
+// ---- heatmap view ----
+
+let heatSplit = null;
+
+// initHeatSplit wires the bar between the chart and the span list below it.
+function initHeatSplit() {
+  heatSplit = makeSplit({
+    bar: $("heat-split"),
+    pane: $("heat-chart"),
+    container: document.querySelector(".content"),
+    storageKey: "loghorn.heatSplit",
+    initial: 0.55,
+    min: 80,
+  });
+  // Showing the view, the window, the sidebar toggle or the error banner can
+  // move the pane.
+  const layout = () => {
+    if (state.view === "heatmap") heatSplit.layout();
+  };
+  new ResizeObserver(layout).observe($("heatmap"));
+  new ResizeObserver(layout).observe(document.querySelector(".content"));
+}
+
+// listQuery is the request of the samples rows: in the Heatmap view, the
+// span list below the chart, longest first unless the user sorted.
+function listQuery() {
+  if (state.view !== "heatmap") return Object.assign({}, state);
+  return Object.assign({}, state, { view: "samples", sort: listSort() });
+}
+
+// HEAT_SORT is the Heatmap list's order when the user chose none.
+const HEAT_SORT = { field: "duration_ms", desc: true };
+
+// listSort is the order the samples rows are in: the user's, else the
+// view's default (the server's timestamp order, or longest first under
+// the heatmap).
+function listSort() {
+  if (state.sort.field) return state.sort;
+  return state.view === "heatmap" ? HEAT_SORT : { field: "timestamp", desc: true };
+}
+
+// renderHeatmapResult draws a heatmap result in the chart pane.
+function renderHeatmapResult(result) {
+  const h = result.heatmap || {};
+  autoBucket = state.bucket === "auto" ? h.bucket || "" : "";
+  drawBucket();
+  renderHeatmap($("heat-chart"), h, {});
+}
+
+// runHeatmapQuery runs the heatmap and its span list side by side, as query
+// mine; each answer draws when it lands unless a newer query superseded it.
+async function runHeatmapQuery(mine) {
+  const live = () => mine === querySeq;
+  const heat = api("POST", "/api/query", state).then((r) => {
+    if (live()) renderHeatmapResult(r);
+  });
+  const list = api("POST", "/api/query", listQuery()).then((r) => {
+    if (live()) renderResult(r);
+  });
+  try {
+    await Promise.all([heat, list]);
+    if (live()) clearError();
+  } catch (err) {
+    if (live()) showError(err.message);
+  }
 }
 
 // ---- header ----
@@ -944,6 +1035,7 @@ function clearResults() {
   $("head").replaceChildren();
   $("body").replaceChildren();
   $("graph").replaceChildren();
+  renderHeatmap($("heat-chart"), null);
   $("more").hidden = true;
   $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
 }
@@ -956,7 +1048,9 @@ async function setMode(src) {
   state.stream = "";
   kindsOpen = false;
   $("kind-filter").value = "";
+  if (state.view === "heatmap" && state.source !== "otel") state.view = "samples"; // logs have no durations
   syncMode();
+  syncView();
   try {
     if (!(await loadKinds())) return;
   } catch (err) {
@@ -1246,7 +1340,7 @@ function renderSamplesFooter(result) {
   const shown = result.rows.length;
   const span = shown ? (off + 1).toLocaleString() + "–" + (off + shown).toLocaleString() : "none";
   $("footer-text").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
-    state.stream + " records match · showing " + (off ? span : shown.toLocaleString());
+    (state.stream === ALL_KINDS ? "span" : state.stream) + " records match · showing " + (off ? span : shown.toLocaleString());
   $("limit").value = String(state.limit || DEFAULT_LIMIT);
   $("more").hidden = !result.truncated && !off;
   $("more-first").hidden = !off;
@@ -1273,7 +1367,7 @@ async function loadBatch(next) {
   for (const b of buttons) b.disabled = true;
   try {
     const columns = base.columns.map((c) => c.path);
-    const res = await api("POST", "/api/query", Object.assign({}, state, { columns, offset }));
+    const res = await api("POST", "/api/query", Object.assign(listQuery(), { columns, offset }));
     if (q0 !== querySeq || mine !== moreSeq || lastResult !== base) return;
     res.offset = offset;
     render(res);
@@ -1657,6 +1751,7 @@ export async function runQuery() {
     return;
   }
   const mine = ++querySeq;
+  if (state.view === "heatmap") return runHeatmapQuery(mine);
   try {
     const result = await api("POST", "/api/query", state);
     if (mine !== querySeq) return; // a newer query superseded this one
@@ -2532,7 +2627,7 @@ function groupByColumn(path) {
   closeColumnMenu();
   if (!state.groupBy.includes(path)) state.groupBy.push(path);
   drawGroupBy();
-  if (state.view === "samples") setView("table");
+  if (state.view === "samples" || state.view === "heatmap") setView("table");
   else runQuery();
 }
 
@@ -2685,11 +2780,11 @@ function openColumnMenu(path, anchorEl) {
 }
 
 // sortedBy reports whether the rows are in path's order, descending or not.
-// With no sort chosen the server orders by timestamp, newest first.
+// With no sort chosen the server orders by timestamp, newest first (the
+// Heatmap list by duration, longest first).
 function sortedBy(path, desc) {
-  const field = state.sort.field || "timestamp";
-  const d = state.sort.field ? state.sort.desc : true;
-  return field === path && d === desc;
+  const s = listSort();
+  return s.field === path && s.desc === desc;
 }
 
 // sortArrows are a column's ascending and descending buttons. The one matching
@@ -3216,6 +3311,7 @@ async function init() {
   loadURL();
   wireBar();
   syncView();
+  initHeatSplit();
   wireColumns();
   wireLimit();
   wireSchema();
