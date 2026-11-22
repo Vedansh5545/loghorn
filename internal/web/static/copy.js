@@ -6,13 +6,22 @@ const SVG = "http://www.w3.org/2000/svg";
 
 // toCSV serializes headers and rows (arrays of strings) as RFC 4180 CSV: a
 // field holding a comma, quote, CR or LF is quoted with inner quotes doubled;
-// lines end in CRLF.
+// lines end in CRLF. Each cell is neutralized first (see neutralize).
 export function toCSV(headers, rows) {
   const field = (v) => {
-    const s = v === null || v === undefined ? "" : String(v);
+    const s = neutralize(v === null || v === undefined ? "" : String(v));
     return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   return [headers, ...rows].map((r) => r.map(field).join(",")).join("\r\n") + "\r\n";
+}
+
+// neutralize keeps a spreadsheet from running a log value as a formula: a
+// cell starting with =, +, @, a tab or a CR, or with - unless the whole cell
+// is a plain number, gets a leading single quote.
+export function neutralize(s) {
+  if (/^[=+@\t\r]/.test(s)) return "'" + s;
+  if (s.startsWith("-") && !/^-(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s)) return "'" + s;
+  return s;
 }
 
 // toMarkdown serializes headers and rows as a GitHub table: | escaped as \|,
