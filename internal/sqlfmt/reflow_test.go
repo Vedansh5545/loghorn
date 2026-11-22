@@ -91,3 +91,56 @@ func TestReflowWrappedCondition(t *testing.T) {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }
+
+// A long line whose only break points are inside a parenthesized SELECT opens
+// the subquery one clause per line, and breaks those clauses in turn.
+func TestFormatNestedSubqueries(t *testing.T) {
+	q := "select id, event_id, type from lots where (lots.type in (?, ?) and lots.status = ? and lots.close_at > ? and lots.close_at <= ? and not exists (select 1 from events t where t.id = lots.event_id and t.rehearsal_of_event_id is not null and (t.rehearsal_ended_at is not null or not exists (select 1 from events s where s.id = t.rehearsal_of_event_id) or exists (select 1 from lots sa where sa.event_id = t.rehearsal_of_event_id and sa.status <> 'draft'))))"
+	out, err := Format(q, "sqlite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `SELECT id, event_id, type
+FROM lots
+WHERE
+  (lots.type IN (?, ?)
+  AND lots.status = ?
+  AND lots.close_at > ?
+  AND lots.close_at <= ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM events t
+    WHERE
+      t.id = lots.event_id
+      AND t.rehearsal_of_event_id IS NOT NULL
+      AND (t.rehearsal_ended_at IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM events s
+          WHERE s.id = t.rehearsal_of_event_id)
+        OR EXISTS (
+          SELECT 1
+          FROM lots sa
+          WHERE
+            sa.event_id = t.rehearsal_of_event_id
+            AND sa.status <> 'draft'))));`
+	if out != want {
+		t.Fatalf("got\n%s\nwant\n%s", out, want)
+	}
+}
+
+// A subquery's joins start lines of their own, a multi-word join on one
+// line; a subquery on a line short enough is left inline.
+func TestReflowSubqueryJoins(t *testing.T) {
+	in := "WHERE id IN (SELECT o.id FROM orgs o LEFT OUTER JOIN users u ON u.org_id = o.id WHERE u.id = ? ORDER BY o.id)\nAND x IN (SELECT 1)"
+	want := `WHERE id IN (
+  SELECT o.id
+  FROM orgs o
+  LEFT OUTER JOIN users u ON u.org_id = o.id
+  WHERE u.id = ?
+  ORDER BY o.id)
+AND x IN (SELECT 1)`
+	if got := reflow(in, 60, ""); got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}

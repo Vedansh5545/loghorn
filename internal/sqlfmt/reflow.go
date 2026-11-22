@@ -105,6 +105,9 @@ func breakLine(line string, width int, opts []highlight.Option) []string {
 		}
 	}
 	if len(cuts) == 0 {
+		if sub := openSubquery(body, indent, spans, width, opts); sub != nil {
+			return sub
+		}
 		return []string{line}
 	}
 
@@ -183,4 +186,100 @@ func allHeadWords(text string) bool {
 		}
 	}
 	return len(words) > 0
+}
+
+// clauseWords start a clause of a subquery that openSubquery puts on a line
+// of its own; joinWords start a join, which also gets its own line.
+var (
+	clauseWords = map[string]bool{
+		"SELECT": true, "FROM": true, "WHERE": true, "GROUP": true, "ORDER": true,
+		"HAVING": true, "LIMIT": true, "OFFSET": true, "WINDOW": true,
+		"UNION": true, "INTERSECT": true, "EXCEPT": true,
+	}
+	joinWords = map[string]bool{
+		"JOIN": true, "INNER": true, "LEFT": true, "RIGHT": true, "FULL": true,
+		"OUTER": true, "CROSS": true, "NATURAL": true,
+	}
+)
+
+// openSubquery lays out the first parenthesized SELECT (or WITH) in a line
+// that has no other break point: the line up to its opening parenthesis, then
+// the subquery one clause per line, indented two spaces past the line, with
+// whatever follows the subquery (its closing parenthesis, a semicolon) left
+// on the last clause. A clause line longer than width is broken like any
+// other. It returns nil when the line has no subquery.
+func openSubquery(body, indent string, spans []highlight.Span, width int, opts []highlight.Option) []string {
+	open := -1
+	for i := 0; i+1 < len(spans); i++ {
+		if body[spans[i].Start:spans[i].End] != "(" {
+			continue
+		}
+		next := spans[i+1]
+		if w := strings.ToUpper(body[next.Start:next.End]); next.Category == highlight.Keyword && (w == "SELECT" || w == "WITH") {
+			open = spans[i].End
+			break
+		}
+	}
+	if open < 0 {
+		return nil
+	}
+	sub := strings.TrimSpace(body[open:])
+	out := []string{indent + strings.TrimSpace(body[:open])}
+	inner := indent + "  "
+	for _, clause := range splitClauses(sub, opts) {
+		l := inner + clause
+		if len(l) > width && len(clause) < len(body) {
+			out = append(out, breakLine(l, width, opts)...)
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// splitClauses cuts a SELECT before each of its own clause keywords and
+// joins: those outside parentheses and CASE ... END, and before the
+// parenthesis that closes the subquery, if any.
+func splitClauses(sql string, opts []highlight.Option) []string {
+	spans := highlight.Spans(sql, opts...)
+	var cuts []int
+	depth, prevJoin := 0, false
+	for _, s := range spans {
+		text := sql[s.Start:s.End]
+		if s.Category == highlight.Comment {
+			continue
+		}
+		word := strings.ToUpper(text)
+		if i := strings.IndexAny(word, " \t\n"); i > 0 {
+			word = word[:i] // the highlighter gives ORDER BY, LEFT JOIN as one span
+		}
+		isJoin := s.Category == highlight.Keyword && joinWords[word]
+		switch {
+		case text == "(":
+			depth++
+		case text == ")":
+			depth--
+		case s.Category == highlight.Keyword && word == "CASE":
+			depth++
+		case s.Category == highlight.Keyword && word == "END" && depth > 0:
+			depth--
+		}
+		if depth < 0 {
+			break
+		}
+		if depth == 0 && s.Start > 0 && s.Category == highlight.Keyword &&
+			(clauseWords[word] || isJoin && !prevJoin) {
+			cuts = append(cuts, s.Start)
+		}
+		prevJoin = isJoin
+	}
+	var out []string
+	start := 0
+	for _, c := range cuts {
+		if p := strings.TrimSpace(sql[start:c]); p != "" {
+			out = append(out, p)
+		}
+		start = c
+	}
+	return append(out, strings.TrimSpace(sql[start:]))
 }
