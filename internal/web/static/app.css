@@ -273,6 +273,7 @@ td .muted { color: var(--muted); }
 .menu-icon { display: inline-flex; padding: 4px 6px; border-color: transparent; background: transparent; color: var(--fg); }
 .menu-icon:hover:not(:disabled) { background: var(--row-hover); color: var(--accent); }
 .menu-icon:disabled { color: var(--muted); opacity: 0.4; cursor: default; }
+.menu-icon.glyph { width: 27px; justify-content: center; padding: 3px 0; font-size: 14px; line-height: 17px; }
 .menu-item { text-align: left; border-color: transparent; background: transparent; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item:hover:not(:disabled) { background: var(--row-hover); }
 .menu-item.checked { color: var(--accent); }

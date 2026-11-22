@@ -1142,11 +1142,15 @@ const SVG = "http://www.w3.org/2000/svg";
 // ICONS are 16×16 stroke paths for the column menu's icon row.
 const ICONS = {
   hide: ["M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z", "M8 6.3a1.7 1.7 0 1 0 0 3.4 1.7 1.7 0 1 0 0-3.4", "M2.5 13.5l11-11"],
-  first: ["M3.5 3v10", "M12.5 3L7 8l5.5 5"],
-  left: ["M10.5 3L5 8l5.5 5"],
-  right: ["M5.5 3l5.5 5-5.5 5"],
-  last: ["M12.5 3v10", "M3.5 3L9 8l-5.5 5"],
+  filter: ["M2 3h12L9.5 8.5V13l-3-1.5v-3z"],
+  group: ["M2 3.5h12", "M5 6.5h9", "M5 9.5h9", "M2 12.5h12", "M2.5 6v4"],
+  fit: ["M2.5 3v10", "M13.5 3v10", "M5 8h6", "M6.8 6.2L5 8l1.8 1.8", "M9.2 6.2L11 8l-1.8 1.8"],
+  wrap: ["M2 4h12", "M2 8h9.5a2 2 0 0 1 0 4H8", "M9.5 10.5L8 12l1.5 1.5", "M2 12h3.5"],
+  crop: ["M2 4h12", "M2 8h12", "M2 12h8", "M12 12h.5", "M13.8 12h.2"],
 };
+
+// VCR are the move buttons' glyphs; U+FE0E asks for the text form, not emoji.
+const VCR = { first: "\u23EE\uFE0E", left: "\u25C0\uFE0E", right: "\u25B6\uFE0E", last: "\u23ED\uFE0E" };
 
 function icon(name) {
   const svg = document.createElementNS(SVG, "svg");
@@ -2206,29 +2210,110 @@ function moveColumnAfter(path, afterPath) {
   setColumns(cols);
 }
 
-// columnIcons is the column menu's icon row: hide, then move to the start,
-// one left, one right and to the end.
+// columnIcons is the column menu's icon row: hide; move to the start, left,
+// right and to the end; then filter, group by, fit width and crop/wrap.
 function columnIcons(path, shown) {
   const row = el("div", "menu-icons");
   const i = shown.indexOf(path);
   const last = shown.length - 1;
-  const add = (name, tip, disabled, onClick) => {
+  const f = fieldByPath(path); // null for a Table-view metric column
+  const ro = readOnly();
+  const add = (content, tip, disabled, onClick) => {
     const b = el("button", "menu-icon");
     b.type = "button";
     b.title = tip;
     b.setAttribute("aria-label", tip + " (" + path + ")");
     b.disabled = disabled;
-    b.append(icon(name));
+    if (typeof content === "string") {
+      b.classList.add("glyph");
+      b.textContent = content;
+    } else b.append(content);
     b.addEventListener("click", onClick);
     row.append(b);
   };
-  add("hide", shown.length <= 1 ? "the last column cannot be hidden" : "hide column", i < 0 || shown.length <= 1, () => hideColumn(path));
-  row.append(el("span", "menu-icons-gap"));
-  add("first", "move to start", i <= 0, () => moveColumnTo(path, 0));
-  add("left", "move left", i <= 0, () => moveColumnTo(path, i - 1));
-  add("right", "move right", i < 0 || i === last, () => moveColumnTo(path, i + 1));
-  add("last", "move to end", i < 0 || i === last, () => moveColumnTo(path, last));
+  const gap = () => row.append(el("span", "menu-icons-gap"));
+  add(icon("hide"), shown.length <= 1 ? "the last column cannot be hidden" : "hide column", i < 0 || shown.length <= 1, () => hideColumn(path));
+  gap();
+  add(VCR.first, "move to start", i <= 0, () => moveColumnTo(path, 0));
+  add(VCR.left, "move left", i <= 0, () => moveColumnTo(path, i - 1));
+  add(VCR.right, "move right", i < 0 || i === last, () => moveColumnTo(path, i + 1));
+  add(VCR.last, "move to end", i < 0 || i === last, () => moveColumnTo(path, last));
+  gap();
+  add(icon("filter"), f ? "filter by this column" : "not a field of the stream", !f, () => filterByColumn(path));
+  const grouped = state.groupBy.includes(path);
+  add(icon("group"), !f ? "not a field of the stream" : grouped ? "already grouped by this column" : "group by this column", !f || grouped, () => groupByColumn(path));
+  const th = $("head").querySelector('th[data-path="' + CSS.escape(path) + '"]');
+  const temp = !!(th && th.dataset.temp);
+  const sized = temp ? path in tempWidths : !!(f && f.width);
+  add(icon("fit"), sized ? "fit width to content" : "width already fits its content", !sized, () => {
+    closeColumnMenu();
+    fitColumn(path, temp);
+  });
+  if (f) {
+    const tip = ro ? NEED_SERVICE : f.wrap ? "crop long text" : "wrap long text";
+    add(icon(f.wrap ? "crop" : "wrap"), tip, ro, () => {
+      closeColumnMenu();
+      saveFieldFormat(path, { wrap: !f.wrap });
+    });
+  }
   return row;
+}
+
+// fitColumn drops a column's dragged width so it sizes to its content again.
+function fitColumn(path, temp) {
+  if (temp) {
+    delete tempWidths[path];
+    applyWidths();
+  } else if ((fieldByPath(path) || {}).width) {
+    saveFieldFormat(path, { width: 0 });
+  }
+}
+
+// filterByColumn fills the sidebar's empty filter row with path and puts the
+// cursor in its value box.
+function filterByColumn(path) {
+  closeColumnMenu();
+  const t = triples[triples.length - 1];
+  if (!t) return;
+  setSidebar(true);
+  const old = t.row;
+  pickTripleField(t, path);
+  old.replaceWith(tripleRow(t)); // tripleRow shows path in the field box
+  const box = t.row.querySelector(".t-value input, .t-value select") || t.row.querySelector(".t-op");
+  if (box) {
+    box.scrollIntoView({ block: "nearest" });
+    box.focus();
+  }
+}
+
+// groupByColumn adds path to the group-by fields, switching Samples to the
+// Table view, where grouping shows.
+function groupByColumn(path) {
+  closeColumnMenu();
+  if (!state.groupBy.includes(path)) state.groupBy.push(path);
+  drawGroupBy();
+  if (state.view === "samples") setView("table");
+  else runQuery();
+}
+
+// copyColumnValues copies the column's shown values, one per line.
+async function copyColumnValues(path, button) {
+  const ths = Array.from($("head").children);
+  const i = ths.findIndex((th) => th.dataset.path === path);
+  if (i < 0) return;
+  const vals = [];
+  for (const tr of $("body").children) {
+    if (tr.classList.contains("detail")) continue; // an opened record, not a value
+    const td = tr.children[i];
+    if (td) vals.push(td.textContent);
+  }
+  try {
+    await navigator.clipboard.writeText(vals.join("\n"));
+    button.textContent = "✓ Copied " + vals.length.toLocaleString() + (vals.length === 1 ? " value" : " values");
+    setTimeout(closeColumnMenu, 700);
+  } catch (err) {
+    button.textContent = "Copy failed: " + err.message;
+  }
 }
 
 // moveColumnTo puts shown column path at index to, then reopens the menu on
@@ -2343,7 +2428,6 @@ function openColumnMenu(path, anchorEl) {
   });
   label.addEventListener("blur", () => labelCommit && labelCommit());
   menu.append(menuRow("label", fmt(label)));
-  menu.append(menuRow("long text", fmt(selectOf(["crop", "wrap"], f.wrap ? "wrap" : "crop", (v) => saveFieldFormat(path, { wrap: v === "wrap" })))));
   menu.append(el("hr"));
   for (const [text, d] of [["Sort ascending", false], ["Sort descending", true]]) {
     const on = sortedBy(path, d);
@@ -2356,6 +2440,7 @@ function openColumnMenu(path, anchorEl) {
   const sub = menuButton("Add / Move ▸", () => openColumnSubmenu(path, sub));
   sub.setAttribute("aria-haspopup", "true");
   menu.append(sub);
+  menu.append(menuButton("Copy values", (e) => copyColumnValues(path, e.currentTarget), !shown.includes(path)));
   placeMenu(menu, anchorEl, false);
 }
 
