@@ -1258,8 +1258,18 @@ function capped(th, i, wrap) {
 // column can be narrower than its content; a value cut short by the cap gets
 // its full text as a tooltip. It sets each column's crop or wrap first, since
 // that changes the natural widths.
+// widthsStale marks a layout skipped while the table was not displayed (a
+// live run re-renders behind the trace or aggregate view, where every column
+// measures 0 px); watchTableShown redoes it when the table shows again.
+let widthsStale = false;
+
 function applyWidths(extra) {
   const table = $("table");
+  if (!table.getClientRects().length) {
+    widthsStale = true;
+    return;
+  }
+  widthsStale = false;
   const ths = Array.from($("head").children);
   const wrap = applyWraps(ths);
   const w = Object.assign(savedWidths(), extra || {});
@@ -1286,6 +1296,12 @@ function applyWidths(extra) {
       if (cut[i] && !td.title && td.scrollWidth > td.clientWidth) td.title = td.textContent;
     });
   }
+}
+
+function watchTableShown() {
+  new ResizeObserver(() => {
+    if (widthsStale && $("table").getClientRects().length) applyWidths();
+  }).observe($("results"));
 }
 
 const MIN_COL = 40;
@@ -2847,6 +2863,7 @@ async function init() {
   wireColumns();
   wireSchema();
   wireFavorites();
+  watchTableShown();
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();
