@@ -14,7 +14,7 @@ const tv = {
   collapsed: new Set(), // node ids
   logs: "tree",
   critical: false,
-  find: { q: "", matches: [], i: -1 },
+  find: { q: "", matches: [], i: -1, cur: null }, // cur: the matched node id last gone to
 };
 
 let traceSeq = 0; // the newest openTrace; older answers are dropped
@@ -41,8 +41,10 @@ function typeGroup(type) {
 
 const isOpen = () => !$("trace").hidden && tv.data !== null;
 
-// shown reports whether a node kind gets a row.
-const shown = (n) => n.kind !== "log";
+const LOGS_KEY = "loghorn.traceLogs";
+
+// shown reports whether a node gets a row: logs only when they are in the tree.
+const shown = (n) => n.kind !== "log" || tv.logs === "tree";
 
 function selectedNode() {
   return tv.selected ? byId.get(tv.selected) || null : null;
@@ -95,6 +97,47 @@ export function initTrace(deps) {
   if (p.trace || p.span) restoreParams = p;
   $("trace-close").addEventListener("click", closeTrace);
   $("trace-reload").addEventListener("click", reloadTrace);
+  try {
+    if (localStorage.getItem(LOGS_KEY) === "hidden") tv.logs = "hidden";
+  } catch {}
+  $("trace-logs").addEventListener("click", () => {
+    tv.logs = tv.logs === "tree" ? "hidden" : "tree";
+    try {
+      localStorage.setItem(LOGS_KEY, tv.logs);
+    } catch {}
+    const sel = selectedNode();
+    if (tv.logs === "hidden" && sel && sel.kind === "log") {
+      tv.selected = null;
+      $("trace-detail").replaceChildren();
+      writeURL(false);
+    }
+    renderTrace();
+  });
+  const find = $("trace-find");
+  find.addEventListener("input", () => {
+    tv.find.q = find.value;
+    tv.find.cur = null;
+    refreshFind();
+    if (tv.find.matches.length) goToMatch(0);
+    else renderTrace();
+  });
+  find.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      stepMatch(e.shiftKey ? -1 : 1);
+    } else if (e.key === "Escape" && find.value) {
+      e.preventDefault(); // the document handler then leaves the view open
+      find.value = "";
+      tv.find.q = "";
+      tv.find.cur = null;
+      renderTrace();
+    }
+  });
+  for (const [id, dir] of [["trace-prev", -1], ["trace-next", 1]]) {
+    const b = $(id);
+    b.addEventListener("mousedown", (e) => e.preventDefault());
+    b.addEventListener("click", () => stepMatch(dir));
+  }
   $("trace-collapse").addEventListener("click", () => {
     tv.collapsed = new Set();
     for (const n of tv.data ? tv.data.nodes : []) if (shownKids(n).length) tv.collapsed.add(n.id);
@@ -259,10 +302,58 @@ function plural(n, word) {
   return n.toLocaleString() + " " + word + (n === 1 ? "" : "s");
 }
 
+// findMatches are the ids, in pre-order, of the spans whose name contains the
+// find text (case-insensitive) and, with logs in the tree, the logs whose
+// message does.
+function findMatches() {
+  const q = tv.find.q.trim().toLowerCase();
+  if (!q || !tv.data) return [];
+  const out = [];
+  for (const n of tv.data.nodes || []) {
+    const text = n.kind === "span" ? n.name : n.kind === "log" && tv.logs === "tree" ? n.message : "";
+    if (text && text.toLowerCase().includes(q)) out.push(n.id);
+  }
+  return out;
+}
+
+// refreshFind recomputes the matches and the count label.
+function refreshFind() {
+  const f = tv.find;
+  f.matches = findMatches();
+  f.i = f.cur ? f.matches.indexOf(f.cur) : -1;
+  const count = $("trace-count");
+  if (!f.q.trim()) count.textContent = "";
+  else if (!f.matches.length) count.textContent = "no matches";
+  else count.textContent = (f.i < 0 ? "–" : f.i + 1) + " of " + f.matches.length;
+  $("trace-find").placeholder = tv.logs === "tree" ? "find spans and logs" : "find spans";
+}
+
+function goToMatch(i) {
+  const f = tv.find;
+  if (!f.matches.length) return;
+  f.i = i;
+  f.cur = f.matches[i];
+  selectNode(f.cur, { scroll: true });
+  renderTrace(); // marks the matches and the count
+  const row = [...$("trace-rows").children].find((r) => r.dataset.id === f.cur);
+  if (row) row.scrollIntoView({ block: "center" });
+}
+
+// stepMatch goes to the next (dir 1) or previous (-1) match, wrapping.
+function stepMatch(dir) {
+  const f = tv.find;
+  if (!f.matches.length) return;
+  const m = f.matches.length;
+  goToMatch(f.i < 0 ? (dir > 0 ? 0 : m - 1) : (f.i + dir + m) % m);
+}
+
 // renderTrace redraws the header, legend, axis and rows.
 function renderTrace() {
   const data = tv.data;
   if (!data) return;
+  refreshFind();
+  $("trace-logs").textContent = tv.logs === "tree" ? "Logs: in tree" : "Logs: hidden";
+  const matched = new Set(tv.find.matches);
   const D = Math.max(data.durationMs || 0, 0.001);
   const services = data.services || [];
   const multi = services.length > 1;
@@ -334,7 +425,9 @@ function renderTrace() {
     for (let k = 1; k < n.depth; k++) guides.push(lineAt[k] ? "v" : "");
     if (n.depth > 0) guides.push(last.has(n.id) ? "end" : "tee");
     lineAt[n.depth] = !last.has(n.id);
-    rows.push(traceRow(n, guides, { D, multi }));
+    const row = traceRow(n, guides, { D, multi });
+    if (matched.has(n.id)) row.classList.add("match");
+    rows.push(row);
   }
   $("trace-rows").replaceChildren(...rows);
 }
@@ -366,15 +459,35 @@ function traceRow(n, guides, { D, multi }) {
   } else {
     name.append(d.el("span", "tw-pad"));
   }
-  const text = n.kind === "missing" ? "(Missing span " + n.name + ")" : n.name || n.id;
+  const isLog = n.kind === "log";
+  const msg = String(n.message || "");
+  const text = isLog ? msg.split("\n")[0] : n.kind === "missing" ? "(Missing span " + n.name + ")" : n.name || n.id;
+  if (isLog) {
+    row.classList.add("log");
+    name.append(d.el("span", "sev sev-" + d.severityClass(n.severity), n.severity || ""));
+  }
   const label = d.el("span", "tr-label", text);
-  label.title = text;
+  label.title = isLog ? msg : text;
   name.append(label);
   row.append(name);
 
   if (multi) row.append(d.el("div", "tr-svc", n.service || ""));
 
   const cell = d.el("div", "tr-bar");
+  if (isLog) {
+    const mark = d.el("span", "tmark");
+    mark.style.left = (Math.max(n.startMs || 0, 0) / D) * 100 + "%";
+    mark.title = (n.severity || "") + " · " + fmtMs(n.startMs || 0);
+    cell.append(mark);
+    row.append(cell);
+    row.addEventListener("click", () => selectNode(n.id, { scroll: false }));
+    return row;
+  }
+  for (const t of n.logTicks || []) {
+    const tick = d.el("span", "ttick");
+    tick.style.left = (Math.max(t, 0) / D) * 100 + "%";
+    cell.append(tick);
+  }
   const start = Math.max(n.startMs || 0, 0);
   const dur = Math.max(n.durationMs || 0, 0);
   const left = (start / D) * 100;
