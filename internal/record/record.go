@@ -23,7 +23,7 @@ type Record struct {
 	TimeInherited bool           // Time was not the record's own
 	Stream        string         // labels.schema, or the span's kind
 	Service       string         // service key; empty until the store fills it
-	Source        string         // SourceLog or SourceOtel; empty means SourceLog
+	Source        string         // SourceLog or SourceOtel; empty means SourceLog, so compare sources with Key().Source
 	Fields        map[string]any // canonical dotted path -> string | json.Number | bool | nil | []any
 	Raw           []byte         // the line as searched/shown; GitHub prefix stripped
 }

@@ -748,10 +748,6 @@ const groupedList = () => state.view === "heatmap" && heatTab === "grouped";
 // GROUPED_BY is the Grouped tab's fixed grouping.
 const GROUPED_BY = ["name", "service.name"];
 
-// listQuery is the request of the rows below: in the Heatmap view, the
-// active tab's list of the selected cell (or the whole heatmap); the Spans
-// tab longest first unless the user sorted. The Grouped tab's grouping and
-// metrics are its own and never enter state.
 // request is the body sent for q. Samples and Heatmap use none of the Table
 // and Graph settings, so they are left out: the server still checks each
 // metric's field, and under All kinds a field numeric in one kind but text in
@@ -762,6 +758,10 @@ function request(q) {
   return rest;
 }
 
+// listQuery is the request of the rows below: in the Heatmap view, the
+// active tab's list of the selected cell (or the whole heatmap); the Spans
+// tab longest first unless the user sorted. The Grouped tab's grouping and
+// metrics are its own and never enter state.
 function listQuery() {
   if (state.view !== "heatmap") return request(Object.assign({}, state));
   const cell = heatCell();
@@ -849,7 +849,8 @@ function wireHeatList() {
   // Capture, so this sees a menu still open before its own Esc closes it.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !heatSel || state.view !== "heatmap") return;
-    // An open menu, pane or dialog takes the Esc for itself.
+    // An open menu, pane or dialog takes the Esc for itself. Capture runs
+    // first, so a new menu or pane must be added to this check.
     if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
     if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     clearHeatSelection();
