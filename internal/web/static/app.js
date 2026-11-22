@@ -73,7 +73,36 @@ function clearError() {
   $("error").textContent = "";
 }
 
+// The page shows a wait cursor while a server call is out (stream, service
+// and view changes, queries, traces). It appears after BUSY_DELAY_MS so a
+// quick call doesn't flicker, and clears only after the caller has drawn the
+// answer: the count drops in a later task, behind the caller's continuation.
+const BUSY_DELAY_MS = 150;
+let busyCount = 0;
+let busyTimer = 0;
+
+function busyStart() {
+  if (busyCount++ === 0) busyTimer = setTimeout(() => document.documentElement.classList.add("busy"), BUSY_DELAY_MS);
+}
+
+function busyEnd() {
+  setTimeout(() => {
+    if (--busyCount > 0) return;
+    clearTimeout(busyTimer);
+    document.documentElement.classList.remove("busy");
+  }, 0);
+}
+
 async function api(method, path, body) {
+  busyStart();
+  try {
+    return await apiCall(method, path, body);
+  } finally {
+    busyEnd();
+  }
+}
+
+async function apiCall(method, path, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";

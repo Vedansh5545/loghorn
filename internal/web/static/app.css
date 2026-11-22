@@ -87,6 +87,8 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* A server call is out: every element, buttons included, shows the wait cursor. */
+html.busy, html.busy * { cursor: wait !important; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); }
 body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 0 16px 16px; }
 .top { display: flex; align-items: baseline; gap: 12px; }
