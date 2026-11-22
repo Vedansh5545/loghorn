@@ -74,6 +74,18 @@ The sidebar uses Scuba's layout: labels right-aligned in a fixed column, so ever
 | Comparison Filters | A second filter set drawn against the first (A vs B) | **todo** | E.g. `status >= 500` vs everything, or one route vs another. Shares the series/delta plumbing with Compare. |
 | Remove Comparison | Drops the B side | **todo** | Comes with the item above. |
 
+## Trace waterfall
+
+A trace shown as a tree of timed bars. Design and the deferred list (flame graph, span links, auto-refresh and the rest) are in `docs/superpowers/specs/2026-11-21-trace-waterfall-design.md`.
+
+- **Opening.** Click a `trace_id` or `span_id` cell in the table, or visit a deep link: `/?q=<json>&trace=<id>&span=<id>`. `trace` alone opens the trace; `span` alone finds the trace that holds that span, and selects it. Both spellings of a Cloud Trace ID (`projects/<p>/traces/<id>`) and upper-case hex are accepted. Close (or Esc) goes back to the table.
+- **Tree.** Spans, the log lines that carry the trace ID, and a placeholder for each parent that is not in the data. Bars are coloured by `span.type` (db, http, rpc, messaging, gen_ai, other). Click a row for its record below the grid.
+- **Logs toggle.** `Logs: in tree` / `Logs: hidden`; remembered in the browser.
+- **Find.** Matches span names and, with logs shown, log messages; Enter and Shift+Enter step through them.
+- **Serial runs.** Three or more sibling database queries that ran one after another get a chip, `6 serial queries, 48 ms`, and a faint band over their rows.
+- **Critical path.** The `Critical path` button dims the bars that are not on it. Off by default.
+- **Self time.** The table below the grid lists each span name with its count, total time, self time (time not spent in a child) and self time as a share of the trace. Click a header to sort, again to reverse; click a name to find it in the tree.
+
 ## Beyond the screenshot
 
 These loghorn features have no counterpart in the picture. They're here so the list is complete.

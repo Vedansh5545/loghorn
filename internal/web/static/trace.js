@@ -14,6 +14,7 @@ const tv = {
   collapsed: new Set(), // node ids
   logs: "tree",
   critical: false,
+  sort: { col: -1, key: "", dir: 1 }, // self-time table; key "" is the order served
   find: { q: "", matches: [], i: -1, cur: null }, // cur: the matched node id last gone to
 };
 
@@ -138,6 +139,10 @@ export function initTrace(deps) {
     b.addEventListener("mousedown", (e) => e.preventDefault());
     b.addEventListener("click", () => stepMatch(dir));
   }
+  $("trace-critical").addEventListener("click", () => {
+    tv.critical = !tv.critical;
+    renderTrace();
+  });
   $("trace-collapse").addEventListener("click", () => {
     tv.collapsed = new Set();
     for (const n of tv.data ? tv.data.nodes : []) if (shownKids(n).length) tv.collapsed.add(n.id);
@@ -253,6 +258,7 @@ function hideView() {
 
 function setData(data) {
   tv.data = data;
+  tv.sort = { col: -1, key: "", dir: 1 };
   byId = new Map();
   kidsOf = new Map();
   for (const n of data.nodes || []) {
@@ -352,8 +358,16 @@ function renderTrace() {
   const data = tv.data;
   if (!data) return;
   refreshFind();
+  $("trace").classList.toggle("critical-on", tv.critical);
+  $("trace-critical").setAttribute("aria-pressed", tv.critical ? "true" : "false");
   $("trace-logs").textContent = tv.logs === "tree" ? "Logs: in tree" : "Logs: hidden";
   const matched = new Set(tv.find.matches);
+  const runOf = new Map(); // span id -> true, first span id -> its run
+  const runFirst = new Map();
+  for (const r of data.serialRuns || []) {
+    runFirst.set(r.first, r);
+    for (const id of r.spans || []) runOf.set(id, r);
+  }
   const D = Math.max(data.durationMs || 0, 0.001);
   const services = data.services || [];
   const multi = services.length > 1;
@@ -425,21 +439,94 @@ function renderTrace() {
     for (let k = 1; k < n.depth; k++) guides.push(lineAt[k] ? "v" : "");
     if (n.depth > 0) guides.push(last.has(n.id) ? "end" : "tee");
     lineAt[n.depth] = !last.has(n.id);
-    const row = traceRow(n, guides, { D, multi });
+    const row = traceRow(n, guides, { D, multi, run: runFirst.get(n.id), inRun: runOf.has(n.id) });
     if (matched.has(n.id)) row.classList.add("match");
     rows.push(row);
   }
   $("trace-rows").replaceChildren(...rows);
+  renderSelfTable();
+}
+
+// renderSelfTable draws the per-name self-time table below the detail box.
+function renderSelfTable() {
+  const box = $("trace-self");
+  const data = tv.data;
+  box.replaceChildren();
+  const rows = (data && data.selfTime) || [];
+  if (!rows.length) return;
+  const D = Math.max(data.durationMs || 0, 0.001);
+  const cols = [
+    ["name", "name", false],
+    ["count", "count", true],
+    ["totalMs", "total", true],
+    ["selfMs", "self", true],
+    ["selfMs", "self %", true],
+  ];
+  const sorted = rows.slice();
+  const { key, dir } = tv.sort;
+  if (key) {
+    sorted.sort((a, b) => {
+      const x = a[key], y = b[key];
+      return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+    });
+  }
+  const table = d.el("table", "self-table");
+  const tr = d.el("tr");
+  cols.forEach(([k, label, num], i) => {
+    const th = d.el("th", num ? "num" : "", label);
+    th.tabIndex = 0;
+    if (tv.sort.col === i) th.append(d.el("span", "sort-ind", dir > 0 ? " ▲" : " ▼"));
+    const go = () => {
+      const same = tv.sort.col === i;
+      tv.sort = { col: i, key: k, dir: same ? -tv.sort.dir : k === "name" ? 1 : -1 };
+      renderSelfTable();
+    };
+    th.addEventListener("click", go);
+    th.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") go();
+    });
+    tr.append(th);
+  });
+  const head = d.el("thead");
+  head.append(tr);
+  table.append(head);
+  const body = d.el("tbody");
+  for (const r of sorted) {
+    const row = d.el("tr");
+    const name = d.el("td", "st-name", r.name);
+    name.title = "find " + r.name;
+    name.addEventListener("click", () => {
+      const f = $("trace-find");
+      f.value = r.name;
+      tv.find.q = r.name;
+      tv.find.cur = null;
+      refreshFind();
+      if (tv.find.matches.length) goToMatch(0);
+      else renderTrace();
+    });
+    row.append(
+      name,
+      d.el("td", "num", String(r.count)),
+      d.el("td", "num", fmtMs(r.totalMs)),
+      d.el("td", "num", fmtMs(r.selfMs)),
+      d.el("td", "num", ((r.selfMs / D) * 100).toFixed(1) + "%"),
+    );
+    body.append(row);
+  }
+  table.append(body);
+  box.append(table);
 }
 
 // traceRow is one grid row of node n. guides are the connector cells, one per
 // depth level below the root: "v" (a line), "" (blank), and last "tee" or
 // "end" for the node's own elbow.
-function traceRow(n, guides, { D, multi }) {
+function traceRow(n, guides, { D, multi, run, inRun }) {
   const row = d.el("div", "trace-row");
   row.dataset.id = n.id;
   if (n.kind === "missing") row.classList.add("missing");
   if (n.id === tv.selected) row.classList.add("selected");
+  if (inRun) row.classList.add("serial");
+  if (n.critical) row.classList.add("crit");
 
   const name = d.el("div", "tr-name");
   for (const g of guides) name.append(d.el("span", g ? "tg " + g : "tg"));
@@ -469,6 +556,11 @@ function traceRow(n, guides, { D, multi }) {
   const label = d.el("span", "tr-label", text);
   label.title = isLog ? msg : text;
   name.append(label);
+  if (run) {
+    const chip = d.el("span", "serial-chip", run.count + " serial queries, " + fmtMs(run.wallMs));
+    chip.title = "these " + run.count + " queries ran one after another, not at the same time";
+    name.append(chip);
+  }
   row.append(name);
 
   if (multi) row.append(d.el("div", "tr-svc", n.service || ""));

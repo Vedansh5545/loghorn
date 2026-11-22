@@ -365,3 +365,14 @@ td .muted { color: var(--muted); }
 .tmark { position: absolute; top: 6px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--muted); }
 .ttick { position: absolute; top: 2px; bottom: 2px; width: 1px; background: var(--fg); opacity: 0.55; pointer-events: none; }
 .trace-row.match .tr-label { background: var(--match-bg, rgba(255, 213, 0, 0.35)); border-radius: 2px; }
+.trace-row.serial { background: rgba(127, 127, 127, 0.12); }
+.serial-chip { align-self: center; flex: none; margin-left: 8px; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+#trace-critical[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.critical-on .trace-row:not(.crit) .tbar { opacity: 0.25; }
+.trace-self { margin-top: 12px; }
+.self-table { border-collapse: collapse; font-size: 12.5px; }
+.self-table th, .self-table td { padding: 2px 12px; text-align: left; }
+.self-table th { cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }
+.self-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.self-table .st-name { cursor: pointer; }
+.self-table .st-name:hover { color: var(--accent); }
