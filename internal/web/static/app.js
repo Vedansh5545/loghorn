@@ -752,8 +752,18 @@ const GROUPED_BY = ["name", "service.name"];
 // active tab's list of the selected cell (or the whole heatmap); the Spans
 // tab longest first unless the user sorted. The Grouped tab's grouping and
 // metrics are its own and never enter state.
+// request is the body sent for q. Samples and Heatmap use none of the Table
+// and Graph settings, so they are left out: the server still checks each
+// metric's field, and under All kinds a field numeric in one kind but text in
+// another is text, so a leftover metric would fail the query.
+function request(q) {
+  if (q.view !== "samples" && q.view !== "heatmap") return q;
+  const { groupBy, aggregates, plot, order, top, ...rest } = q;
+  return rest;
+}
+
 function listQuery() {
-  if (state.view !== "heatmap") return Object.assign({}, state);
+  if (state.view !== "heatmap") return request(Object.assign({}, state));
   const cell = heatCell();
   if (heatTab === "grouped") {
     return Object.assign({}, state, {
@@ -766,7 +776,7 @@ function listQuery() {
       cell,
     });
   }
-  return Object.assign({}, state, { view: "samples", sort: listSort(), cell });
+  return request(Object.assign({}, state, { view: "samples", sort: listSort(), cell }));
 }
 
 // loadHeatList runs the active tab's list query. A newer list load (another
@@ -885,7 +895,7 @@ async function runHeatmapQuery(mine) {
   listSeq++; // a list answer on its way belongs to the old heatmap
   moreSeq++;
   try {
-    const r = await api("POST", "/api/query", state);
+    const r = await api("POST", "/api/query", request(state));
     if (!live()) return;
     renderHeatmapResult(r, key, keep);
   } catch (err) {
@@ -1965,7 +1975,7 @@ export async function runQuery() {
   const mine = ++querySeq;
   if (state.view === "heatmap") return runHeatmapQuery(mine);
   try {
-    const result = await api("POST", "/api/query", state);
+    const result = await api("POST", "/api/query", request(state));
     if (mine !== querySeq) return; // a newer query superseded this one
     clearError();
     renderResult(result);

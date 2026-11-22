@@ -316,6 +316,7 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		// stream's own default columns, or the table loses its headings.
 		paths = s.Columns
 	}
+	res.Columns = []Column{}
 	fields := make([]schema.Field, len(paths))
 	for i, p := range paths {
 		f, ok := s.Field(p)

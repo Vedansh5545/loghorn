@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -528,5 +529,18 @@ func TestRunAllStreams(t *testing.T) {
 	res = run(t, recs, sch(), Query{Source: "log", Stream: "*"})
 	if res.Matched != 1 {
 		t.Errorf("log * matched %d, want 1", res.Matched)
+	}
+}
+
+// An empty stream has no columns to show; the page maps over them, so they
+// must encode as [], never null.
+func TestRunEmptySamplesColumnsNotNull(t *testing.T) {
+	res := run(t, nil, schema.Schema{}, Query{Stream: "*", Source: "otel", Range: Range{From: "all"}})
+	b, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"columns":[]`) {
+		t.Fatalf("columns not []: %s", b)
 	}
 }
