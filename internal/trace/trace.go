@@ -124,7 +124,7 @@ type item struct {
 }
 
 // Build returns the tree of traceID, or false when no record carries it.
-// limit applies separately to spans and logs, lowest Seq first.
+// limit applies separately to spans, logs and span events, lowest Seq first.
 func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 	traceID = record.NormalizeTraceID(traceID)
 	if traceID == "" {

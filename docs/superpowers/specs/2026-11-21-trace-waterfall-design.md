@@ -98,7 +98,7 @@ span, both normalised. For span records it returns the span's own IDs.
   `duration_ms`; an end before the start is clamped to the start. All
   offsets are milliseconds (float) from the trace start, which is the earliest
   span start or log time; the trace end is the latest span end or log time.
-- **Limit:** at most 10 000 spans and 10 000 logs (lowest `Seq` first); over
+- **Limit:** at most 10 000 spans, 10 000 logs and 10 000 span events (lowest `Seq` first); over
   that, `truncated: true` and the page says so.
 
 ### D5. Analytics
@@ -152,7 +152,7 @@ span, both normalised. For span records it returns the span's own IDs.
   the right fifth of the axis. Placeholder bars are grey and hatched.
 - **Logs in the tree:** log rows show a severity badge and the message (first
   line, ellipsis), a small diamond at their time on the axis, and a tick on
-  the parent span's bar at the log's time. `Logs: hidden` removes the log rows
+  the parent span's bar at the log's time. `Logs & events: hidden` removes the log rows
   but **keeps the ticks**, which is the "markers only" mode — there is no
   separate third mode. The choice is remembered in `localStorage`
   (`loghorn.traceLogs`, read in try/catch).
@@ -195,10 +195,10 @@ span, both normalised. For span records it returns the span's own IDs.
 | Trace diff / compare | deferred | Needs two-trace alignment; separate feature. |
 | Service dependency graph view | discarded for now | Nothing to show for a single service. |
 | Share button | discarded | The deep link in the URL is the share. |
-| Log display "markers only" as a third mode | folded in | `Logs: hidden` keeps the bar ticks, which is markers-only. |
+| Log display "markers only" as a third mode | folded in | `Logs & events: hidden` keeps the bar ticks, which is markers-only. |
 | Critical-path segments within a span | deferred | Whole-span flags answer "which spans matter" in v1. |
 | Keyboard tree navigation (↑ ↓ ← →) | deferred | Mouse and find cover v1; add with accessibility pass. |
-| Virtualised rendering for very large traces | deferred | v1 renders every row and caps at 10 000 spans + 10 000 logs. |
+| Virtualised rendering for very large traces | deferred | v1 renders every row and caps at 10 000 spans + 10 000 logs + 10 000 events. |
 | Decimal (Cloud Trace v1) span IDs | deferred | Not seen in current data. |
 | Resizable name column, zoom/brush on the axis | deferred | Fixed proportions first; revisit with real traces. |
 | Index of records by trace ID | deferred | One linear scan of the in-memory snapshot per open is fast enough for a local tool. |
