@@ -61,8 +61,10 @@
           <option value="1h">last 1h</option>
           <option value="24h">last 24h</option>
           <option value="all">all</option>
+          <option value="ago">relative…</option>
           <option value="custom">custom…</option>
         </select>
+        <input id="from-ago" type="text" placeholder="e.g. 1d, 24m, 3.7h" aria-label="time ago" title="how far back: a number and a unit of ms, s, m, h, d or w; Enter to apply" spellcheck="false" autocomplete="off" hidden>
         <input id="from-custom" type="datetime-local" step="0.001" aria-label="from time" hidden>
       </div>
     </div>
@@ -136,7 +138,7 @@
     <thead><tr id="head"></tr></thead>
     <tbody id="body"></tbody>
   </table>
-  <div id="more" class="more" hidden><button id="more-btn" type="button"></button></div>
+  <div id="more" class="more" hidden><button id="more-first" type="button">◀ First</button><button id="more-btn" type="button"></button><span id="more-range" class="muted"></span></div>
   <div id="graph" hidden></div>
 </main>
 <footer id="footer" class="footer">

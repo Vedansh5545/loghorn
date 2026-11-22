@@ -4,6 +4,7 @@ package query
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -284,6 +285,55 @@ func (q Query) validateExplore(s schema.Schema) error {
 	return nil
 }
 
+// agoUnits are the units ParseAgo accepts, longest first so "ms" wins over "m".
+var agoUnits = []struct {
+	name string
+	d    time.Duration
+}{
+	{"ms", time.Millisecond}, {"s", time.Second}, {"m", time.Minute},
+	{"h", time.Hour}, {"d", 24 * time.Hour}, {"w", 7 * 24 * time.Hour},
+}
+
+// ParseAgo reads a positive relative time such as "24m", "3.7h", "1d" or
+// "1d12h": one or more decimal numbers, each with a unit of ms, s, m, h, d
+// (24 h) or w (7 d), case-insensitive.
+func ParseAgo(s string) (time.Duration, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return 0, false
+	}
+	var total float64
+	for s != "" {
+		i := 0
+		dot := false
+		for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.' && !dot) {
+			dot = dot || s[i] == '.'
+			i++
+		}
+		n, err := strconv.ParseFloat(s[:i], 64)
+		if i == 0 || err != nil {
+			return 0, false
+		}
+		s = s[i:]
+		unit := time.Duration(0)
+		for _, u := range agoUnits {
+			if strings.HasPrefix(s, u.name) {
+				unit = u.d
+				s = s[len(u.name):]
+				break
+			}
+		}
+		if unit == 0 {
+			return 0, false
+		}
+		total += n * float64(unit)
+	}
+	if total <= 0 || total > float64(math.MaxInt64) {
+		return 0, false
+	}
+	return time.Duration(total), true
+}
+
 // Resolve turns the range into bounds. A zero from is unbounded; a zero to is
 // unbounded above (the window ends "now", and records never arrive from the
 // future on purpose, so a clock-skewed one is kept rather than hidden).
@@ -293,12 +343,12 @@ func (r Range) Resolve(now, runStart time.Time) (from, to time.Time, err error) 
 	case "this-run":
 		from = runStart
 	default:
-		if d, derr := time.ParseDuration(f); derr == nil {
+		if d, ok := ParseAgo(f); ok {
 			from = now.Add(-d)
 		} else if t, terr := time.Parse(time.RFC3339Nano, f); terr == nil {
 			from = t
 		} else {
-			return from, to, fmt.Errorf("range from %q: want this-run, all, a duration or RFC 3339", r.From)
+			return from, to, fmt.Errorf("range from %q: want this-run, all, a relative time such as 1d or 3.7h, or RFC 3339", r.From)
 		}
 	}
 	switch t := strings.TrimSpace(r.To); t {

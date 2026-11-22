@@ -416,12 +416,28 @@ function localInputValue(iso) {
     pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) + "." + pad(d.getMilliseconds(), 3);
 }
 
+// AGO matches a relative From such as 24m, 3.7h, 1d or 1d12h, as the
+// server's query.ParseAgo reads it.
+const AGO = /^\s*(?:(?:\d+\.?\d*|\.\d+)(?:ms|s|m|h|d|w))+\s*$/i;
+
+function isAgo(v) {
+  return typeof v === "string" && AGO.test(v) && /[1-9]/.test(v);
+}
+
 function syncRangeControl(which, value, presets) {
   const sel = $(which);
   const custom = $(which + "-custom");
+  const ago = $(which + "-ago");
+  if (ago) ago.hidden = true;
   if (presets.includes(value)) {
     sel.value = value;
     custom.hidden = true;
+  } else if (ago && isAgo(value)) {
+    sel.value = "ago";
+    custom.hidden = true;
+    ago.hidden = false;
+    ago.value = value;
+    ago.classList.remove("bad-input");
   } else {
     sel.value = "custom";
     custom.hidden = false;
@@ -444,6 +460,16 @@ function syncBar() {
 function rangeChanged(which) {
   const sel = $(which);
   const custom = $(which + "-custom");
+  const ago = $(which + "-ago");
+  if (ago) ago.hidden = sel.value !== "ago";
+  if (sel.value === "ago") {
+    custom.hidden = true;
+    if (!ago.value) ago.value = "1d";
+    ago.focus();
+    ago.select();
+    agoChanged(which);
+    return;
+  }
   if (sel.value !== "custom") {
     custom.hidden = true;
     state.range[which] = sel.value;
@@ -458,6 +484,20 @@ function rangeChanged(which) {
     custom.value = localInputValue(seed);
   }
   customChanged(which);
+}
+
+// agoChanged applies a relative From typed in its box; a value the server
+// would refuse is marked and not run.
+function agoChanged(which) {
+  const box = $(which + "-ago");
+  const v = box.value.trim().toLowerCase();
+  const ok = isAgo(v);
+  box.classList.toggle("bad-input", !ok);
+  if (!ok || state.range[which] === v) return;
+  box.value = v;
+  state.range[which] = v;
+  reloadKinds();
+  runQuery();
 }
 
 function customChanged(which) {
@@ -492,6 +532,8 @@ function wireBar() {
   $("from").addEventListener("change", () => rangeChanged("from"));
   $("to").addEventListener("change", () => rangeChanged("to"));
   $("from-custom").addEventListener("change", () => customChanged("from"));
+  $("from-ago").addEventListener("change", () => agoChanged("from"));
+  $("from-ago").addEventListener("input", () => $("from-ago").classList.toggle("bad-input", !!$("from-ago").value.trim() && !isAgo($("from-ago").value)));
   $("to-custom").addEventListener("change", () => customChanged("to"));
   $("search").addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -1134,46 +1176,49 @@ function appendRows(rows, columns) {
 
 // renderSamplesFooter shows the counts, and the Load next button while the
 // sorted matches go on past the rows shown.
+// renderSamplesFooter shows the counts, and the batch buttons: Load next
+// while the sorted matches go on past this batch, First after the first.
 function renderSamplesFooter(result) {
+  const off = result.offset || 0;
   const shown = result.rows.length;
-  let foot = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
-    state.stream + " records match · showing " + shown.toLocaleString();
-  $("footer-text").textContent = foot;
+  const span = shown ? (off + 1).toLocaleString() + "–" + (off + shown).toLocaleString() : "none";
+  $("footer-text").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
+    state.stream + " records match · showing " + (off ? span : shown.toLocaleString());
   $("limit").value = String(state.limit || DEFAULT_LIMIT);
-  const more = $("more");
-  more.hidden = !result.truncated;
+  $("more").hidden = !result.truncated && !off;
+  $("more-first").hidden = !off;
+  $("more-btn").hidden = !result.truncated;
   if (result.truncated) {
-    const next = Math.min(state.limit || DEFAULT_LIMIT, result.matched - shown);
-    $("more-btn").textContent = "Load next " + next.toLocaleString() + " · " + shown.toLocaleString() + " of " + result.matched.toLocaleString() + " shown";
+    const next = Math.min(state.limit || DEFAULT_LIMIT, result.matched - off - shown);
+    $("more-btn").textContent = "Load next " + next.toLocaleString() + " ▶";
   }
+  $("more-range").textContent = span + " of " + result.matched.toLocaleString();
 }
 
-// loadMore fetches the batch after the rows shown, with the shown columns,
-// and appends it. A new query (or a newer Load next) drops its answer.
+// loadBatch replaces the rows with the batch at offset (the next one, or
+// the first again), keeping the shown columns. A new query, or a newer
+// batch, drops its answer.
 let moreSeq = 0;
 
-async function loadMore() {
+async function loadBatch(next) {
   const base = lastResult;
-  if (!base || base.view && base.view !== "samples") return;
+  if (!base || (base.view && base.view !== "samples")) return;
+  const offset = next ? (base.offset || 0) + base.rows.length : 0;
   const q0 = querySeq;
   const mine = ++moreSeq;
-  const btn = $("more-btn");
-  btn.disabled = true;
+  const buttons = [$("more-btn"), $("more-first")];
+  for (const b of buttons) b.disabled = true;
   try {
     const columns = base.columns.map((c) => c.path);
-    const res = await api("POST", "/api/query", Object.assign({}, state, { columns, offset: base.rows.length }));
+    const res = await api("POST", "/api/query", Object.assign({}, state, { columns, offset }));
     if (q0 !== querySeq || mine !== moreSeq || lastResult !== base) return;
-    appendRows(res.rows, base.columns);
-    base.rows = base.rows.concat(res.rows);
-    base.truncated = res.truncated;
-    base.matched = res.matched;
-    base.streamTotal = res.streamTotal;
-    renderSamplesFooter(base);
-    applyWidths();
+    res.offset = offset;
+    render(res);
+    $("results").scrollTop = 0;
   } catch (err) {
     if (q0 === querySeq && mine === moreSeq) showError(err.message);
   } finally {
-    btn.disabled = false;
+    for (const b of buttons) b.disabled = false;
   }
 }
 
@@ -1193,7 +1238,8 @@ function wireLimit() {
     state.limit = n === DEFAULT_LIMIT ? 0 : n;
     runQuery();
   });
-  $("more-btn").addEventListener("click", loadMore);
+  $("more-btn").addEventListener("click", () => loadBatch(true));
+  $("more-first").addEventListener("click", () => loadBatch(false));
 }
 
 // VAGUE_TAILS are last path parts too generic to show alone: the part before

@@ -175,6 +175,37 @@ func TestRangeRelative(t *testing.T) {
 	eq(t, seqs(run(t, recs, s, Query{Range: Range{From: "15m", To: to}})), []int{3, 2})
 }
 
+func TestParseAgo(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"24m":   24 * time.Minute,
+		"3.7h":  3*time.Hour + 42*time.Minute,
+		"1d":    24 * time.Hour,
+		"1.5d":  36 * time.Hour,
+		"2w":    14 * 24 * time.Hour,
+		"1d12h": 36 * time.Hour,
+		" 90s ": 90 * time.Second,
+		"250ms": 250 * time.Millisecond,
+		"1h30m": 90 * time.Minute,
+		".5h":   30 * time.Minute,
+		"2D":    48 * time.Hour,
+	} {
+		got, ok := ParseAgo(in)
+		if !ok || got != want {
+			t.Errorf("ParseAgo(%q) = %v, %v; want %v", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "d", "1", "-1h", "1x", "1d-2h", "now", "1.2.3h", "0h"} {
+		if got, ok := ParseAgo(in); ok {
+			t.Errorf("ParseAgo(%q) = %v, want rejected", in, got)
+		}
+	}
+	// Range uses it.
+	from, _, err := Range{From: "1d"}.Resolve(t0, t0)
+	if err != nil || !from.Equal(t0.Add(-24*time.Hour)) {
+		t.Errorf("Resolve 1d = %v, %v", from, err)
+	}
+}
+
 func TestRangeZeroTimeOnlyUnbounded(t *testing.T) {
 	s := sch(schema.Field{Path: "x", Type: schema.TString})
 	recs := []record.Record{rec(1, time.Time{}, ""), rec(2, t0, "")}
