@@ -288,6 +288,11 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	if len(paths) == 0 {
 		paths = intervalColumns(matched, s)
 	}
+	if len(paths) == 0 {
+		// Nothing matched, so no field is present in the interval: keep the
+		// stream's own default columns, or the table loses its headings.
+		paths = s.Columns
+	}
 	fields := make([]schema.Field, len(paths))
 	for i, p := range paths {
 		f, ok := s.Field(p)

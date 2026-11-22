@@ -395,3 +395,21 @@ func TestRunSQLTokens(t *testing.T) {
 		t.Fatalf("raw cell has tokens %+v", n.SQL)
 	}
 }
+
+// A query that matches nothing still has the stream's default columns, so
+// the table keeps its headings.
+func TestRunNoMatchKeepsDefaultColumns(t *testing.T) {
+	recs := []record.Record{rec(1, t0.Add(-time.Minute), "x", "op", "SELECT", "msg", "hi")}
+	s := sch(schema.Field{Path: "op", Type: schema.TString}, schema.Field{Path: "msg", Type: schema.TString})
+	res := run(t, recs, s, Query{Stream: "a", Filters: []Filter{{Field: "op", Op: "empty"}}})
+	if len(res.Rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(res.Rows))
+	}
+	var got []string
+	for _, c := range res.Columns {
+		got = append(got, c.Path)
+	}
+	if fmt.Sprint(got) != fmt.Sprint(s.Columns) {
+		t.Fatalf("columns = %v, want the stream's %v", got, s.Columns)
+	}
+}
