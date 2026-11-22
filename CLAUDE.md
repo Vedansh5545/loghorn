@@ -56,6 +56,15 @@ after launch leaves it running.
 - Tests and demos must not touch the real `~/.config/loghorn`. Point `HOME`
   at a temp dir (`svcconf` puts config under `$HOME/.config/loghorn` when
   `XDG_CONFIG_HOME` is unset).
+- A loader's success path calls `clearError` (`runQuery`, `openTrace`,
+  `openAggregate`), which wipes a banner another loader just showed. Run a
+  deep-link load after the table query, as `restoreTraceFromURL` does.
+- In Spans mode a stream is a span kind (`http.server`, a span name or type;
+  see `/api/kinds`), not `app`. A check that leaves the stream on a log
+  stream sees an empty table.
+- A browser check of a view with no button yet can call it directly:
+  `await import('/static/agg.js')` (or `trace.js`) in Playwright's evaluate
+  shares the page's module instance.
 
 ## Go modules
 
