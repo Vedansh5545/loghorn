@@ -994,3 +994,19 @@ func TestAggregateAPIRange(t *testing.T) {
 		t.Errorf("traces %d from %q", got.Traces, got.From)
 	}
 }
+
+func TestServerQueryAllKinds(t *testing.T) {
+	f := newFixture(t, "../../testdata/web/aggregate.jsonl")
+	body := `{"stream":"*","source":"otel","service":"*","view":"table","range":{"from":"all"},"groupBy":["name"],"aggregates":[{"op":"p90","field":"duration_ms"},{"op":"error_rate"}]}`
+	code, b := f.do(t, http.MethodPost, "/api/query", body, "")
+	if code != 200 {
+		t.Fatalf("query = %d %s", code, b)
+	}
+	var res struct {
+		Groups int
+		Rows   []json.RawMessage
+	}
+	if err := json.Unmarshal(b, &res); err != nil || res.Groups < 2 || len(res.Rows) != res.Groups {
+		t.Fatalf("result = %s (%v)", b, err)
+	}
+}

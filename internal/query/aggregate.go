@@ -12,7 +12,7 @@ import (
 )
 
 // AggregateOps lists the metric operators; count is implicit and always first.
-var AggregateOps = []string{"sum", "avg", "min", "max", "p50", "p95", "p99"}
+var AggregateOps = []string{"sum", "avg", "min", "max", "p50", "p90", "p95", "p99", "error_rate"}
 
 // Buckets lists the valid time bucket widths for the graph view.
 var Buckets = []string{"auto", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "1h", "6h", "1d"}
@@ -78,6 +78,9 @@ func metricColumn(a Aggregate, s schema.Schema) Column {
 	if a.Op == "count" {
 		return Column{Path: "count", Label: "count", Type: schema.TInt, Visualizer: "number"}
 	}
+	if a.Op == "error_rate" {
+		return Column{Path: "error_rate", Label: "error rate", Type: schema.TFloat, Visualizer: "number"}
+	}
 	f := lookupField(s, a.Field)
 	name := f.Label
 	if name == "" {
@@ -113,9 +116,42 @@ func percentile(sorted []float64, p float64) float64 {
 	return sorted[i]
 }
 
+// metricField is the schema field aggregate a reads; error_rate reads none.
+func metricField(s schema.Schema, a Aggregate) schema.Field {
+	if a.Op == "error_rate" {
+		return schema.Field{}
+	}
+	return lookupField(s, a.Field)
+}
+
+// isErrorSeverity reports whether v names a severity of ERROR or higher.
+func isErrorSeverity(v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "ERROR", "CRITICAL", "ALERT", "EMERGENCY", "FATAL":
+		return true
+	}
+	return false
+}
+
 // metricValue computes aggregate a over recs. It reports false when no record
 // has a usable value, or the result is not finite.
 func metricValue(recs []*record.Record, a Aggregate, f schema.Field) (float64, bool) {
+	if a.Op == "error_rate" {
+		if len(recs) == 0 {
+			return 0, false
+		}
+		n := 0
+		for _, r := range recs {
+			if isErrorSeverity(r.Fields["severity"]) {
+				n++
+			}
+		}
+		return float64(n) / float64(len(recs)), true
+	}
 	vals := make([]float64, 0, len(recs))
 	for _, r := range recs {
 		v := schema.Convert(r.Fields[f.Path], f)
@@ -153,7 +189,7 @@ func metricValue(recs []*record.Record, a Aggregate, f schema.Field) (float64, b
 		for _, x := range vals {
 			out = math.Max(out, x)
 		}
-	case "p50", "p95", "p99":
+	case "p50", "p90", "p95", "p99":
 		sort.Float64s(vals)
 		p, _ := strconv.ParseFloat(a.Op[1:], 64)
 		out = percentile(vals, p)
@@ -256,7 +292,7 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 		cells = append(cells, Cell{V: int64(len(g.recs))})
 		for _, a := range q.Aggregates {
 			col := metricColumn(a, s)
-			v, ok := metricValue(g.recs, a, lookupField(s, a.Field))
+			v, ok := metricValue(g.recs, a, metricField(s, a))
 			cells = append(cells, metricCell(v, ok, col.Type))
 		}
 		res.Rows = append(res.Rows, Row{Cells: cells})
@@ -280,7 +316,7 @@ func rankGroups[G any](groups []G, of func(G) ([]*record.Record, string), o *Ord
 	}
 	agg := Aggregate{Op: by.Op, Field: by.Field}
 	var f schema.Field
-	if by.Op != "count" {
+	if by.Op != "count" && by.Op != "error_rate" {
 		f = lookupField(s, by.Field)
 	}
 	rs := make([]ranked, len(groups))

@@ -241,6 +241,12 @@ func (q Query) validateExplore(s schema.Schema) error {
 		if !inList(AggregateOps, a.Op) {
 			return fmt.Errorf("aggregate operator %q: want one of %s", a.Op, strings.Join(AggregateOps, ", "))
 		}
+		if a.Op == "error_rate" {
+			if a.Field != "" {
+				return fmt.Errorf("aggregate %q takes no field", a.Op)
+			}
+			continue
+		}
 		if a.Field == "" {
 			return fmt.Errorf("aggregate %q needs a field", a.Op)
 		}

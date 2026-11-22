@@ -215,3 +215,10 @@ func TestRecordKeyAndParseSource(t *testing.T) {
 		t.Errorf("ParseSource(x) = %q,%v", got, ok)
 	}
 }
+
+func TestSpanNamedStarGoesToSpanStream(t *testing.T) {
+	r, ok := NormalizeSpan([]byte(`{"trace_id":"a1000000000000000000000000000000","span_id":"a100000000000001","name":"*","kind":"internal","start":"2026-11-17T17:00:00.000Z","duration_ms":1,"attributes":{}}`))
+	if !ok || r.Stream != StreamSpan {
+		t.Errorf("stream = %q ok=%v, want %q", r.Stream, ok, StreamSpan)
+	}
+}

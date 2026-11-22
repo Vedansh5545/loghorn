@@ -222,7 +222,11 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	var matched []*record.Record
 	for i := range recs {
 		r := &recs[i]
-		if stream != "" && r.Key() != key {
+		if stream == record.AllStreams {
+			if r.Key().Source != src {
+				continue
+			}
+		} else if stream != "" && r.Key() != key {
 			continue
 		}
 		if q.Service != "" && q.Service != "*" && r.Service != q.Service {

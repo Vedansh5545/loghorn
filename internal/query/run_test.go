@@ -510,3 +510,23 @@ func TestRunSpanRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestRunAllStreams(t *testing.T) {
+	mk := func(seq int, src, stream string) record.Record {
+		r := rec(seq, t0, "x")
+		r.Source, r.Stream = src, stream
+		return r
+	}
+	recs := []record.Record{
+		mk(1, record.SourceOtel, "db"), mk(2, record.SourceOtel, "http"),
+		mk(3, record.SourceOtel, "GET /x"), mk(4, record.SourceLog, "log"),
+	}
+	res := run(t, recs, sch(), Query{Source: "otel", Stream: "*"})
+	if res.Matched != 3 || res.StreamTotal != 3 {
+		t.Errorf("otel * matched %d of %d, want 3 of 3", res.Matched, res.StreamTotal)
+	}
+	res = run(t, recs, sch(), Query{Source: "log", Stream: "*"})
+	if res.Matched != 1 {
+		t.Errorf("log * matched %d, want 1", res.Matched)
+	}
+}

@@ -170,7 +170,7 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 
 	var plotField schema.Field
 	if plot.Op != "count" {
-		plotField = lookupField(s, plot.Field)
+		plotField = metricField(s, plot)
 	}
 	build := func(label string, labels []string, other bool, recs []*record.Record) Series {
 		per := make([][]*record.Record, len(g.Starts))

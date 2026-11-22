@@ -117,7 +117,7 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 	key := record.StreamKey{Source: src, Name: stream}
 	accs := map[string]*acc{}
 	for i := range recs {
-		if !ok || recs[i].Key() != key {
+		if !ok || (stream != record.AllStreams && recs[i].Key() != key) || (stream == record.AllStreams && recs[i].Key().Source != src) {
 			continue
 		}
 		if service != "" && service != "*" && recs[i].Service != service {

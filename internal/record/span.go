@@ -25,6 +25,9 @@ const (
 	StreamSpan       = "span"
 )
 
+// AllStreams is the stream name that matches every stream of a source.
+const AllStreams = "*"
+
 // StreamKey identifies a stream: the same name under two sources is two streams.
 type StreamKey struct{ Source, Name string }
 
@@ -203,7 +206,7 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 	// An unclassified span is its own kind: the stream is its name.
 	stream := spanType
 	if stream == StreamSpan {
-		if name, _ := obj["name"].(string); name != "" {
+		if name, _ := obj["name"].(string); name != "" && name != AllStreams {
 			stream = name
 		}
 	}

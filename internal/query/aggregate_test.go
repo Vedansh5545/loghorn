@@ -128,10 +128,12 @@ func TestTablePercentileNearestRank(t *testing.T) {
 	s := sch(latF)
 	var aggs []Aggregate
 	for _, op := range AggregateOps {
-		aggs = append(aggs, Aggregate{Op: op, Field: "lat"})
+		if op != "error_rate" {
+			aggs = append(aggs, Aggregate{Op: op, Field: "lat"})
+		}
 	}
 	res := run(t, latRecs(), s, Query{View: "table", Aggregates: aggs})
-	want := map[string]float64{"sum(lat)": 55, "avg(lat)": 5.5, "min(lat)": 1, "max(lat)": 10, "p50(lat)": 5, "p95(lat)": 10, "p99(lat)": 10}
+	want := map[string]float64{"sum(lat)": 55, "avg(lat)": 5.5, "min(lat)": 1, "max(lat)": 10, "p50(lat)": 5, "p90(lat)": 9, "p95(lat)": 10, "p99(lat)": 10}
 	for i, c := range res.Columns {
 		if w, ok := want[c.Path]; ok {
 			if got := res.Rows[0].Cells[i].V; got != w {
@@ -191,5 +193,58 @@ func TestSamplesUnchangedWhenViewEmpty(t *testing.T) {
 	res := run(t, []record.Record{rec(1, t0, "x", "route", "a")}, sch(routeF), Query{})
 	if res.View != "samples" || len(res.Rows) != 1 || res.Rows[0].Seq != 1 {
 		t.Errorf("res = %+v", res)
+	}
+}
+
+func TestP90(t *testing.T) {
+	var recs []*record.Record
+	var vals []float64
+	for i := 1; i <= 10; i++ {
+		recs = append(recs, &record.Record{Fields: map[string]any{"lat": json.Number(fmt.Sprint(i))}})
+		vals = append(vals, float64(i))
+	}
+	got, ok := metricValue(recs, Aggregate{Op: "p90", Field: "lat"}, latF)
+	if !ok || got != percentile(vals, 90) {
+		t.Errorf("p90 = %v %v, want %v", got, ok, percentile(vals, 90))
+	}
+}
+
+func TestErrorRate(t *testing.T) {
+	mk := func(sev any) *record.Record {
+		f := map[string]any{}
+		if sev != nil {
+			f["severity"] = sev
+		}
+		return &record.Record{Fields: f}
+	}
+	recs := []*record.Record{mk("ERROR"), mk("error"), mk("INFO"), mk(nil)}
+	got, ok := metricValue(recs, Aggregate{Op: "error_rate"}, schema.Field{})
+	if !ok || got != 0.5 {
+		t.Errorf("error_rate = %v %v, want 0.5", got, ok)
+	}
+	if _, ok := metricValue(nil, Aggregate{Op: "error_rate"}, schema.Field{}); ok {
+		t.Error("empty group has a value")
+	}
+	c := metricColumn(Aggregate{Op: "error_rate"}, sch())
+	if c.Path != "error_rate" || c.Type != schema.TFloat {
+		t.Errorf("column = %+v", c)
+	}
+}
+
+func TestValidateErrorRate(t *testing.T) {
+	s := sch(routeF, latF)
+	er := Aggregate{Op: "error_rate"}
+	if err := (Query{Aggregates: []Aggregate{{Op: "error_rate", Field: "lat"}}}).Validate(s); err == nil {
+		t.Error("error_rate with a field: want error")
+	}
+	ok := Query{View: "table", Aggregates: []Aggregate{er}, Order: &Order{Op: "error_rate"}, Plot: &er}
+	if err := ok.Validate(s); err != nil {
+		t.Errorf("error_rate: %v", err)
+	}
+	if err := (Query{Aggregates: []Aggregate{{Op: "p90", Field: "route"}}}).Validate(s); err == nil {
+		t.Error("p90 on a string field: want error")
+	}
+	if err := (Query{Order: &Order{Op: "error_rate"}}).Validate(s); err == nil {
+		t.Error("order by error_rate without the aggregate: want error")
 	}
 }

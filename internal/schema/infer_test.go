@@ -255,3 +255,23 @@ func TestDefaultColumnsSpanAttributes(t *testing.T) {
 		t.Fatalf("columns=%v\nwant     %v", got, want)
 	}
 }
+
+func TestInferAllStreams(t *testing.T) {
+	recs := []record.Record{
+		{Source: record.SourceOtel, Stream: "db", Fields: map[string]any{"a": json.Number("1"), "mix": json.Number("1")}},
+		{Source: record.SourceOtel, Stream: "http", Fields: map[string]any{"b": "x", "mix": "s"}},
+		{Stream: "log", Fields: map[string]any{"c": "x"}},
+	}
+	s := Infer("", "otel", "*", recs)
+	for _, p := range []string{"a", "b"} {
+		if _, ok := s.Field(p); !ok {
+			t.Errorf("field %q missing", p)
+		}
+	}
+	if _, ok := s.Field("c"); ok {
+		t.Error("log field leaked into otel *")
+	}
+	if got := typeOf(t, s, "mix"); got != TString {
+		t.Errorf("mixed type = %v, want string", got)
+	}
+}
