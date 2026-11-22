@@ -3,8 +3,9 @@
 // reaches the DOM through textContent or attributes, never innerHTML. app.js
 // passes its helpers to initAggregate, so this module does not import app.js.
 
-import { GROUPS, cancelTrace, leafSteps, openTrace, plural, treeGuides, typeGroup } from "./trace.js";
+import { GROUPS, cancelTrace, leafSteps, openTrace, plural, traceLoading, treeGuides, typeGroup } from "./trace.js";
 import { copyTableBar } from "./copy.js";
+import { back, navState, syncNav } from "./nav.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,10 +26,6 @@ const av = {
 
 let kidsOf = new Map(); // node id -> child nodes, in order
 let restoreParams = null; // the page URL's {agg, aggsvc}, until restored
-
-// HISTORY_MARK is the history.state of an entry openAggregate pushed, so
-// Close can go Back to where the user came from instead of adding an entry.
-const HISTORY_MARK = { loghornAgg: 1 };
 
 const enc = encodeURIComponent;
 const isOpen = () => !$("agg").hidden && av.data !== null;
@@ -73,10 +70,13 @@ function urlWith(params) {
 }
 
 // writeURL pushes (push) or replaces the history entry with the view's URL.
+// The entry's state carries the view stack (see nav.js).
 function writeURL(push) {
   const url = urlWith(aggURLParams());
-  if (push) history.pushState(HISTORY_MARK, "", url);
-  else if (location.search !== url) history.replaceState(history.state, "", url);
+  const crumb = { kind: "agg", name: av.name, service: av.service };
+  if (push) history.pushState(navState(crumb, true), "", url);
+  else history.replaceState(navState(crumb, false), "", url);
+  syncNav();
 }
 
 export function initAggregate(deps) {
@@ -128,6 +128,13 @@ export function restoreAggregateFromURL() {
   openAggregate({ name: p.agg, service: p.aggsvc ?? d.getService() }, { push: false }).finally(() => {
     restoreParams = null;
   });
+}
+
+// aggRangeChanged aggregates the open view again over the page's new range;
+// the view follows the sidebar's From and To. A trace being opened from the
+// view wins: re-aggregating would cancel it.
+export function aggRangeChanged() {
+  if (isOpen() && !traceLoading()) openAggregate({ name: av.name, service: av.service }, { push: false });
 }
 
 // cancelAggregate supersedes a pending openAggregate, so its answer is
@@ -185,17 +192,12 @@ export async function openAggregate({ name, service }, { push = true, reload = f
   writeURL(push);
 }
 
-// closeAgg returns to where the view was opened from: Back when openAggregate
-// pushed this entry, else the URL loses its aggregate parameters in place.
+// closeAgg returns to the view the aggregate was opened from, or the
+// results (see nav.js back).
 function closeAgg() {
   ++av.seq;
   if (!isOpen()) return;
-  if (history.state && history.state.loghornAgg) {
-    history.back(); // popstate hides the view
-    return;
-  }
-  history.replaceState(history.state, "", urlWith(""));
-  hideAgg();
+  back(); // popstate hides the view
 }
 
 function showAgg() {
@@ -213,10 +215,12 @@ function hideAgg() {
   $("agg").hidden = true;
   $("agg-rows").replaceChildren();
   const p = urlParams();
-  if (p.trace || p.span || p.agg) return;
-  $("bar").hidden = false;
-  $("results").hidden = false;
-  $("footer").hidden = false;
+  if (!(p.trace || p.span || p.agg)) {
+    $("bar").hidden = false;
+    $("results").hidden = false;
+    $("footer").hidden = false;
+  }
+  syncNav();
 }
 
 const kids = (n) => kidsOf.get(n.id) || [];
@@ -274,10 +278,17 @@ function renderAgg() {
   const name = d.el("span", "trace-id", data.name ?? av.name);
   name.title = "operation (root span name)";
   head.append(name);
-  head.append(d.el("span", "", av.service === "*" ? "all services" : av.service));
-  const range = d.el("span", "muted", (av.range.from || "…") + " → " + (av.range.to || "…"));
-  range.title = (data.from || "start") + " → " + (data.to || "end");
-  head.append(range);
+  // The scope: what the numbers are over, so they are not read as the
+  // results' service or a range the sidebar no longer shows.
+  const scope = (label, value, title) => {
+    const s = d.el("span", "agg-scope");
+    s.append(d.el("span", "muted", label + " "), d.el("span", "", value));
+    s.title = title;
+    return s;
+  };
+  head.append(scope("service", av.service === "*" ? "all" : av.service, "the service whose root spans are merged"));
+  head.append(scope("range", (av.range.from || "…") + " → " + (av.range.to || "…"),
+    (data.from || "start") + " → " + (data.to || "end") + "\nfollows the sidebar's From and To"));
   const count = data.capped
     ? N.toLocaleString() + " of " + plural(data.matched || 0, "trace") + " (capped, most recent)"
     : plural(N, "trace");

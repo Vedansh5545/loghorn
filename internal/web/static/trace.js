@@ -5,6 +5,7 @@
 
 import { copyTableBar } from "./copy.js";
 import { makeSplit } from "./split.js";
+import { back, navState, syncNav } from "./nav.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,13 +23,10 @@ const tv = {
 };
 
 let traceSeq = 0; // the newest openTrace; older answers are dropped
+let loadingSeq = 0; // the openTrace waiting for its answer, else 0
 let byId = new Map(); // node id -> node of tv.data
 let kidsOf = new Map(); // node id -> child nodes, in order
 let restoreParams = null; // the page URL's {trace, span}, until restored
-
-// HISTORY_MARK is the history.state of an entry openTrace pushed, so Close
-// can go Back to the table instead of adding another entry.
-const HISTORY_MARK = { loghornTrace: 1 };
 
 export const GROUPS = ["db", "http", "rpc", "messaging", "gen_ai", "span"];
 
@@ -89,10 +87,14 @@ function urlWith(params) {
 }
 
 // writeURL pushes (push) or replaces the history entry with the view's URL.
+// The entry's state carries the view stack (see nav.js).
 function writeURL(push) {
   const url = urlWith(traceURLParams());
-  if (push) history.pushState(HISTORY_MARK, "", url);
-  else if (location.search !== url) history.replaceState(history.state, "", url);
+  const n = selectedNode();
+  const crumb = { kind: "trace", trace: tv.data ? tv.data.traceId : "", span: n && n.kind === "span" ? n.id : "" };
+  if (push) history.pushState(navState(crumb, true), "", url);
+  else history.replaceState(navState(crumb, false), "", url);
+  syncNav();
 }
 
 function urlParams() {
@@ -195,6 +197,11 @@ export function cancelTrace() {
   ++traceSeq;
 }
 
+// traceLoading reports whether an openTrace is still waiting for its answer.
+export function traceLoading() {
+  return loadingSeq !== 0 && loadingSeq === traceSeq;
+}
+
 // restoreTraceFromURL opens the view the page URL names, once, after the
 // table's startup.
 export function restoreTraceFromURL() {
@@ -213,16 +220,19 @@ export async function openTrace({ trace, span }, { push = true } = {}) {
   if (d.cancelAggregate) d.cancelAggregate(); // a pending aggregate must not cover this view
   const q = trace ? "trace=" + encodeURIComponent(trace) : "span=" + encodeURIComponent(span || "");
   let data;
+  loadingSeq = mine;
   try {
     data = await d.api("GET", "/api/trace?" + q);
   } catch (err) {
     if (mine !== traceSeq) return;
+    loadingSeq = 0;
     d.showError(err.message);
     hideView();
     if (!push && (urlParams().trace || urlParams().span)) history.replaceState(history.state, "", urlWith(""));
     return;
   }
   if (mine !== traceSeq) return;
+  loadingSeq = 0;
   restoreParams = null;
   d.clearError();
   const same = tv.data && tv.data.traceId === data.traceId;
@@ -250,17 +260,12 @@ function reloadTrace() {
   openTrace({ trace: tv.data.traceId, span: n && n.kind === "span" ? n.id : "" }, { push: false });
 }
 
-// closeTrace returns to the table: Back when openTrace pushed this entry,
-// else the URL loses its trace parameters in place.
+// closeTrace returns to the view under this one, or the results (see
+// nav.js back).
 function closeTrace() {
   ++traceSeq;
   if (!isOpen()) return;
-  if (history.state && history.state.loghornTrace) {
-    history.back(); // popstate hides the view
-    return;
-  }
-  hideView();
-  history.replaceState(history.state, "", urlWith(""));
+  back(); // popstate hides the view
 }
 
 function showView() {
@@ -271,17 +276,22 @@ function showView() {
   $("trace").hidden = false;
 }
 
+// hideView hides the view and forgets its trace. The results show again only
+// when the URL names no aggregate (that view shows itself).
 function hideView() {
   $("trace").hidden = true;
-  $("bar").hidden = false;
-  $("results").hidden = false;
-  $("footer").hidden = false;
+  if (!new URLSearchParams(location.search).get("agg")) {
+    $("bar").hidden = false;
+    $("results").hidden = false;
+    $("footer").hidden = false;
+  }
   tv.data = null;
   tv.selected = null;
   byId = new Map();
   kidsOf = new Map();
   $("trace-rows").replaceChildren();
   $("trace-detail").replaceChildren();
+  syncNav();
 }
 
 function setData(data) {

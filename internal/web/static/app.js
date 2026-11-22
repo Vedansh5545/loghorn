@@ -6,7 +6,8 @@ import { renderHeatmap, cellTime, bandLabel } from "./heatmap.js";
 import { makeSplit } from "./split.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
 import { copyButton, copyTableBar } from "./copy.js";
-import { aggURLParams, cancelAggregate, initAggregate, openAggregate, restoreAggregateFromURL } from "./agg.js";
+import { aggRangeChanged, aggURLParams, cancelAggregate, initAggregate, openAggregate, restoreAggregateFromURL } from "./agg.js";
+import { initNav } from "./nav.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -483,8 +484,7 @@ function rangeChanged(which) {
   if (sel.value !== "custom") {
     custom.hidden = true;
     state.range[which] = sel.value;
-    reloadKinds();
-    runQuery();
+    rangeApplied();
     return;
   }
   custom.hidden = false;
@@ -506,8 +506,7 @@ function agoChanged(which) {
   if (!ok || state.range[which] === v) return;
   box.value = v;
   state.range[which] = v;
-  reloadKinds();
-  runQuery();
+  rangeApplied();
 }
 
 function customChanged(which) {
@@ -516,8 +515,15 @@ function customChanged(which) {
   const d = new Date(v); // datetime-local is local time
   if (isNaN(d.getTime())) return;
   state.range[which] = d.toISOString();
+  rangeApplied();
+}
+
+// rangeApplied runs what follows a new range: the kinds, the results and an
+// open aggregate, which follows From and To. The aggregate goes after the
+// results, so the results' clearError doesn't wipe its error.
+function rangeApplied() {
   reloadKinds();
-  runQuery();
+  Promise.resolve(runQuery()).finally(aggRangeChanged);
 }
 
 function wireBar() {
@@ -3532,6 +3538,14 @@ function wireSidebarToggle() {
   });
 }
 
+// rootLabel names the results under the open views in the breadcrumb: the
+// view tab and the stream.
+function rootLabel() {
+  const view = state.view.charAt(0).toUpperCase() + state.view.slice(1);
+  const stream = state.stream === ALL_KINDS && state.source === "otel" ? "all kinds" : state.stream;
+  return stream ? view + " · " + stream : view;
+}
+
 async function init() {
   wireSidebarToggle();
   loadURL();
@@ -3544,6 +3558,7 @@ async function init() {
   wireSchema();
   wireFavorites();
   watchTableShown();
+  initNav({ rootLabel });
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();

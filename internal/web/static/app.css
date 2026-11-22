@@ -500,3 +500,24 @@ tr:hover > td.has-copy > .cell-copy, .cell-copy:focus-visible, .cell-copy.copied
 .agg-slowest { align-self: center; flex: none; margin-left: 8px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .agg-slowest:hover { color: var(--fg); }
 .kind-row[data-kind="*"] .kind-name { font-weight: 600; }
+
+/* Open views (nav.js): a breadcrumb over the view on screen, drawn as the
+   top sheet of a stack, one edge per view under it (data-depth). */
+.crumbs { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 4px 6px 4px 10px; background: var(--panel); border: 1px solid var(--line); border-bottom: 2px solid var(--accent); border-radius: 6px 6px 0 0; }
+.crumbs[data-depth="2"] { box-shadow: 0 -4px 0 -1px var(--panel), 0 -4px 0 0 var(--line); }
+.crumbs[data-depth="3"] { box-shadow: 0 -4px 0 -1px var(--panel), 0 -4px 0 0 var(--line), 0 -8px 0 -3px var(--panel), 0 -8px 0 -2px var(--line); }
+.crumbs-list { display: flex; flex-wrap: wrap; align-items: center; flex: 1; min-width: 0; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.crumbs-list li { display: inline-flex; align-items: center; min-width: 0; }
+.crumbs-list li + li::before { content: "›"; padding: 0 6px; color: var(--muted); }
+.crumb { padding: 2px 4px; border: none; background: transparent; color: var(--accent); font: inherit; white-space: nowrap; }
+.crumb:hover { text-decoration: underline; }
+.crumb.current { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.crumbs-close { flex: none; border: none; background: transparent; color: var(--muted); padding: 0 6px; font-size: 14px; line-height: 22px; border-radius: 4px; }
+.crumbs-close:hover { color: var(--fg); background: var(--row-hover); }
+.crumbs ~ .trace { padding-top: 4px; }
+.back-btn { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.agg-scope .muted { font-size: 12px; }
+/* Sidebar rows a view doesn't use are inert while it is open. */
+.sidebar .locked, .top .locked { opacity: 0.4; }
+.sb-note { margin: 0; padding: 6px 8px; font-size: 12.5px; line-height: 1.4; color: var(--fg); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); border-left: 3px solid var(--accent); border-radius: 3px; }
+.sb-note .link { padding: 0; font: inherit; text-decoration: underline; }

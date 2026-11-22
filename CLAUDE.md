@@ -76,6 +76,14 @@ after launch leaves it running.
   resolved `from`, use the next bucket's start as `to`, and omit `lo` for
   the lowest band (it holds zero and negative durations). Never send `cell`
   on the heatmap request itself: it narrows every view.
+- The trace and aggregate views stack, and the URL names only the top one;
+  the stack is `history.state.crumbs` (`nav.js`). A view that writes history
+  must use `navState(crumb, push)` for the state and call `syncNav()` after
+  any show, hide or URL write, or the breadcrumb, back labels and sidebar
+  lock go stale. Close through `nav.back()`, never `history.back()` directly.
+- The demo loads spans with `-spans FILE` (lines as in
+  `.loghorn/loghorn.traces.jsonl`); the Spans stream list stays empty until a
+  service is selected.
 
 ## Go modules
 

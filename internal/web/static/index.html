@@ -27,6 +27,7 @@
 <p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
 <div class="layout">
 <aside id="sidebar" class="sidebar">
+  <p id="sb-note" class="sb-note" role="status" hidden><span id="sb-note-text"></span><button id="sb-note-back" type="button" class="link"></button>.</p>
   <section id="sb-view" class="sb tabs" role="tablist" aria-label="view">
     <button type="button" class="tab" role="tab" data-view="samples">Samples<svg class="tab-sym tab-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h.01"/><path d="M5.5 4h8"/><path d="M2.5 8h.01"/><path d="M5.5 8h8"/><path d="M2.5 12h.01"/><path d="M5.5 12h8"/></svg></button>
     <button type="button" class="tab" role="tab" data-view="table">Table<svg class="tab-sym tab-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5h12v11H2z"/><path d="M2 6.2h12"/><path d="M2 9.8h12"/><path d="M6.5 2.5v11"/></svg></button>
@@ -162,11 +163,15 @@
     <button id="schema-open" type="button">Schema…</button>
   </span>
 </footer>
+<nav id="crumbs" class="crumbs" aria-label="open views" hidden>
+  <ol id="crumbs-list" class="crumbs-list"></ol>
+  <button id="crumbs-close" type="button" class="crumbs-close" aria-label="close every view">✕</button>
+</nav>
 <section id="trace" class="trace" aria-label="trace waterfall" hidden>
   <div class="trace-top">
     <div id="trace-head" class="trace-head"></div>
     <div id="trace-tools" class="trace-tools">
-      <button id="trace-close" type="button" title="back to the table (Esc)">Close</button>
+      <button id="trace-close" type="button" class="back-btn" title="back (Esc)">← Back</button>
       <button id="trace-reload" type="button" title="fetch this trace again">Reload</button>
       <button id="trace-agg" type="button" title="merge every trace of this operation in the page's range">Aggregate this operation</button>
       <button id="trace-hide-leaves" type="button" title="collapse the lowest open level of the tree; click again to climb a level">Hide leaves</button>
@@ -199,8 +204,8 @@
   <div class="trace-top">
     <div id="agg-head" class="trace-head"></div>
     <div id="agg-tools" class="trace-tools">
-      <button id="agg-close" type="button" title="back to where you came from (Esc)">Close</button>
-      <button id="agg-reload" type="button" title="aggregate again over the page's range">Reload</button>
+      <button id="agg-close" type="button" class="back-btn" title="back (Esc)">← Back</button>
+      <button id="agg-reload" type="button" title="aggregate again over the same range (a relative range moves to now)">Reload</button>
       <button id="agg-hide-leaves" type="button" title="collapse the lowest open level of the tree; click again to climb a level">Hide leaves</button>
       <button id="agg-expand-leaves" type="button" title="expand every collapsed span shown, one level per click">Expand leaves</button>
       <button id="agg-expand" type="button" title="expand every span">Expand all</button>
