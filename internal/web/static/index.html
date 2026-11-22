@@ -137,6 +137,14 @@
 <section id="heatmap" class="heatmap" aria-label="latency heatmap" hidden>
   <div id="heat-chart" class="heat-chart"></div>
   <div id="heat-split" class="trace-split" role="separator" aria-orientation="horizontal" aria-controls="heat-chart" aria-label="resize the heatmap" title="drag to resize the heatmap; ↑/↓ when focused" tabindex="0"></div>
+  <div class="heat-bar">
+    <div id="heat-tabs" class="tabs heat-tabs" role="tablist" aria-label="span list">
+      <button type="button" class="tab" role="tab" data-tab="spans" title="the spans, longest first">Spans</button>
+      <button type="button" class="tab" role="tab" data-tab="grouped" title="the spans grouped by name and service, slowest p90 first">Grouped</button>
+    </div>
+    <div id="heat-banner" class="heat-banner" hidden><span id="heat-banner-text"></span><button id="heat-clear" type="button" title="list every span again (Esc)">Clear selection</button></div>
+    <span id="heat-hint" class="muted heat-hint">Click a cell to list its spans.</span>
+  </div>
 </section>
 <main id="results">
   <table id="table">

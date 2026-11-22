@@ -279,6 +279,13 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .heat-swatch:first-child { border-radius: 2px 0 0 2px; }
 .heat-swatch:last-child { border-radius: 0 2px 2px 0; }
 .heat-zone { margin-left: auto; }
+/* Under the splitter: Spans | Grouped, then the selected cell or a hint. */
+.heat-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 0 6px; font-size: 13px; }
+.heat-tabs { display: flex; }
+.heat-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.heat-banner button { padding: 1px 8px; font-size: 12.5px; }
+.heat-name { padding: 0; border: none; background: none; font: inherit; color: var(--accent); cursor: pointer; text-align: left; }
+.heat-name:hover { text-decoration: underline; }
 @media (max-width: 800px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
   .trace-split { display: none; }

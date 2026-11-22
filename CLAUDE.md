@@ -65,6 +65,17 @@ after launch leaves it running.
 - A browser check of a view with no button yet can call it directly:
   `await import('/static/agg.js')` (or `trace.js`) in Playwright's evaluate
   shares the page's module instance.
+- In Spans mode the stream `*` (`ALL_KINDS`, `record.AllStreams`) is every
+  span kind at once; the Heatmap view selects it on entry. It is not the
+  service `*` (All services), and pins never accept it.
+- A heatmap cell's list narrows with `Query.Cell` (`from <= time < to`,
+  `lo <= duration_ms < hi` on the raw number), not with range + filters:
+  `Range.To` is inclusive, so a span on a bucket edge would land in two
+  cells, and a filter on `duration_ms` is validated against the inferred
+  type (an `int` field rejects a float edge). Clip `from` to the result's
+  resolved `from`, use the next bucket's start as `to`, and omit `lo` for
+  the lowest band (it holds zero and negative durations). Never send `cell`
+  on the heatmap request itself: it narrows every view.
 
 ## Go modules
 

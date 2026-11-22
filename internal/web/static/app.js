@@ -2,7 +2,7 @@
 // textContent or attributes, never innerHTML.
 
 import { drawGraph } from "./graph.js";
-import { renderHeatmap } from "./heatmap.js";
+import { renderHeatmap, cellTime, bandLabel } from "./heatmap.js";
 import { makeSplit } from "./split.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
 import { copyButton, copyTableBar } from "./copy.js";
@@ -597,6 +597,7 @@ function syncView() {
 function setView(v) {
   if (!VIEWS.includes(v) || v === state.view) return;
   if (v === "heatmap" && state.source !== "otel") return;
+  if (state.view === "heatmap") forgetHeatSelection(); // coming back starts afresh
   state.view = v;
   syncView();
   if (v === "heatmap" && state.stream !== ALL_KINDS) {
@@ -643,11 +644,204 @@ function initHeatSplit() {
   new ResizeObserver(layout).observe(document.querySelector(".content"));
 }
 
-// listQuery is the request of the samples rows: in the Heatmap view, the
-// span list below the chart, longest first unless the user sorted.
+// ---- heatmap cell selection and the list below the chart ----
+// None of this is saved in the URL or a favorite.
+
+let heatData = null; // the heatmap drawn, or null
+let heatFrom = ""; // the drawn result's resolved range start (RFC 3339)
+let heatKeyDrawn = ""; // heatKey() of the drawn heatmap
+let heatSel = null; // the selected cell {ti, bi} of heatData, or null
+let heatSelCell = null; // heatSel's {start (ms), lo, hi}, to find it in a new result
+let heatKeep = false; // the next heatmap query keeps the selection (a Grouped name click)
+let heatTab = "spans"; // the list under the chart: "spans" or "grouped"
+let listSeq = 0; // the list load in progress; an older answer is dropped
+
+const heatCount = (h, ti, bi) => ((h.counts && h.counts[ti]) || [])[bi] || 0;
+
+// heatKey is what decides the heatmap's cells: a query that changes any of
+// it (range, filters, search, bucket, stream, service) clears the selection.
+function heatKey() {
+  const { source, service, stream, range, filters, search, bucket } = state;
+  return JSON.stringify({ source, service, stream, range, filters, search, bucket });
+}
+
+// findHeatCell is the {ti, bi} of h with bucket start and band edges c, or
+// null when h has no such cell or it is empty.
+function findHeatCell(h, c) {
+  const ti = (h.starts || []).findIndex((s) => new Date(s).getTime() === c.start);
+  const bi = (h.bands || []).findIndex((b) => b.lo === c.lo && b.hi === c.hi);
+  if (ti < 0 || bi < 0 || !heatCount(h, ti, bi)) return null;
+  return { ti, bi };
+}
+
+// heatCell is the query's `cell` for the selected cell, or undefined: the
+// bucket [start, next start) with its start clipped to the range's (the first
+// bucket can begin before it), and the band [lo, hi), with no lo for the
+// lowest band, which also holds zero and negative durations.
+function heatCell() {
+  if (!heatSel || !heatData) return undefined;
+  const h = heatData;
+  const { ti, bi } = heatSel;
+  const start = new Date(h.starts[ti]).getTime();
+  const end = ti + 1 < h.starts.length ? new Date(h.starts[ti + 1]).getTime() : start + h.bucketSeconds * 1000;
+  // The range start is sent as the server wrote it: a Date keeps only ms.
+  const from = Date.parse(heatFrom) > start ? heatFrom : new Date(start).toISOString();
+  const cell = { from, to: new Date(end).toISOString(), hi: h.bands[bi].hi };
+  if (bi > 0) cell.lo = h.bands[bi].lo;
+  return cell;
+}
+
+// drawHeat draws the heatmap with the selection, and the banner.
+function drawHeat() {
+  renderHeatmap($("heat-chart"), heatData, { onSelect: selectHeatCell, selected: heatSel });
+  const sel = heatSel && heatData;
+  $("heat-banner").hidden = !sel;
+  $("heat-hint").hidden = !!sel || !heatData || !heatData.total;
+  if (!sel) return;
+  const { ti, bi } = heatSel;
+  $("heat-banner-text").textContent = "Cell selected: " + cellTime(heatData, ti) + ", Spans: " +
+    heatCount(heatData, ti, bi).toLocaleString() + ", Duration: " + bandLabel(heatData.bands, bi);
+}
+
+// selectHeatCell selects cell sel ({ti, bi}, or null for none) and lists it.
+function selectHeatCell(sel) {
+  heatSel = sel;
+  heatSelCell = null;
+  if (sel) {
+    const b = heatData.bands[sel.bi];
+    heatSelCell = { start: new Date(heatData.starts[sel.ti]).getTime(), lo: b.lo, hi: b.hi };
+  }
+  drawHeat();
+  loadHeatList();
+}
+
+function clearHeatSelection() {
+  if (heatSel) selectHeatCell(null);
+}
+
+// forgetHeatSelection drops the selection without drawing or querying.
+function forgetHeatSelection() {
+  heatSel = null;
+  heatSelCell = null;
+  heatKeep = false;
+}
+
+function syncHeatTabs() {
+  for (const b of document.querySelectorAll("#heat-tabs [data-tab]")) {
+    const on = b.dataset.tab === heatTab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  }
+}
+
+function setHeatTab(t) {
+  if (t === heatTab) return;
+  heatTab = t;
+  closeColumnMenu();
+  syncHeatTabs();
+  loadHeatList();
+}
+
+// groupedList reports whether the list shows the Grouped tab's table.
+const groupedList = () => state.view === "heatmap" && heatTab === "grouped";
+
+// GROUPED_BY is the Grouped tab's fixed grouping.
+const GROUPED_BY = ["name", "service.name"];
+
+// listQuery is the request of the rows below: in the Heatmap view, the
+// active tab's list of the selected cell (or the whole heatmap); the Spans
+// tab longest first unless the user sorted. The Grouped tab's grouping and
+// metrics are its own and never enter state.
 function listQuery() {
   if (state.view !== "heatmap") return Object.assign({}, state);
-  return Object.assign({}, state, { view: "samples", sort: listSort() });
+  const cell = heatCell();
+  if (heatTab === "grouped") {
+    return Object.assign({}, state, {
+      view: "table",
+      groupBy: GROUPED_BY.slice(),
+      aggregates: ["p50", "p90", "p95"].map((op) => ({ op, field: "duration_ms" })).concat([{ op: "error_rate" }]),
+      order: { op: "p90", field: "duration_ms" },
+      plot: { op: "count" },
+      top: state.limit || DEFAULT_LIMIT,
+      cell,
+    });
+  }
+  return Object.assign({}, state, { view: "samples", sort: listSort(), cell });
+}
+
+// loadHeatList runs the active tab's list query. A newer list load (another
+// cell, tab or heatmap) or a newer query drops its answer.
+async function loadHeatList() {
+  const mine = ++listSeq;
+  moreSeq++; // a Load next on its way belongs to the old list
+  const q0 = querySeq;
+  const live = () => mine === listSeq && q0 === querySeq;
+  const grouped = heatTab === "grouped";
+  try {
+    const r = await api("POST", "/api/query", listQuery());
+    if (!live()) return;
+    clearError();
+    renderResult(r);
+    if (grouped) linkGroupedNames(r);
+  } catch (err) {
+    if (live()) showError(err.message);
+  }
+}
+
+// linkGroupedNames makes each Grouped row's name a button that lists the
+// row's spans in the Spans tab.
+function linkGroupedNames(result) {
+  const ni = result.columns.findIndex((c) => c.group && c.path === "name");
+  const si = result.columns.findIndex((c) => c.group && c.path === "service.name");
+  if (ni < 0) return;
+  const trs = $("body").children;
+  result.rows.forEach((row, i) => {
+    const name = row.cells[ni] && row.cells[ni].v;
+    const svc = si >= 0 && row.cells[si] ? row.cells[si].v : null;
+    const td = trs[i] && trs[i].children[ni];
+    if (typeof name !== "string" || !name || !td) return;
+    const b = el("button", "heat-name", name);
+    b.type = "button";
+    b.title = "list the " + name + " spans" + (heatSel ? " of this cell" : "");
+    b.addEventListener("click", () => narrowToGroup(name, typeof svc === "string" ? svc : ""));
+    td.replaceChildren(b);
+  });
+}
+
+// narrowToGroup adds the filter name = <name> (and service.name = <svc>
+// when the service is not already narrowed) and lists the spans, keeping
+// the cell selection.
+function narrowToGroup(name, svc) {
+  const has = (field, value) => state.filters.some((f) => f.field === field && f.op === "=" &&
+    Array.isArray(f.values) && f.values.length === 1 && String(f.values[0]) === value);
+  const add = [];
+  if (!has("name", name)) add.push({ field: "name", op: "=", values: [name] });
+  const narrowed = state.service !== ALL_SERVICES || state.filters.some((f) => f.field === "service.name");
+  if (svc && !narrowed) add.push({ field: "service.name", op: "=", values: [svc] });
+  state.filters = state.filters.concat(add);
+  rebuildTriples();
+  heatTab = "spans";
+  syncHeatTabs();
+  heatKeep = !!heatSel;
+  runQuery();
+}
+
+// wireHeatList wires the tabs, Clear selection and Esc.
+function wireHeatList() {
+  for (const b of document.querySelectorAll("#heat-tabs [data-tab]")) {
+    b.addEventListener("mousedown", (e) => e.preventDefault()); // keep a filter box's blur from redrawing first
+    b.addEventListener("click", () => setHeatTab(b.dataset.tab));
+  }
+  $("heat-clear").addEventListener("mousedown", (e) => e.preventDefault());
+  $("heat-clear").addEventListener("click", clearHeatSelection);
+  syncHeatTabs();
+  // Capture, so this sees a menu still open before its own Esc closes it.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !heatSel || state.view !== "heatmap" || e.defaultPrevented) return;
+    if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || $("schema-dialog").open) return;
+    if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
+    clearHeatSelection();
+  }, true);
 }
 
 // HEAT_SORT is the Heatmap list's order when the user chose none.
@@ -661,30 +855,42 @@ function listSort() {
   return state.view === "heatmap" ? HEAT_SORT : { field: "timestamp", desc: true };
 }
 
-// renderHeatmapResult draws a heatmap result in the chart pane.
-function renderHeatmapResult(result) {
+// renderHeatmapResult draws a heatmap result (of the query with heatKey key)
+// in the chart pane. The selection carries over, found again by its bucket
+// start and band, when keep is set or the cells' query is unchanged (a
+// refresh, a sort or column change); otherwise the new result clears it.
+function renderHeatmapResult(result, key, keep) {
   const h = result.heatmap || {};
   autoBucket = state.bucket === "auto" ? h.bucket || "" : "";
   drawBucket();
-  renderHeatmap($("heat-chart"), h, {});
+  const carry = (keep || key === heatKeyDrawn) && heatSelCell;
+  heatData = h;
+  heatFrom = result.from || "";
+  heatKeyDrawn = key;
+  heatSel = carry ? findHeatCell(h, heatSelCell) : null;
+  if (!heatSel) heatSelCell = null;
+  drawHeat();
 }
 
-// runHeatmapQuery runs the heatmap and its span list side by side, as query
-// mine; each answer draws when it lands unless a newer query superseded it.
+// runHeatmapQuery runs the heatmap, then the list of its selected cell (the
+// selection depends on the new heatmap), as query mine; a newer query drops
+// both answers.
 async function runHeatmapQuery(mine) {
   const live = () => mine === querySeq;
-  const heat = api("POST", "/api/query", state).then((r) => {
-    if (live()) renderHeatmapResult(r);
-  });
-  const list = api("POST", "/api/query", listQuery()).then((r) => {
-    if (live()) renderResult(r);
-  });
+  const keep = heatKeep;
+  heatKeep = false;
+  const key = heatKey();
+  listSeq++; // a list answer on its way belongs to the old heatmap
+  moreSeq++;
   try {
-    await Promise.all([heat, list]);
-    if (live()) clearError();
+    const r = await api("POST", "/api/query", state);
+    if (!live()) return;
+    renderHeatmapResult(r, key, keep);
   } catch (err) {
     if (live()) showError(err.message);
+    return;
   }
+  await loadHeatList();
 }
 
 // ---- header ----
@@ -1035,7 +1241,10 @@ function clearResults() {
   $("head").replaceChildren();
   $("body").replaceChildren();
   $("graph").replaceChildren();
-  renderHeatmap($("heat-chart"), null);
+  heatData = null;
+  heatKeyDrawn = "";
+  forgetHeatSelection();
+  drawHeat();
   $("more").hidden = true;
   $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
 }
@@ -1359,16 +1568,17 @@ let moreSeq = 0;
 
 async function loadBatch(next) {
   const base = lastResult;
-  if (!base || (base.view && base.view !== "samples")) return;
+  if (!base || (base.view && base.view !== "samples") || groupedList()) return;
   const offset = next ? (base.offset || 0) + base.rows.length : 0;
   const q0 = querySeq;
+  const l0 = listSeq;
   const mine = ++moreSeq;
   const buttons = [$("more-btn"), $("more-first")];
   for (const b of buttons) b.disabled = true;
   try {
     const columns = base.columns.map((c) => c.path);
     const res = await api("POST", "/api/query", Object.assign(listQuery(), { columns, offset }));
-    if (q0 !== querySeq || mine !== moreSeq || lastResult !== base) return;
+    if (q0 !== querySeq || l0 !== listSeq || mine !== moreSeq || lastResult !== base) return;
     res.offset = offset;
     render(res);
     $("results").scrollTop = 0;
@@ -2574,9 +2784,12 @@ function columnIcons(path, shown) {
   add(VCR.right, "move right", i < 0 || i === last, () => moveColumnTo(path, i + 1));
   add(VCR.last, "move to end", i < 0 || i === last, () => moveColumnTo(path, last));
   gap();
-  add(icon("filter"), f ? "filter by this column" : "not a field of the stream", !f, () => filterByColumn(path));
-  const grouped = state.groupBy.includes(path);
-  add(icon("group"), !f ? "not a field of the stream" : grouped ? "already grouped by this column" : "group by this column", !f || grouped, () => groupByColumn(path));
+  // The Grouped list's grouping is fixed: no filter or group by from it.
+  if (!groupedList()) {
+    add(icon("filter"), f ? "filter by this column" : "not a field of the stream", !f, () => filterByColumn(path));
+    const grouped = state.groupBy.includes(path);
+    add(icon("group"), !f ? "not a field of the stream" : grouped ? "already grouped by this column" : "group by this column", !f || grouped, () => groupByColumn(path));
+  }
   const th = $("head").querySelector('th[data-path="' + CSS.escape(path) + '"]');
   const temp = !!(th && th.dataset.temp);
   const sized = temp ? path in tempWidths : !!(f && f.width);
@@ -3312,6 +3525,7 @@ async function init() {
   wireBar();
   syncView();
   initHeatSplit();
+  wireHeatList();
   wireColumns();
   wireLimit();
   wireSchema();
