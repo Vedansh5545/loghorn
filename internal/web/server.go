@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/favorites"
+	"github.com/jimbeveridge/loghorn/internal/jsoncolor"
 	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
@@ -579,9 +580,10 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Raw       string                      `json:"raw"`
+		RawTokens []sqlcolor.Token            `json:"rawTokens,omitempty"`
 		SQL       map[string]string           `json:"sql"`
 		SQLTokens map[string][]sqlcolor.Token `json:"sqlTokens"`
-	}{raw, sql, tokens})
+	}{raw, jsoncolor.Tokens(raw), sql, tokens})
 }
 
 func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {

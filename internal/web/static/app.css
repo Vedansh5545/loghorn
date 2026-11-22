@@ -311,6 +311,7 @@ td .muted { color: var(--muted); }
 .sql-param { color: var(--sql-param); }
 .sql-str { color: var(--sql-str); }
 .sql-num { color: var(--sql-num); }
+.sql-key { color: var(--sql-type); }
 .sql-com { color: var(--muted); }
 
 /* ---- trace waterfall ---- */

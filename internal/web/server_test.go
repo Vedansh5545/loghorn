@@ -280,10 +280,22 @@ func TestRecordSQLFormatted(t *testing.T) {
 		Raw       string
 		SQL       map[string]string
 		SQLTokens map[string][]struct{ C, T string }
+		RawTokens []struct{ C, T string }
 	}
 	f.getJSON(t, "/api/record?seq=2", &got)
 	if !strings.Contains(got.Raw, "\n  \"severity\"") {
 		t.Fatalf("raw not pretty-printed: %q", got.Raw)
+	}
+	var rawBack strings.Builder
+	keys := 0
+	for _, tk := range got.RawTokens {
+		rawBack.WriteString(tk.T)
+		if tk.C == "key" {
+			keys++
+		}
+	}
+	if rawBack.String() != got.Raw || keys == 0 {
+		t.Fatalf("raw tokens (%d keys) do not colour the raw record", keys)
 	}
 	sql := got.SQL["databaseContext.metadata.query"]
 	if !strings.Contains(sql, "\n") || !strings.Contains(strings.ToLower(sql), "from") {

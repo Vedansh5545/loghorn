@@ -1413,7 +1413,12 @@ export async function fillRecordDetail(container, seq) {
       }
       container.append(el("h3", "", path + " (SQL)"), pre);
     }
-    container.append(el("h3", "", "record"), preOf(rec.raw));
+    let raw = preOf(rec.raw);
+    if (Array.isArray(rec.rawTokens)) {
+      raw = el("pre");
+      raw.append(sqlSpan(rec.rawTokens, rec.raw));
+    }
+    container.append(el("h3", "", "record"), raw);
   } catch (err) {
     container.replaceChildren(el("span", "bad", err.message));
   }
