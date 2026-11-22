@@ -52,6 +52,7 @@ let kindsOpen = false; // the kind list's More is expanded
 let started = false; // the first refresh has checked the URL's kind
 
 const ALL_SERVICES = "*";
+export const ALL_KINDS = "*"; // the stream of every span kind at once (Spans mode only)
 const SERVICE_KEY = "loghorn.service"; // localStorage: the last service chosen
 const SIDEBAR_KEY = "loghorn.sidebar"; // localStorage: "closed" when the controls are hidden
 const TOP_KINDS = 10;
@@ -298,6 +299,7 @@ export function visualize(cell, column) {
   if (v === null || v === undefined) return el("span");
   const wrap = !!(fieldByPath(column.path) || {}).wrap;
   const clip = (n) => (wrap ? WRAP_MAX : n);
+  if (column.path === "error_rate" && typeof v === "number") return el("span", "", percent(v));
   switch (column.visualizer) {
     case "local-time": {
       const d = toDate(v);
@@ -845,6 +847,15 @@ function listedKinds() {
   })).concat(kinds.filter((k) => !pinned.has(k.name)).map((k) => ({ name: k.name, count: k.count })));
 }
 
+// hasAllKinds: Spans mode lists an All kinds row; Logs mode has none.
+const hasAllKinds = () => state.source === "otel";
+
+// allKindsRow is the All kinds row: stream "*", the sum of the kinds' counts.
+// It is never pinned and always listed first.
+function allKindsRow() {
+  return { name: ALL_KINDS, label: "All kinds", count: kinds.reduce((n, k) => n + k.count, 0) };
+}
+
 // firstKind is the first listed kind with records, else the first listed
 // kind, else "".
 function firstKind() {
@@ -860,7 +871,7 @@ function kindRow(k, sep) {
   row.setAttribute("role", "option");
   row.setAttribute("aria-selected", String(on));
   row.tabIndex = 0;
-  const label = k.service ? k.name + " · " + k.service : k.name;
+  const label = k.label || (k.service ? k.name + " · " + k.service : k.name);
   row.title = label;
   row.append(el("span", "kind-name", label), el("span", "kind-count", k.count.toLocaleString()));
   row.addEventListener("click", () => {
@@ -871,7 +882,7 @@ function kindRow(k, sep) {
     e.preventDefault();
     if (k.name !== state.stream) selectKind(k.name);
   });
-  kindRowExtras(row, k);
+  if (k.name !== ALL_KINDS) kindRowExtras(row, k);
   return row;
 }
 
@@ -880,16 +891,17 @@ function kindRow(k, sep) {
 // always shown, with 0 when the interval has none of it.
 function renderKindList() {
   const rows = listedKinds();
+  const all = hasAllKinds() ? [allKindsRow()] : [];
   const npin = rows.filter((r) => r.pinned).length;
   const top = rows.slice(0, npin + TOP_KINDS);
   const rest = rows.slice(npin + TOP_KINDS);
   const needle = $("kind-filter").value.trim().toLowerCase();
   const open = kindsOpen && rest.length > 0;
   const more = open ? rest.filter((r) => r.name.toLowerCase().includes(needle)) : [];
-  const out = [];
-  top.forEach((r, i) => out.push(kindRow(r, npin > 0 && i === npin)));
+  const out = all.map((r) => kindRow(r, false));
+  top.forEach((r, i) => out.push(kindRow(r, (npin > 0 && i === npin) || (i === 0 && all.length > 0))));
   const sel = state.stream;
-  if (sel && !top.some((r) => r.name === sel) && !more.some((r) => r.name === sel)) {
+  if (sel && !(sel === ALL_KINDS && all.length) && !top.some((r) => r.name === sel) && !more.some((r) => r.name === sel)) {
     out.push(kindRow(rest.find((r) => r.name === sel) || { name: sel, count: 0 }, out.length > 0));
   }
   more.forEach((r, i) => out.push(kindRow(r, i === 0)));
@@ -991,6 +1003,7 @@ async function setService(svc) {
 // query parts that belonged to it. With no kinds at all it keeps it. It
 // returns true when it changed the kind.
 function fallbackKind() {
+  if (state.stream === ALL_KINDS && hasAllKinds()) return false;
   if (state.stream && listedKinds().some((k) => k.name === state.stream)) return false;
   const name = firstKind();
   if (!name) return false;
@@ -1116,6 +1129,7 @@ function renderResult(result) {
 // metricLabel names an aggregate: "count", or its operator and field.
 export function metricLabel(a) {
   if (!a || a.op === "count") return "count";
+  if (fieldless(a.op)) return METRIC_LABELS[a.op];
   const f = fieldByPath(a.field);
   return a.op + " " + ((f && f.label) || a.field);
 }
@@ -1163,10 +1177,14 @@ function renderTable(result) {
   applyWidths();
 }
 
+// percent shows a fraction as a percentage with one decimal: 0.125 -> 12.5%.
+const percent = (v) => (v * 100).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+
 // metricFormat returns a labeller for values of a metric column: durations in
 // the column's unit, other numbers grouped with at most three decimals.
 function metricFormat(col) {
   if (col && col.type === "duration") return (v) => formatDuration(v, col.unit);
+  if (col && col.path === "error_rate") return percent;
   return (v) => v.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
@@ -2100,7 +2118,15 @@ function drawValue(t) {
 
 // ---- group by and metrics ----
 
-const METRIC_OPS = ["sum", "avg", "min", "max", "p50", "p95", "p99"];
+const METRIC_OPS = ["sum", "avg", "min", "max", "p50", "p90", "p95", "p99", "error_rate"];
+
+// The error rate reads no field: its aggregate is just {op}.
+const METRIC_LABELS = { error_rate: "error rate" };
+const fieldless = (op) => op === "error_rate";
+// ready: the metric row has what its operator needs.
+const metricReady = (r) => fieldless(r.op) || !!r.field;
+const aggOf = (r) => (fieldless(r.op) ? { op: r.op } : { op: r.op, field: r.field });
+const sameAgg = (a, b) => a.op === b.op && (a.field || "") === (b.field || "");
 
 // metricRows are the rows of the Metrics section; state.aggregates holds only
 // those with a field chosen.
@@ -2161,15 +2187,15 @@ function drawGroupBy() {
 }
 
 function syncAggregates() {
-  state.aggregates = metricRows.filter((r) => r.field).map((r) => ({ op: r.op, field: r.field }));
+  state.aggregates = metricRows.filter(metricReady).map(aggOf);
   // The plotted metric must stay one of the aggregates, or every query fails.
   const p = state.plot;
-  if (p && p.op !== "count" && !state.aggregates.some((a) => a.op === p.op && a.field === p.field)) {
+  if (p && p.op !== "count" && !state.aggregates.some((a) => sameAgg(a, p))) {
     state.plot = { op: "count" };
   }
   // Likewise the order metric; its direction survives the fallback.
   const o = state.order;
-  if (o && o.op !== "count" && !state.aggregates.some((a) => a.op === o.op && a.field === o.field)) {
+  if (o && o.op !== "count" && !state.aggregates.some((a) => sameAgg(a, o))) {
     state.order = o.asc ? { op: "count", asc: true } : { op: "count" };
   }
   drawPlot();
@@ -2181,7 +2207,7 @@ const BUCKETS = ["auto", "1s", "5s", "10s", "30s", "1m", "5m", "15m", "1h", "6h"
 // autoBucket is the size the server chose for "auto" in the last graph.
 let autoBucket = "";
 
-const plotKey = (a) => (a && a.op !== "count" ? a.op + "\u0000" + a.field : "count");
+const plotKey = (a) => (a && a.op !== "count" ? a.op + "\u0000" + (a.field || "") : "count");
 
 // drawPlot fills the Plot select: count and each aggregate.
 function drawPlot() {
@@ -2197,7 +2223,7 @@ function drawPlot() {
   sel.value = plotKey(state.plot);
   sel.addEventListener("change", () => {
     const a = state.aggregates.find((x) => plotKey(x) === sel.value);
-    state.plot = a ? { op: a.op, field: a.field } : { op: "count" };
+    state.plot = a ? { ...a } : { op: "count" };
     drawChart();
     runQuery();
   });
@@ -2268,7 +2294,7 @@ function drawOrder() {
   const asc = !!(state.order && state.order.asc);
   sel.addEventListener("change", () => {
     const a = state.aggregates.find((x) => plotKey(x) === sel.value);
-    const o = a ? { op: a.op, field: a.field } : { op: "count" };
+    const o = a ? { ...a } : { op: "count" };
     if (asc) o.asc = true;
     state.order = o;
     runQuery();
@@ -2325,7 +2351,7 @@ function drawMetrics() {
     const op = el("select", "m-op");
     op.setAttribute("aria-label", "operator");
     for (const o of METRIC_OPS) {
-      const opt = el("option", "", o);
+      const opt = el("option", "", METRIC_LABELS[o] || o);
       opt.value = o;
       op.append(opt);
     }
@@ -2333,7 +2359,8 @@ function drawMetrics() {
     op.addEventListener("change", () => {
       r.op = op.value;
       syncAggregates();
-      if (r.field) runQuery();
+      drawMetrics();
+      if (metricReady(r)) runQuery();
     });
     const fsel = el("select", "m-field");
     fsel.setAttribute("aria-label", "number field");
@@ -2349,6 +2376,7 @@ function drawMetrics() {
       fsel.append(opt);
     }
     fsel.value = r.field;
+    fsel.hidden = fieldless(r.op);
     fsel.addEventListener("change", () => {
       r.field = fsel.value;
       syncAggregates();
@@ -2359,7 +2387,7 @@ function drawMetrics() {
     x.setAttribute("aria-label", "remove metric");
     x.addEventListener("click", () => {
       metricRows.splice(metricRows.indexOf(r), 1);
-      const had = !!r.field;
+      const had = metricReady(r);
       syncAggregates();
       drawMetrics();
       if (had) runQuery();

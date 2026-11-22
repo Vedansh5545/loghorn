@@ -4,6 +4,7 @@
 // import app.js.
 
 import { copyTableBar } from "./copy.js";
+import { makeSplit } from "./split.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -502,80 +503,25 @@ function renderTrace() {
 }
 
 // ---- splitter between the waterfall and the detail below it ----
-// The bar's position is kept as a share of the window height, per browser.
 
-const SPLIT_KEY = "loghorn.traceSplit";
-const SPLIT_DEFAULT = 0.75;
-const SPLIT_MIN = 80; // px each side keeps at least
-let splitAt = SPLIT_DEFAULT;
-
-const narrow = () => window.matchMedia("(max-width: 800px)").matches;
+let split = null;
 
 function initSplit() {
-  try {
-    const v = parseFloat(localStorage.getItem(SPLIT_KEY));
-    if (v > 0 && v < 1) splitAt = v;
-  } catch {}
-  const bar = $("trace-split");
-  bar.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    bar.setPointerCapture(e.pointerId);
-    bar.focus();
-    const grab = e.clientY - bar.getBoundingClientRect().top; // keep the bar under the pointer
-    document.body.classList.add("splitting");
-    const move = (ev) => moveSplit(ev.clientY - grab);
-    // lostpointercapture follows pointerup and pointercancel, and also fires
-    // when the view closes mid-drag.
-    const up = () => {
-      bar.removeEventListener("pointermove", move);
-      document.body.classList.remove("splitting");
-      saveSplit();
-    };
-    bar.addEventListener("pointermove", move);
-    bar.addEventListener("lostpointercapture", up, { once: true });
-  });
-  bar.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-    e.preventDefault();
-    const step = (e.shiftKey ? 80 : 20) * (e.key === "ArrowUp" ? -1 : 1);
-    moveSplit(bar.getBoundingClientRect().top + step);
-    saveSplit();
+  split = makeSplit({
+    bar: $("trace-split"),
+    pane: $("trace-pane"),
+    container: $("trace"),
+    storageKey: "loghorn.traceSplit",
+    initial: 0.75,
+    min: 80,
   });
   // The window, the sidebar toggle or the error banner can move the pane.
   new ResizeObserver(() => {
-    if (isOpen()) layoutSplit();
+    if (isOpen()) split.layout();
   }).observe($("trace"));
 }
 
-function saveSplit() {
-  try {
-    localStorage.setItem(SPLIT_KEY, String(splitAt));
-  } catch {}
-}
-
-// moveSplit puts the bar's top at y (px from the viewport top), clamped.
-function moveSplit(y) {
-  splitAt = Math.min(Math.max(y / window.innerHeight, 0.05), 0.95);
-  layoutSplit();
-}
-
-// layoutSplit sizes the waterfall so the bar sits at splitAt of the window
-// height, keeping SPLIT_MIN px for the waterfall and for the part below.
-// Narrow screens stack the parts without a bar (the CSS ignores the height).
-function layoutSplit() {
-  const pane = $("trace-pane");
-  const bar = $("trace-split");
-  if (narrow() || !pane.getClientRects().length) return;
-  const top = pane.getBoundingClientRect().top;
-  const bottom = $("trace").getBoundingClientRect().bottom;
-  const max = bottom - top - bar.offsetHeight - SPLIT_MIN;
-  const h = Math.round(Math.max(SPLIT_MIN, Math.min(splitAt * window.innerHeight - top, max)));
-  pane.style.height = h + "px";
-  bar.setAttribute("aria-valuenow", String(Math.round(splitAt * 100)));
-  bar.setAttribute("aria-valuemin", "5");
-  bar.setAttribute("aria-valuemax", "95");
-}
+const layoutSplit = () => split && split.layout();
 
 // treeGuides gives, for each node of vis (the rows in tree order, each with
 // id, parent and depth), its connector cells: "v" (a line) or "" (blank) per
