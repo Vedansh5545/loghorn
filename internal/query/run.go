@@ -40,7 +40,10 @@ type Row struct {
 	Seq           int       `json:"seq"`
 	Time          time.Time `json:"time"`
 	TimeInherited bool      `json:"timeInherited,omitempty"`
-	Cells         []Cell    `json:"cells"`
+	// SpanRoot is true for a span record with no parent span, the entry
+	// point to the aggregate operation view.
+	SpanRoot bool   `json:"spanRoot,omitempty"`
+	Cells    []Cell `json:"cells"`
 }
 
 // Result is the answer to a query. A zero From means unbounded.
@@ -309,6 +312,11 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 	res.Rows = make([]Row, 0, len(matched))
 	for _, r := range matched {
 		row := Row{Seq: r.Seq, Time: r.Time, TimeInherited: r.TimeInherited, Cells: make([]Cell, len(fields))}
+		if r.Source == record.SourceOtel {
+			ps, has := r.Fields["parent_span_id"]
+			str, isStr := ps.(string)
+			row.SpanRoot = !has || ps == nil || (isStr && str == "")
+		}
 		for i, f := range fields {
 			row.Cells[i] = cell(r.Fields[f.Path], f)
 			if s, ok := row.Cells[i].V.(string); ok && f.Visualizer == schema.VSQL && !row.Cells[i].Bad {

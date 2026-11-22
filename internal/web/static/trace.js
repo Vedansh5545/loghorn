@@ -103,6 +103,10 @@ export function initTrace(deps) {
   if (p.trace || p.span) restoreParams = p;
   $("trace-close").addEventListener("click", closeTrace);
   $("trace-reload").addEventListener("click", reloadTrace);
+  $("trace-agg").addEventListener("click", () => {
+    const root = operationRoot(tv.data);
+    if (root && d.openAggregate) d.openAggregate({ name: root.name || "", service: root.service || "" });
+  });
   try {
     if (localStorage.getItem(LOGS_KEY) === "hidden") tv.logs = "hidden";
   } catch {}
@@ -371,10 +375,22 @@ function stepMatch(dir) {
   goToMatch(f.i < 0 ? (dir > 0 ? 0 : m - 1) : (f.i + dir + m) % m);
 }
 
+// operationRoot is the span the aggregate view merges from: the first
+// depth-0 span, else the first span whose parent is a depth-0 placeholder (a
+// remote parent). null when there is none.
+function operationRoot(data) {
+  const nodes = (data && data.nodes) || [];
+  const top = nodes.find((n) => n.kind === "span" && n.depth === 0);
+  if (top) return top;
+  const holders = new Set(nodes.filter((n) => n.kind === "missing" && n.depth === 0).map((n) => n.id));
+  return nodes.find((n) => n.kind === "span" && holders.has(n.parent)) || null;
+}
+
 // renderTrace redraws the header, legend, axis and rows.
 function renderTrace() {
   const data = tv.data;
   if (!data) return;
+  $("trace-agg").hidden = !operationRoot(data);
   refreshFind();
   $("trace").classList.toggle("critical-on", tv.critical);
   $("trace-critical").setAttribute("aria-pressed", tv.critical ? "true" : "false");

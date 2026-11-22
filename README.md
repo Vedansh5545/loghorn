@@ -281,6 +281,15 @@ that trace as a tree of timed bars, with its log lines, span events, serial quer
 critical path and a self-time table. The page URL carries the view, so it can be
 shared or reloaded: `/?q=<json>&trace=<id>&span=<id>`. See `docs/features.md`.
 
+**Aggregate operation view** — merge every trace of one operation into a single
+tree. In Spans mode, click the `∑` after the name of a root span (a span with no
+parent), press `Aggregate this operation` in a waterfall, or open
+`/?agg=<name>&aggsvc=<service>`. Each row is a span name at one path below the
+root, with the number of traces holding it, calls per trace, p50 and p95, total
+and self time as shares of the operation's time, and an errors badge; `slowest`
+opens the slowest trace holding that span. It aggregates the page's time range,
+at most the 1000 most recent traces. See `docs/features.md`.
+
 ## Flags
 
 | Flag | Default | |

@@ -3,7 +3,7 @@
 // reaches the DOM through textContent or attributes, never innerHTML. app.js
 // passes its helpers to initAggregate, so this module does not import app.js.
 
-import { GROUPS, cancelTrace, plural, treeGuides, typeGroup } from "./trace.js";
+import { GROUPS, cancelTrace, openTrace, plural, treeGuides, typeGroup } from "./trace.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -306,6 +306,23 @@ function aggRow(n, guides, N) {
   const svcs = n.services || [];
   label.title = (n.name || "") + (svcs.length ? "\n" + svcs.join(", ") : "") + (n.type ? "\n" + n.type : "");
   name.append(label);
+  if (n.slowest && n.slowest.traceId) {
+    const a = d.el("a", "agg-slowest", "slowest " + fmtMs(n.slowest.durationMs || 0));
+    a.href = "#";
+    a.title = "open the slowest trace containing this span";
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openTrace({ trace: n.slowest.traceId, span: n.slowest.spanId });
+    });
+    name.append(a);
+  }
+  if ((n.serialCalls || 0) > 0) {
+    const chip = d.el("span", "serial-chip",
+      (Number(n.serialPerTrace) || 0).toFixed(1) + " serial queries/trace, " + (Number(n.serialPct) || 0).toFixed(1) + "%");
+    chip.title = "average queries per trace that ran one after another inside a serial run, and their share of the operation's time";
+    name.append(chip);
+  }
   row.append(name);
 
   const tracePct = N > 0 ? Math.round(((n.traces || 0) / N) * 100) : 0;

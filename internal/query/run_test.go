@@ -413,3 +413,32 @@ func TestRunNoMatchKeepsDefaultColumns(t *testing.T) {
 		t.Fatalf("columns = %v, want the stream's %v", got, s.Columns)
 	}
 }
+
+func TestRunSpanRoot(t *testing.T) {
+	s := sch()
+	span := func(seq int, kv ...any) record.Record {
+		r := rec(seq, t0, "", kv...)
+		r.Source = record.SourceOtel
+		return r
+	}
+	recs := []record.Record{
+		span(1, "name", "GET /orders", "parent_span_id", "a400000000000001"),
+		span(2, "name", "GET /orders"),
+		span(3, "name", "GET /orders", "parent_span_id", ""),
+	}
+	logRes := run(t, []record.Record{rec(4, t0, "", "name", "GET /orders")}, s, Query{})
+	if len(logRes.Rows) != 1 || logRes.Rows[0].SpanRoot {
+		t.Errorf("log row SpanRoot = %+v", logRes.Rows)
+	}
+	res := run(t, recs, s, Query{Source: record.SourceOtel, Sort: Sort{Field: "timestamp"}})
+	got := map[int]bool{}
+	for _, r := range res.Rows {
+		got[r.Seq] = r.SpanRoot
+	}
+	want := map[int]bool{1: false, 2: true, 3: true}
+	for sq, w := range want {
+		if got[sq] != w {
+			t.Errorf("seq %d SpanRoot = %v, want %v", sq, got[sq], w)
+		}
+	}
+}

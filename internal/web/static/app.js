@@ -3,7 +3,7 @@
 
 import { drawGraph } from "./graph.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
-import { aggURLParams, cancelAggregate, initAggregate, restoreAggregateFromURL } from "./agg.js";
+import { aggURLParams, cancelAggregate, initAggregate, openAggregate, restoreAggregateFromURL } from "./agg.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -934,10 +934,29 @@ const NUMERIC = new Set(["int", "float", "duration"]);
 const TRACE_PATHS = new Set(["trace_id", "trace"]);
 const SPAN_PATHS = new Set(["span_id", "spanId", "parent_span_id"]);
 
+// aggLinked follows node, the name cell of a root span, with a link to the
+// aggregate view of that operation. The name goes to openAggregate as data.
+function aggLinked(node, cell) {
+  const v = cell && !cell.bad ? cell.v : undefined;
+  if (typeof v !== "string" || !v.trim()) return node;
+  const wrap = el("span", "agg-cell");
+  const a = el("a", "agg-link", "∑");
+  a.href = "#";
+  a.title = "aggregate this operation";
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // not the row's detail toggle
+    openAggregate({ name: v, service: state.service === "*" ? "" : state.service });
+  });
+  wrap.append(node, a);
+  return wrap;
+}
+
 // traceLinked wraps node, the rendered cell of column path, in a link that
 // opens the waterfall when the cell holds a non-empty string ID; else it
 // returns node as it is.
-function traceLinked(node, cell, path) {
+function traceLinked(node, cell, path, row) {
+  if (path === "name" && state.source === "otel" && row && row.spanRoot) return aggLinked(node, cell);
   const isTrace = TRACE_PATHS.has(path);
   if (!isTrace && !SPAN_PATHS.has(path)) return node;
   const v = cell && !cell.bad ? cell.v : undefined;
@@ -1010,7 +1029,7 @@ function renderTable(result) {
       if (c.group && (!cell || cell.v === null || cell.v === undefined) && !(cell && cell.bad)) {
         td.append(el("span", "muted", "(empty)"));
       } else {
-        td.append(traceLinked(visualize(cell, c), cell, c.path));
+        td.append(traceLinked(visualize(cell, c), cell, c.path, row));
       }
       tr.append(td);
     });
@@ -1061,7 +1080,7 @@ export function render(result) {
     tr.dataset.seq = String(row.seq);
     result.columns.forEach((c, i) => {
       const td = el("td", NUMERIC.has(c.type) ? "num" : "");
-      td.append(traceLinked(cellNode(row, row.cells[i], c), row.cells[i], c.path));
+      td.append(traceLinked(cellNode(row, row.cells[i], c), row.cells[i], c.path, row));
       tr.append(td);
     });
     tr.addEventListener("click", () => toggleDetail(tr, result.columns.length));
@@ -2828,7 +2847,7 @@ async function init() {
   wireColumns();
   wireSchema();
   wireFavorites();
-  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate });
+  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate, getService: () => state.service });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();
   restoreTraceFromURL();

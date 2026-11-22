@@ -87,6 +87,17 @@ A trace shown as a tree of timed bars. Design and the deferred list (flame graph
 - **Critical path.** The `Critical path` button dims the bars that are not on it. Off by default.
 - **Self time.** The table below the grid lists each span name with its count, total time, self time (time not spent in a child) and self time as a share of the trace. Click a header to sort, again to reverse; click a name to find it in the tree.
 
+## Aggregate operation view
+
+Every trace of one operation merged into one tree. Design and the deferred list (flame graph, trace diff, keyboard navigation, entry from grouped views and the rest) are in `docs/superpowers/specs/2026-11-21-trace-aggregate-design.md`.
+
+- **Opening.** In Spans mode, `∑` after the name of a root span in the table; `Aggregate this operation` in the waterfall; or a deep link `/?q=<json>&agg=<name>&aggsvc=<service>`. Close (or Esc) goes back to where you came from.
+- **Range and cap.** Aggregates the page's range, the 1000 most recent traces. The header says `N of M traces (capped, most recent)` when it cuts.
+- **Rows.** One row per span name at each path below the root: traces holding it, calls per trace, p50, p95, total and self time as shares of the operation, errors, and a bar.
+- **Slowest.** `slowest <duration>` opens the slowest trace holding that span, with the span selected; Back returns to the aggregate.
+- **Serial chip.** `2.3 serial queries/trace, 15.0%` on a span whose database children run one after another: queries per trace, and their share of the operation's time.
+- **Outside spans.** Spans of a trace that are not under the operation root (missing parents) are counted in the header, never merged.
+
 ## Beyond the screenshot
 
 These loghorn features have no counterpart in the picture. They're here so the list is complete.
