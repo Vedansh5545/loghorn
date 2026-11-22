@@ -304,6 +304,7 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 			walk(it, "", 0)
 		}
 	}
+	analyze(&out)
 	return out, true
 }
 
