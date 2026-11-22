@@ -7,7 +7,7 @@ import (
 )
 
 func TestTokens(t *testing.T) {
-	got := Tokens(`select "id", count(*) from "lots" where "lots"."id" = ? and price > 10 and name = 'x' -- note`)
+	got := Tokens(`select "id", count(*) from "lots" where "lots"."id" = ? and price > 10 and name = 'x' -- note`, "")
 	var b strings.Builder
 	classes := map[string][]string{}
 	for _, tk := range got {
@@ -38,10 +38,10 @@ func TestTokens(t *testing.T) {
 }
 
 func TestTokensEmpty(t *testing.T) {
-	if got := Tokens(""); len(got) != 0 {
+	if got := Tokens("", ""); len(got) != 0 {
 		t.Fatalf("Tokens(\"\") = %+v", got)
 	}
-	if got := Tokens("x"); !reflect.DeepEqual(got, []Token{{Text: "x"}}) {
+	if got := Tokens("x", ""); !reflect.DeepEqual(got, []Token{{Text: "x"}}) {
 		t.Fatalf("Tokens(x) = %+v", got)
 	}
 }
@@ -49,7 +49,7 @@ func TestTokensEmpty(t *testing.T) {
 // Double-quoted names are identifiers in standard SQL, so they stay plain;
 // ? and $n placeholders are bind parameters.
 func TestTokensIdentifiersAndParams(t *testing.T) {
-	got := Tokens(`select "id" from "lots" where a = ? and b = $12`)
+	got := Tokens(`select "id" from "lots" where a = ? and b = $12`, "postgresql")
 	want := []Token{
 		{Class: "kw", Text: "select"}, {Text: ` "id" `}, {Class: "kw", Text: "from"}, {Text: ` "lots" `},
 		{Class: "kw", Text: "where"}, {Text: " a = "}, {Class: "param", Text: "?"}, {Text: " "},

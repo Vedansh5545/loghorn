@@ -500,6 +500,7 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	}
 	sql := map[string]string{}
 	tokens := map[string][]sqlcolor.Token{}
+	system := sqlfmt.SystemOf(rec.Fields)
 	for _, f := range sch.Fields {
 		if f.Visualizer != schema.VSQL {
 			continue
@@ -508,12 +509,12 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
-		if out, err := sqlfmt.Format(v); err == nil {
+		if out, err := sqlfmt.Format(v, system); err == nil {
 			sql[f.Path] = out
 		} else {
 			sql[f.Path] = v
 		}
-		tokens[f.Path] = sqlcolor.Tokens(sql[f.Path])
+		tokens[f.Path] = sqlcolor.Tokens(sql[f.Path], system)
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Raw       string                      `json:"raw"`

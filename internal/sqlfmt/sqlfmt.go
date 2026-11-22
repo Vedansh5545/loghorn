@@ -1,138 +1,76 @@
-// Package sqlfmt pretty-prints SQL with sql-formatter
-// (github.com/sql-formatter-org/sql-formatter), run in-process.
-//
-// sql-formatter is JavaScript. github.com/wasilibs/go-sql-formatter packages it
-// with QuickJS as WebAssembly, but ships only a command-line tool — its runner is
-// an internal package — so the .wasm is vendored here and driven through wazero
-// the same way. Licenses for both projects sit alongside it.
-//
-// The formatter lays SQL out one clause and one select item per line, so its
-// output is narrow on its own; it has no line-width setting to pass through.
+// Package sqlfmt pretty-prints SQL with GoSQLX
+// (github.com/ajitpratap0/GoSQLX), which parses the statement and renders it
+// one clause per line, with joins flush with FROM. Rendering is from the
+// parse tree, so the output can differ from what was logged beyond layout:
+// keywords are uppercased, quotes around plain names are dropped and a
+// trailing semicolon is added.
 package sqlfmt
 
 import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	_ "embed"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
-	"sync"
-	"testing/fstest"
 
-	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
-	"github.com/tetratelabs/wazero/sys"
+	"github.com/ajitpratap0/GoSQLX/pkg/formatter"
 )
 
-// From github.com/wasilibs/go-sql-formatter v15.8.2, internal/wasm.
-//
-//go:embed sql-formatter-cli.wasm
-var wasmBytes []byte
-
-var (
-	compileOnce sync.Once
-	runtime     wazero.Runtime
-	compiled    wazero.CompiledModule
-	compileErr  error
-)
-
-// compile builds the module once per process. It is the expensive half — around
-// 200ms — and every Format after it only pays for instantiating QuickJS.
-func compile() {
-	ctx := context.Background()
-	runtime = wazero.NewRuntime(ctx)
-	wasi_snapshot_preview1.MustInstantiate(ctx, runtime)
-	compiled, compileErr = runtime.CompileModule(ctx, wasmBytes)
+// dialects maps OpenTelemetry db.system.name values, and the older
+// db.system ones, to GoSQLX dialect names.
+var dialects = map[string]string{
+	"postgresql": "postgresql", "mysql": "mysql", "mariadb": "mariadb", "sqlite": "sqlite",
+	"microsoft.sql_server": "sqlserver", "mssql": "sqlserver",
+	"oracle.db": "oracle", "oracle": "oracle",
+	"clickhouse": "clickhouse", "snowflake": "snowflake",
+	"aws.redshift": "redshift", "redshift": "redshift",
+	"gcp.bigquery": "bigquery", "bigquery": "bigquery",
 }
 
-// Format returns sql laid out by sql-formatter's generic SQL dialect, without a
-// trailing newline. It errors on SQL the formatter cannot parse.
-//
-// It is slow — around 100ms a statement, plus the one-time compile on first use —
-// so keep it off the UI goroutine. It is safe to call concurrently: each call is
-// its own module instance.
-func Format(sql string) (string, error) { return FormatWith(sql, Options{}) }
+// Dialect is the GoSQLX dialect for a db.system.name (or db.system) value, or
+// "" when GoSQLX has none for it.
+func Dialect(system string) string { return dialects[strings.ToLower(system)] }
 
-// Options selects the formatter's optional behaviour. The zero value is
-// sql-formatter's own default for every setting.
-type Options struct {
-	// KeywordCase is "upper" or "lower" to case SQL keywords; anything else
-	// leaves each keyword as the statement wrote it. Quoted identifiers and
-	// string literals are never recased whichever value is given.
-	KeywordCase string
-}
+// systemKeys are where a record names its database: the OTel attribute, the
+// pre-1.26 name, and both as an OTLP log record's attributes.
+var systemKeys = []string{"db.system.name", "db.system", "otel.attributes.db.system.name", "otel.attributes.db.system"}
 
-// FormatWith is Format with the formatter's options set.
-func FormatWith(sql string, o Options) (string, error) {
-	compileOnce.Do(compile)
-	if compileErr != nil {
-		return "", fmt.Errorf("sqlfmt: compile: %w", compileErr)
-	}
-
-	// The CLI reads the statement from a file: given a non-terminal stdin that
-	// isn't a real file, it prints its usage instead of formatting.
-	fsys := fstest.MapFS{
-		"in.sql":      {Data: []byte(sql)},
-		"config.json": {Data: []byte(configJSON(o))},
-	}
-	var stdout, stderr bytes.Buffer
-	cfg := wazero.NewModuleConfig().
-		WithName(""). // anonymous, so concurrent instances don't collide
-		WithArgs("sql-formatter-cli", "--config", "config.json", "in.sql").
-		WithStdout(&stdout).
-		WithStderr(&stderr).
-		WithSysNanotime().
-		WithSysWalltime().
-		WithSysNanosleep().
-		WithRandSource(rand.Reader).
-		WithFSConfig(wazero.NewFSConfig().WithFSMount(fsys, "/"))
-
-	ctx := context.Background()
-	mod, err := runtime.InstantiateModule(ctx, compiled, cfg)
-	if mod != nil {
-		defer mod.Close(ctx) // a clean return leaves the instance open
-	}
-	var exit *sys.ExitError
-	failed := err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 0)
-	out := strings.TrimRight(stdout.String(), "\n")
-	// A parse error exits cleanly: the message goes to stderr and nothing to
-	// stdout, so empty output is the failure signal as much as the exit code.
-	if failed || out == "" {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" && err != nil {
-			msg = err.Error()
+// SystemOf returns the database system a record's fields name, or "".
+func SystemOf(fields map[string]any) string {
+	for _, k := range systemKeys {
+		if s, _ := fields[k].(string); s != "" {
+			return s
 		}
-		if msg == "" {
-			msg = "no output"
-		}
-		return "", fmt.Errorf("sqlfmt: %s", msg)
 	}
-	return out, nil
+	return ""
 }
 
-// baseConfig selects the generic SQL dialect — loghorn doesn't know which
-// database wrote a statement — and accepts every common bind-parameter style,
-// which the generic dialect otherwise rejects as a parse error: ?, $1, ?1, :1,
-// :name, @name.
-const baseConfig = `"language": "sql",
-  "paramTypes": {"positional": true, "numbered": ["$", "?", ":"], "named": [":", "@"]}`
+// guesses are the dialects tried, in order, when the database is unknown:
+// the generic one first, then dialects that accept ? placeholders, which
+// the generic dialect rejects.
+var guesses = []string{"", "sqlite", "postgresql", "mysql"}
 
-// keywordCases are the only values that may reach sql-formatter's keywordCase.
-// The formatter does not reject an unknown one: given "shouty" it returns the
-// statement with every keyword deleted — a select with no SELECT, FROM or WHERE
-// in it — and exits cleanly, so the damage would reach the pane looking like
-// output. Anything not on this list is dropped from the config instead, leaving
-// the formatter's own default.
-var keywordCases = []string{"upper", "lower", "preserve"}
-
-// configJSON renders the config file for one call.
-func configJSON(o Options) string {
-	cfg := baseConfig
-	if slices.Contains(keywordCases, o.KeywordCase) {
-		cfg += fmt.Sprintf(",\n  %q: %q", "keywordCase", o.KeywordCase)
+// Format lays sql out for the database named by system, a db.system.name or
+// db.system value ("" when unknown). A known dialect is the only one tried;
+// otherwise the first of guesses that parses wins. It returns an error when
+// none parses, or for blank input.
+func Format(sql, system string) (string, error) {
+	if strings.TrimSpace(sql) == "" {
+		return "", errors.New("sqlfmt: no SQL")
 	}
-	return "{\n  " + cfg + "\n}"
+	tries := guesses
+	if d := Dialect(system); d != "" {
+		tries = []string{d}
+	}
+	var first error
+	for _, d := range tries {
+		out, err := formatter.New(formatter.Options{Dialect: d}).Format(sql)
+		if err == nil && strings.TrimSpace(out) != "" {
+			return out, nil
+		}
+		if first == nil {
+			first = err
+		}
+	}
+	if first == nil {
+		first = errors.New("no output")
+	}
+	return "", errors.New("sqlfmt: " + first.Error())
 }

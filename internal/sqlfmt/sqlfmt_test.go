@@ -6,116 +6,79 @@ import (
 	"testing"
 )
 
-const oneLine = "SELECT u.id, u.email FROM users u WHERE u.created_at > $1 AND u.region IN (SELECT r.id FROM regions r) ORDER BY u.id LIMIT 50"
+const joinQuery = `select "events"."logo_image_id", "orgs"."icon_image_id" from "events" inner join "orgs" on "orgs"."id" = "events"."org_id" where "events"."id" = ? limit ?`
 
-// A one-line statement comes back laid out a clause to a line, with nothing lost.
-func TestFormatLaysOutClauses(t *testing.T) {
-	got, err := Format(oneLine)
+func TestFormatLaysOutClausesWithJoinsFlush(t *testing.T) {
+	out, err := Format(joinQuery, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(got, "\n")
-	for _, want := range []string{"SELECT", "FROM", "WHERE", "ORDER BY", "LIMIT"} {
-		found := false
-		for _, ln := range lines {
-			if strings.TrimSpace(ln) == want {
-				found = true
-			}
+	for _, want := range []string{"SELECT ", "\nFROM ", "\nINNER JOIN ", "\nWHERE ", "\nLIMIT "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in\n%s", want, out)
 		}
-		if !found {
-			t.Errorf("no line holding just %q:\n%s", want, got)
-		}
-	}
-	if strings.Join(strings.Fields(got), "") != strings.Join(strings.Fields(oneLine), "") {
-		t.Fatalf("formatting changed the statement's text:\n%s", got)
-	}
-	if strings.HasSuffix(got, "\n") {
-		t.Fatalf("output should not end in a newline: %q", got)
 	}
 }
 
-// SQL the formatter cannot parse is an error, not a silently mangled statement.
+// With no known database, Format still copes with ? placeholders, which the
+// generic dialect rejects.
+func TestFormatUnknownSystemFallsBack(t *testing.T) {
+	for _, system := range []string{"", "mongodb", "other_sql"} {
+		if _, err := Format(joinQuery, system); err != nil {
+			t.Errorf("system %q: %v", system, err)
+		}
+	}
+}
+
 func TestFormatReportsParseErrors(t *testing.T) {
-	if got, err := Format("SELECT 'unterminated FROM t"); err == nil {
-		t.Fatalf("want an error, got:\n%s", got)
+	if _, err := Format("select from where (", "postgresql"); err == nil {
+		t.Fatal("want a parse error")
+	}
+	if out, err := Format("   ", ""); err == nil || out != "" {
+		t.Fatalf("blank: %q, %v", out, err)
 	}
 }
 
-// Instances don't share state: concurrent calls each get their own statement back.
 func TestFormatIsSafeConcurrently(t *testing.T) {
-	stmts := []string{"SELECT a FROM t1", "SELECT b FROM t2", "SELECT c FROM t3", "SELECT d FROM t4"}
 	var wg sync.WaitGroup
-	for _, s := range stmts {
+	for i := 0; i < 16; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			got, err := Format(s)
-			if err != nil {
+			if _, err := Format(joinQuery, "sqlite"); err != nil {
 				t.Error(err)
-				return
-			}
-			if strings.Join(strings.Fields(got), " ") != s {
-				t.Errorf("Format(%q) = %q", s, got)
 			}
 		}()
 	}
 	wg.Wait()
 }
 
-// KeywordCase cases the keywords and nothing else: a quoted identifier keeps
-// the case it was written in, and so does a string literal's contents.
-func TestFormatWithKeywordCase(t *testing.T) {
-	const q = "select `id`, `order` from `grants` where name = 'select me'"
-	for _, tc := range []struct{ name, kc, want string }{
-		{"upper", "upper", "SELECT"},
-		{"lower", "lower", "select"},
-		{"preserve", "preserve", "select"},
+func TestDialect(t *testing.T) {
+	for system, want := range map[string]string{
+		"postgresql": "postgresql", "mysql": "mysql", "mariadb": "mariadb", "sqlite": "sqlite",
+		"microsoft.sql_server": "sqlserver", "mssql": "sqlserver", "oracle.db": "oracle", "oracle": "oracle",
+		"clickhouse": "clickhouse", "aws.redshift": "redshift", "redshift": "redshift", "snowflake": "snowflake",
+		"gcp.bigquery": "bigquery", "PostgreSQL": "postgresql", "mongodb": "", "": "",
 	} {
-		got, err := FormatWith(q, Options{KeywordCase: tc.kc})
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if !strings.Contains(got, tc.want) {
-			t.Errorf("%s: want %q in:\n%s", tc.name, tc.want, got)
-		}
-		for _, keep := range []string{"`order`", "'select me'"} {
-			if !strings.Contains(got, keep) {
-				t.Errorf("%s: %s should be untouched:\n%s", tc.name, keep, got)
-			}
+		if got := Dialect(system); got != want {
+			t.Errorf("Dialect(%q)=%q want %q", system, got, want)
 		}
 	}
 }
 
-// An unrecognised keywordCase must never reach sql-formatter. It does not reject
-// one — it silently drops every keyword from the output, turning a statement
-// into nonsense — so anything but the three known values formats as "preserve".
-func TestFormatWithUnknownKeywordCaseIsPreserve(t *testing.T) {
-	want, err := Format(oneLine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, kc := range []string{"shouty", "", "UPPER", "upper; drop table"} {
-		got, err := FormatWith(oneLine, Options{KeywordCase: kc})
-		if err != nil {
-			t.Fatalf("%q: %v", kc, err)
+func TestSystemOf(t *testing.T) {
+	for _, c := range []struct {
+		fields map[string]any
+		want   string
+	}{
+		{map[string]any{"db.system.name": "sqlite"}, "sqlite"},
+		{map[string]any{"db.system": "mysql"}, "mysql"},
+		{map[string]any{"otel.attributes.db.system.name": "postgresql"}, "postgresql"},
+		{map[string]any{"db.system.name": "sqlite", "db.system": "mysql"}, "sqlite"},
+		{map[string]any{"x": 1}, ""},
+	} {
+		if got := SystemOf(c.fields); got != c.want {
+			t.Errorf("SystemOf(%v)=%q want %q", c.fields, got, c.want)
 		}
-		if got != want {
-			t.Errorf("keywordCase %q should format as preserve:\ngot:  %s\nwant: %s", kc, got, want)
-		}
-	}
-}
-
-// Format is FormatWith's zero-value case, so the two can't drift.
-func TestFormatIsFormatWithZeroOptions(t *testing.T) {
-	a, err := Format(oneLine)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := FormatWith(oneLine, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a != b {
-		t.Errorf("Format and FormatWith(zero) disagree:\n%s\n%s", a, b)
 	}
 }

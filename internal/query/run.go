@@ -13,6 +13,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
 	"github.com/jimbeveridge/loghorn/internal/sqlcolor"
+	"github.com/jimbeveridge/loghorn/internal/sqlfmt"
 )
 
 // Column describes one result column.
@@ -306,7 +307,7 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		for i, f := range fields {
 			row.Cells[i] = cell(r.Fields[f.Path], f)
 			if s, ok := row.Cells[i].V.(string); ok && f.Visualizer == schema.VSQL && !row.Cells[i].Bad {
-				row.Cells[i].SQL = sqlcolor.Tokens(s)
+				row.Cells[i].SQL = sqlcolor.Tokens(s, sqlfmt.SystemOf(r.Fields))
 			}
 		}
 		res.Rows = append(res.Rows, row)

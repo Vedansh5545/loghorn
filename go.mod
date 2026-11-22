@@ -1,13 +1,12 @@
 module github.com/jimbeveridge/loghorn
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/alecthomas/chroma/v2 v2.27.0
+	github.com/ajitpratap0/GoSQLX v1.17.0
 	github.com/creack/pty v1.1.24
 	github.com/gen2brain/beeep v0.11.2
-	github.com/tetratelabs/wazero v1.12.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.23.0
 	go.opentelemetry.io/otel/log v1.47.0
@@ -22,7 +21,6 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast v1.1.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/esiqveland/notify v0.13.3 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
