@@ -3,6 +3,7 @@
 
 import { drawGraph } from "./graph.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
+import { aggURLParams, cancelAggregate, initAggregate, restoreAggregateFromURL } from "./agg.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -332,8 +333,8 @@ function saveURL() {
   // A missing source means log, so only otel is written.
   if (full.source !== "otel") delete full.source;
   if (!full.service) delete full.service;
-  const q = "?q=" + encodeURIComponent(JSON.stringify(full)) + traceURLParams();
-  // history.state marks an entry the trace view pushed; keep it.
+  const q = "?q=" + encodeURIComponent(JSON.stringify(full)) + traceURLParams() + aggURLParams();
+  // history.state marks an entry the trace or aggregate view pushed; keep it.
   if (location.search !== q) history.replaceState(history.state, "", q);
 }
 
@@ -2827,9 +2828,11 @@ async function init() {
   wireColumns();
   wireSchema();
   wireFavorites();
-  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass });
+  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate });
+  initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();
   restoreTraceFromURL();
+  restoreAggregateFromURL(); // a URL never names both views
   rebuildExplore();
 }
 

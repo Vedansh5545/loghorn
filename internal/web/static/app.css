@@ -382,6 +382,20 @@ td .muted { color: var(--muted); }
 #trace-critical[aria-pressed="true"] { background: var(--accent); color: #fff; }
 .critical-on .trace-row:not(.crit) .tbar { opacity: 0.25; }
 .trace-self { margin-top: 12px; }
+
+/* ---- aggregate operation view ---- */
+.agg-grid { grid-template-columns: minmax(240px, 35%) repeat(6, max-content) 1fr; }
+.agg-cols > div { align-self: center; padding: 0 8px; font-size: 11px; color: var(--muted); white-space: nowrap; cursor: help; }
+.agg-cols > div:first-child { padding-left: 0; }
+.agg-cols > .num, .agg-num { text-align: right; }
+.agg-num { align-self: center; padding: 0 8px; white-space: nowrap; }
+.agg .trace-row { cursor: default; }
+.agg-share { display: flex; align-items: center; gap: 6px; min-width: 80px; padding: 0 8px; }
+.agg-track { position: relative; flex: 1; height: 12px; }
+.abar { display: block; height: 100%; border-radius: 2px; }
+/* Positioned against .agg-track, so its width is a share of the whole track. */
+.abar-self { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px 0 0 2px; background: rgba(0, 0, 0, 0.35); }
+.agg-err { flex: none; padding: 0 5px; border-radius: 8px; font-size: 11px; line-height: 16px; background: var(--sev-error); color: #fff; }
 .self-table { border-collapse: collapse; font-size: 12.5px; }
 .self-table th, .self-table td { padding: 2px 12px; text-align: left; }
 .self-table th { cursor: pointer; user-select: none; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); }

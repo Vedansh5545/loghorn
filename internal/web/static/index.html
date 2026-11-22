@@ -167,6 +167,31 @@
   <div id="trace-detail" class="detail trace-detail"></div>
   <div id="trace-self" class="trace-self"></div>
 </section>
+<section id="agg" class="trace agg" aria-label="aggregate operation" hidden>
+  <div class="trace-top">
+    <div id="agg-head" class="trace-head"></div>
+    <div id="agg-tools" class="trace-tools">
+      <button id="agg-close" type="button" title="back to where you came from (Esc)">Close</button>
+      <button id="agg-reload" type="button" title="aggregate again over the page's range">Reload</button>
+      <button id="agg-collapse" type="button" title="collapse every span with children">Collapse all</button>
+      <button id="agg-expand" type="button" title="expand every span">Expand all</button>
+    </div>
+  </div>
+  <div id="agg-legend" class="trace-legend"></div>
+  <div id="agg-grid" class="trace-grid agg-grid">
+    <div id="agg-cols" class="trace-axis agg-cols">
+      <div title="span name; spans with the same name under the same merged parent are merged">name</div>
+      <div class="num" title="traces that contain this span, and their share of the traces aggregated">traces</div>
+      <div class="num" title="average calls per trace, over the traces that contain this span">calls/trace</div>
+      <div class="num" title="median duration of one call">p50</div>
+      <div class="num" title="95th percentile duration of one call">p95</div>
+      <div class="num" title="summed duration of every call, as a share of the operation's total time; calls that ran in parallel can pass 100%">total %</div>
+      <div class="num" title="summed self time (not spent in child spans), as a share of the operation's total time">self %</div>
+      <div title="total % as a bar (capped at 100%), self % darker inside it; red badge: calls with status error">share</div>
+    </div>
+    <div id="agg-rows" class="trace-rows"></div>
+  </div>
+</section>
 </div>
 </div>
 <dialog id="schema-dialog" class="schema-dialog">

@@ -27,10 +27,10 @@ let restoreParams = null; // the page URL's {trace, span}, until restored
 // can go Back to the table instead of adding another entry.
 const HISTORY_MARK = { loghornTrace: 1 };
 
-const GROUPS = ["db", "http", "rpc", "messaging", "gen_ai", "span"];
+export const GROUPS = ["db", "http", "rpc", "messaging", "gen_ai", "span"];
 
 // typeGroup maps a span.type to its colour group.
-function typeGroup(type) {
+export function typeGroup(type) {
   const t = String(type || "");
   if (t === "db" || t.startsWith("db.")) return "db";
   if (t === "http" || t.startsWith("http.")) return "http";
@@ -177,6 +177,11 @@ export function initTrace(deps) {
   });
 }
 
+// cancelTrace supersedes a pending openTrace, so its answer is dropped.
+export function cancelTrace() {
+  ++traceSeq;
+}
+
 // restoreTraceFromURL opens the view the page URL names, once, after the
 // table's startup.
 export function restoreTraceFromURL() {
@@ -192,6 +197,7 @@ export function restoreTraceFromURL() {
 // the current one is replaced. A newer call supersedes this one.
 export async function openTrace({ trace, span }, { push = true } = {}) {
   const mine = ++traceSeq;
+  if (d.cancelAggregate) d.cancelAggregate(); // a pending aggregate must not cover this view
   const q = trace ? "trace=" + encodeURIComponent(trace) : "span=" + encodeURIComponent(span || "");
   let data;
   try {
@@ -248,6 +254,7 @@ function showView() {
   $("bar").hidden = true;
   $("results").hidden = true;
   $("footer").hidden = true;
+  $("agg").hidden = true;
   $("trace").hidden = false;
 }
 
@@ -312,7 +319,7 @@ function axisStep(D) {
   }
 }
 
-function plural(n, word) {
+export function plural(n, word) {
   return n.toLocaleString() + " " + word + (n === 1 ? "" : "s");
 }
 
@@ -438,6 +445,20 @@ function renderTrace() {
 
   // rows
   const vis = visibleNodes();
+  const guides = treeGuides(vis);
+  const rows = vis.map((n, i) => {
+    const row = traceRow(n, guides[i], { D, multi, run: runFirst.get(n.id), inRun: runOf.has(n.id) });
+    if (matched.has(n.id)) row.classList.add("match");
+    return row;
+  });
+  $("trace-rows").replaceChildren(...rows);
+  renderSelfTable();
+}
+
+// treeGuides gives, for each node of vis (the rows in tree order, each with
+// id, parent and depth), its connector cells: "v" (a line) or "" (blank) per
+// ancestor level below the root, then "tee" or "end" for its own elbow.
+export function treeGuides(vis) {
   const last = new Set(); // ids with no later visible sibling
   const seen = new Set();
   for (let i = vis.length - 1; i >= 0; i--) {
@@ -445,18 +466,13 @@ function renderTrace() {
     seen.add(vis[i].parent);
   }
   const lineAt = []; // lineAt[k]: the ancestor at depth k has a later visible sibling
-  const rows = [];
-  for (const n of vis) {
+  return vis.map((n) => {
     const guides = [];
     for (let k = 1; k < n.depth; k++) guides.push(lineAt[k] ? "v" : "");
     if (n.depth > 0) guides.push(last.has(n.id) ? "end" : "tee");
     lineAt[n.depth] = !last.has(n.id);
-    const row = traceRow(n, guides, { D, multi, run: runFirst.get(n.id), inRun: runOf.has(n.id) });
-    if (matched.has(n.id)) row.classList.add("match");
-    rows.push(row);
-  }
-  $("trace-rows").replaceChildren(...rows);
-  renderSelfTable();
+    return guides;
+  });
 }
 
 // renderSelfTable draws the per-name self-time table below the detail box.
