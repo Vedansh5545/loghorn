@@ -244,6 +244,8 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
   .sidebar { overflow-y: auto; }
   .content { display: flex; flex-direction: column; min-height: 0; }
   main { flex: 1; min-height: 0; overflow: auto; }
+  /* The trace view replaces main, so it scrolls the same way. */
+  .trace { flex: 1; min-height: 0; overflow: auto; }
   /* Column headings stay put while the rows scroll under them. A collapsed
      border scrolls away with the rows, so the rule under them is a shadow. */
   #head th { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: none; box-shadow: inset 0 -1px 0 var(--line); }
@@ -343,8 +345,9 @@ td .muted { color: var(--muted); }
 .tg.v::before, .tg.tee::before, .tg.end::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; border-left: 1px solid var(--muted); opacity: 0.5; }
 .tg.end::before { bottom: 50%; }
 .tg.tee::after, .tg.end::after { content: ""; position: absolute; left: 6px; right: 0; top: 50%; border-top: 1px solid var(--muted); opacity: 0.5; }
-.twisty { flex: none; width: 14px; padding: 0; border: none; background: transparent; color: var(--muted); font-size: 10px; line-height: 1; }
-.twisty:hover { color: var(--accent); }
+.twisty { flex: none; width: 20px; align-self: center; padding: 2px 0; border: none; border-radius: 3px; background: transparent; color: var(--fg); font-size: 22px; line-height: 14px; }
+.tw-pad { width: 20px; }
+.twisty:hover { color: var(--accent); background: var(--panel); }
 .tr-bar { position: relative; background-image: linear-gradient(to right, var(--line) 1px, transparent 1px); background-size: var(--grid-step, 100%) 100%; }
 .tbar { position: absolute; top: 5px; height: 12px; border-radius: 2px; background: var(--trace-span); }
 .bar-db { background: var(--trace-db); }

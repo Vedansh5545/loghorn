@@ -546,6 +546,10 @@ function traceRow(n, guides, { D, multi, run, inRun }) {
       renderTrace();
     });
     name.append(tw);
+    row.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      tw.click();
+    });
   } else {
     name.append(d.el("span", "tw-pad"));
   }
