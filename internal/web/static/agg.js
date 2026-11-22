@@ -3,7 +3,8 @@
 // reaches the DOM through textContent or attributes, never innerHTML. app.js
 // passes its helpers to initAggregate, so this module does not import app.js.
 
-import { GROUPS, cancelTrace, openTrace, plural, treeGuides, typeGroup } from "./trace.js";
+import { GROUPS, cancelTrace, leafSteps, openTrace, plural, treeGuides, typeGroup } from "./trace.js";
+import { copyTableBar } from "./copy.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,11 +87,17 @@ export function initAggregate(deps) {
   $("agg-reload").addEventListener("click", () => {
     if (av.data) openAggregate({ name: av.name, service: av.service }, { push: false, reload: true });
   });
-  $("agg-collapse").addEventListener("click", () => {
-    av.collapsed = new Set();
-    for (const n of av.data ? av.data.nodes : []) if (kidsOf.has(n.id)) av.collapsed.add(n.id);
+  $("agg-hide-leaves").addEventListener("click", () => {
+    if (!av.data) return;
+    for (const id of leafSteps(visibleNodes(), kids, av.collapsed).hide) av.collapsed.add(id);
     renderAgg();
   });
+  $("agg-expand-leaves").addEventListener("click", () => {
+    if (!av.data) return;
+    for (const id of leafSteps(visibleNodes(), kids, av.collapsed).expand) av.collapsed.delete(id);
+    renderAgg();
+  });
+  $("agg-copy").replaceWith(copyTableBar(aggTable, "agg-copy"));
   $("agg-expand").addEventListener("click", () => {
     av.collapsed = new Set();
     renderAgg();
@@ -212,6 +219,34 @@ function hideAgg() {
   $("footer").hidden = false;
 }
 
+const kids = (n) => kidsOf.get(n.id) || [];
+
+// AGG_HEADERS are the columns aggTable copies.
+const AGG_HEADERS = ["Name", "traces", "calls/trace", "p50", "p95", "total %", "self %", "errors"];
+
+// aggCells are the copied cells of node n, of N traces, without its name.
+function aggCells(n, N) {
+  const tracePct = N > 0 ? Math.round(((n.traces || 0) / N) * 100) : 0;
+  return [
+    (n.traces || 0).toLocaleString() + " (" + tracePct + "%)",
+    (Number(n.callsPerTrace) || 0).toFixed(1),
+    fmtMs(n.p50Ms || 0),
+    fmtMs(n.p95Ms || 0),
+    pct(n.totalPct),
+    pct(n.selfPct),
+  ];
+}
+
+// aggTable is the metrics tree for copying: every node, expanded or not, its
+// name indented two spaces per depth.
+function aggTable() {
+  const data = av.data;
+  if (!data) return { headers: AGG_HEADERS, rows: [] };
+  const N = data.traces || 0;
+  const rows = (data.nodes || []).map((n) => ["  ".repeat(n.depth || 0) + (n.name || ""), ...aggCells(n, N), String(n.errors || 0)]);
+  return { headers: AGG_HEADERS, rows };
+}
+
 // visibleNodes are the nodes, in tree order, whose ancestors are all
 // expanded.
 function visibleNodes() {
@@ -272,6 +307,10 @@ function renderAgg() {
   const vis = visibleNodes();
   const guides = treeGuides(vis);
   $("agg-rows").replaceChildren(...vis.map((n, i) => aggRow(n, guides[i], N)));
+  const steps = leafSteps(vis, kids, av.collapsed);
+  $("agg-hide-leaves").disabled = !steps.hide.length;
+  $("agg-expand-leaves").disabled = !steps.expand.length;
+  $("agg-expand").disabled = ![...av.collapsed].some((id) => kidsOf.has(id));
 }
 
 // aggRow is one grid row of merged node n; guides are its connector cells
@@ -325,15 +364,7 @@ function aggRow(n, guides, N) {
   }
   row.append(name);
 
-  const tracePct = N > 0 ? Math.round(((n.traces || 0) / N) * 100) : 0;
-  row.append(
-    d.el("div", "agg-num", (n.traces || 0).toLocaleString() + " (" + tracePct + "%)"),
-    d.el("div", "agg-num", (Number(n.callsPerTrace) || 0).toFixed(1)),
-    d.el("div", "agg-num", fmtMs(n.p50Ms || 0)),
-    d.el("div", "agg-num", fmtMs(n.p95Ms || 0)),
-    d.el("div", "agg-num", pct(n.totalPct)),
-    d.el("div", "agg-num", pct(n.selfPct)),
-  );
+  row.append(...aggCells(n, N).map((t) => d.el("div", "agg-num", t)));
 
   // share bar: total % in the type colour, self % darker inside it; capped at
   // 100 % (parallel children can sum past their parent), the cells show the

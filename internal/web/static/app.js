@@ -3,6 +3,7 @@
 
 import { drawGraph } from "./graph.js";
 import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
+import { copyButton, copyTableBar } from "./copy.js";
 import { aggURLParams, cancelAggregate, initAggregate, openAggregate, restoreAggregateFromURL } from "./agg.js";
 
 const $ = (id) => document.getElementById(id);
@@ -245,6 +246,7 @@ export function linkify(text, max) {
   if (clip) {
     out.append(document.createTextNode("…"));
     out.title = text;
+    out.dataset.full = text;
   }
   return out;
 }
@@ -265,6 +267,7 @@ export function sqlSpan(tokens, text, max) {
   if (clip) {
     out.append(document.createTextNode("…"));
     out.title = text;
+    out.dataset.full = text;
   }
   return out;
 }
@@ -314,7 +317,10 @@ export function visualize(cell, column) {
       if (!href) return truncated(text, clip(120));
       const n = clip(120);
       const a = linkNode(href, text.length > n ? text.slice(0, n - 1) + "…" : text);
-      if (text.length > n) a.title = text;
+      if (text.length > n) {
+        a.title = text;
+        a.dataset.full = text;
+      }
       return a;
     }
     case "number":
@@ -1061,6 +1067,41 @@ function cellNode(row, cell, col) {
   return visualize(cell, col);
 }
 
+// addSQLCopy gives td, a cell of a column shown as SQL, a copy button that
+// shows on hover and copies the full value, not the cropped one.
+function addSQLCopy(td, cell, col) {
+  if (col.visualizer !== "sql" || !cell || cell.bad || cell.v === null || cell.v === undefined) return;
+  const text = asText(cell.v);
+  if (!text) return;
+  td.classList.add("has-copy");
+  td.append(copyButton(() => text, { cls: "cell-copy" }));
+}
+
+// cellCopyText is the text of a results cell as the user sees it, but whole
+// where the page cropped it (an element marked with data-full).
+function cellCopyText(td) {
+  const full = td.querySelector("[data-full]");
+  if (full) return full.dataset.full;
+  const c = td.cloneNode(true);
+  for (const x of c.querySelectorAll(".agg-link, .copy-btn")) x.remove(); // controls, not the value
+  return c.textContent;
+}
+
+// shownTable is the results table as shown, for copying: the header labels
+// and each row's cells; opened record details are skipped.
+function shownTable() {
+  const headers = Array.from($("head").children).map((th) => {
+    const label = th.querySelector(".th-label");
+    return label ? label.textContent : th.textContent;
+  });
+  const rows = [];
+  for (const tr of $("body").children) {
+    if (tr.classList.contains("detail")) continue;
+    rows.push(Array.from(tr.children).map(cellCopyText));
+  }
+  return { headers, rows };
+}
+
 // renderResult shows a query result in the view it was run for.
 function renderResult(result) {
   const view = result.view || "samples";
@@ -1109,6 +1150,7 @@ function renderTable(result) {
         td.append(el("span", "muted", "(empty)"));
       } else {
         td.append(traceLinked(visualize(cell, c), cell, c.path, row));
+        addSQLCopy(td, cell, c);
       }
       tr.append(td);
     });
@@ -1167,6 +1209,7 @@ function appendRows(rows, columns) {
     columns.forEach((c, i) => {
       const td = el("td", NUMERIC.has(c.type) ? "num" : "");
       td.append(traceLinked(cellNode(row, row.cells[i], c), row.cells[i], c.path, row));
+      addSQLCopy(td, row.cells[i], c);
       tr.append(td);
     });
     tr.addEventListener("click", () => toggleDetail(tr, columns.length));
@@ -1569,7 +1612,10 @@ export async function fillRecordDetail(container, seq, { recordOpen = true } = {
         pre = el("pre");
         pre.append(sqlSpan(toks, rec.sql[path]));
       }
-      container.append(detailSection(path + " (SQL)", pre, true));
+      const sec = detailSection(path + " (SQL)", pre, true);
+      const sql = String(rec.sql[path]);
+      sec.querySelector("summary").append(copyButton(() => sql, { cls: "sum-copy" }));
+      container.append(sec);
     }
     let raw = preOf(rec.raw);
     if (Array.isArray(rec.rawTokens)) {
@@ -3100,6 +3146,7 @@ function wireFavorites() {
     if (e.key === "Escape") closeFavorites();
   });
   $("fav-save").addEventListener("click", saveFavorite);
+  $("table-copy").append(copyTableBar(shownTable));
   $("fav-save-menu").addEventListener("click", saveFavorite);
 }
 

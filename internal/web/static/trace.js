@@ -3,6 +3,8 @@
 // innerHTML. app.js passes its helpers to initTrace, so this module does not
 // import app.js.
 
+import { copyTableBar } from "./copy.js";
+
 const $ = (id) => document.getElementById(id);
 
 let d = null; // deps from initTrace
@@ -152,15 +154,21 @@ export function initTrace(deps) {
     tv.critical = !tv.critical;
     renderTrace();
   });
-  $("trace-collapse").addEventListener("click", () => {
-    tv.collapsed = new Set();
-    for (const n of tv.data ? tv.data.nodes : []) if (shownKids(n).length) tv.collapsed.add(n.id);
+  $("trace-hide-leaves").addEventListener("click", () => {
+    if (!tv.data) return;
+    for (const id of leafSteps(visibleNodes(), shownKids, tv.collapsed).hide) tv.collapsed.add(id);
+    renderTrace();
+  });
+  $("trace-expand-leaves").addEventListener("click", () => {
+    if (!tv.data) return;
+    for (const id of leafSteps(visibleNodes(), shownKids, tv.collapsed).expand) tv.collapsed.delete(id);
     renderTrace();
   });
   $("trace-expand").addEventListener("click", () => {
     tv.collapsed = new Set();
     renderTrace();
   });
+  initSplit();
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !isOpen() || e.defaultPrevented) return;
     if (document.querySelector("dialog[open]")) return;
@@ -291,6 +299,23 @@ function setData(data) {
 // shownKids are a node's children that get rows.
 function shownKids(n) {
   return (kidsOf.get(n.id) || []).filter(shown);
+}
+
+// leafSteps gives, for vis (the rows shown, in tree order), the ids Hide
+// leaves collapses and the ids Expand leaves expands, one level each: hide
+// are the open nodes with children whose children are all leaves or
+// collapsed; expand are the collapsed nodes with children. kids(n) are n's
+// children that get rows.
+export function leafSteps(vis, kids, collapsed) {
+  const hide = [];
+  const expand = [];
+  for (const n of vis) {
+    const ks = kids(n);
+    if (!ks.length) continue;
+    if (collapsed.has(n.id)) expand.push(n.id);
+    else if (ks.every((k) => collapsed.has(k.id) || !kids(k).length)) hide.push(n.id);
+  }
+  return { hide, expand };
 }
 
 function expandAncestors(n) {
@@ -468,7 +493,88 @@ function renderTrace() {
     return row;
   });
   $("trace-rows").replaceChildren(...rows);
+  const steps = leafSteps(vis, shownKids, tv.collapsed);
+  $("trace-hide-leaves").disabled = !steps.hide.length;
+  $("trace-expand-leaves").disabled = !steps.expand.length;
+  $("trace-expand").disabled = ![...tv.collapsed].some((id) => byId.has(id) && shownKids(byId.get(id)).length);
   renderSelfTable();
+  layoutSplit();
+}
+
+// ---- splitter between the waterfall and the detail below it ----
+// The bar's position is kept as a share of the window height, per browser.
+
+const SPLIT_KEY = "loghorn.traceSplit";
+const SPLIT_DEFAULT = 0.75;
+const SPLIT_MIN = 80; // px each side keeps at least
+let splitAt = SPLIT_DEFAULT;
+
+const narrow = () => window.matchMedia("(max-width: 800px)").matches;
+
+function initSplit() {
+  try {
+    const v = parseFloat(localStorage.getItem(SPLIT_KEY));
+    if (v > 0 && v < 1) splitAt = v;
+  } catch {}
+  const bar = $("trace-split");
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    bar.focus();
+    const grab = e.clientY - bar.getBoundingClientRect().top; // keep the bar under the pointer
+    document.body.classList.add("splitting");
+    const move = (ev) => moveSplit(ev.clientY - grab);
+    const up = () => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      bar.removeEventListener("pointercancel", up);
+      document.body.classList.remove("splitting");
+      saveSplit();
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    bar.addEventListener("pointercancel", up);
+  });
+  bar.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    e.preventDefault();
+    const step = (e.shiftKey ? 80 : 20) * (e.key === "ArrowUp" ? -1 : 1);
+    moveSplit(bar.getBoundingClientRect().top + step);
+    saveSplit();
+  });
+  window.addEventListener("resize", () => {
+    if (isOpen()) layoutSplit();
+  });
+}
+
+function saveSplit() {
+  try {
+    localStorage.setItem(SPLIT_KEY, String(splitAt));
+  } catch {}
+}
+
+// moveSplit puts the bar's top at y (px from the viewport top), clamped.
+function moveSplit(y) {
+  splitAt = Math.min(Math.max(y / window.innerHeight, 0.05), 0.95);
+  layoutSplit();
+}
+
+// layoutSplit sizes the waterfall so the bar sits at splitAt of the window
+// height, keeping SPLIT_MIN px for the waterfall and for the part below.
+// Narrow screens stack the parts without a bar (the CSS ignores the height).
+function layoutSplit() {
+  const pane = $("trace-pane");
+  const bar = $("trace-split");
+  if (narrow() || !pane.getClientRects().length) return;
+  const top = pane.getBoundingClientRect().top;
+  const bottom = $("trace").getBoundingClientRect().bottom;
+  const max = bottom - top - bar.offsetHeight - SPLIT_MIN;
+  const h = Math.round(Math.max(SPLIT_MIN, Math.min(splitAt * window.innerHeight - top, max)));
+  pane.style.height = h + "px";
+  bar.setAttribute("aria-valuenow", String(Math.round(splitAt * 100)));
+  bar.setAttribute("aria-valuemin", "5");
+  bar.setAttribute("aria-valuemax", "95");
 }
 
 // treeGuides gives, for each node of vis (the rows in tree order, each with
@@ -534,6 +640,7 @@ function renderSelfTable() {
   const head = d.el("thead");
   head.append(tr);
   table.append(head);
+  const cells = (r) => [r.name, String(r.count), fmtMs(r.totalMs), fmtMs(r.selfMs), ((r.selfMs / D) * 100).toFixed(1) + "%"];
   const body = d.el("tbody");
   for (const r of sorted) {
     const row = d.el("tr");
@@ -548,17 +655,13 @@ function renderSelfTable() {
       if (tv.find.matches.length) goToMatch(0);
       else renderTrace();
     });
-    row.append(
-      name,
-      d.el("td", "num", String(r.count)),
-      d.el("td", "num", fmtMs(r.totalMs)),
-      d.el("td", "num", fmtMs(r.selfMs)),
-      d.el("td", "num", ((r.selfMs / D) * 100).toFixed(1) + "%"),
-    );
+    row.append(name, ...cells(r).slice(1).map((t) => d.el("td", "num", t)));
     body.append(row);
   }
   table.append(body);
-  box.append(table);
+  const head2 = d.el("div", "self-head");
+  head2.append(copyTableBar(() => ({ headers: cols.map((c) => c[1]), rows: sorted.map(cells) })));
+  box.append(head2, table);
 }
 
 // traceRow is one grid row of node n. guides are the connector cells, one per

@@ -144,6 +144,7 @@
 <footer id="footer" class="footer">
   <span id="footer-text"></span>
   <span class="footer-actions">
+    <span id="table-copy" data-views="samples table"></span>
     <button id="fav-save" type="button">Save as favorite</button>
     <button id="schema-open" type="button">Schema…</button>
   </span>
@@ -155,7 +156,8 @@
       <button id="trace-close" type="button" title="back to the table (Esc)">Close</button>
       <button id="trace-reload" type="button" title="fetch this trace again">Reload</button>
       <button id="trace-agg" type="button" title="merge every trace of this operation in the page's range">Aggregate this operation</button>
-      <button id="trace-collapse" type="button" title="collapse every span with children">Collapse all</button>
+      <button id="trace-hide-leaves" type="button" title="collapse the lowest open level of the tree; click again to climb a level">Hide leaves</button>
+      <button id="trace-expand-leaves" type="button" title="expand every collapsed span shown, one level per click">Expand leaves</button>
       <button id="trace-expand" type="button" title="expand every span">Expand all</button>
       <button id="trace-critical" type="button" aria-pressed="false" title="dim spans that are not on the critical path">Critical path</button>
       <button id="trace-logs" type="button" title="show or hide log lines and span events in the tree">Logs &amp; events: in tree</button>
@@ -168,12 +170,17 @@
     </div>
   </div>
   <div id="trace-legend" class="trace-legend"></div>
-  <div id="trace-grid" class="trace-grid">
-    <div id="trace-axis" class="trace-axis"></div>
-    <div id="trace-rows" class="trace-rows"></div>
+  <div id="trace-pane" class="trace-pane">
+    <div id="trace-grid" class="trace-grid">
+      <div id="trace-axis" class="trace-axis"></div>
+      <div id="trace-rows" class="trace-rows"></div>
+    </div>
   </div>
-  <div id="trace-detail" class="detail trace-detail"></div>
-  <div id="trace-self" class="trace-self"></div>
+  <div id="trace-split" class="trace-split" role="separator" aria-orientation="horizontal" aria-controls="trace-pane" aria-label="resize the waterfall" title="drag to resize the waterfall; ↑/↓ when focused" tabindex="0"></div>
+  <div id="trace-lower" class="trace-lower">
+    <div id="trace-detail" class="detail trace-detail"></div>
+    <div id="trace-self" class="trace-self"></div>
+  </div>
 </section>
 <section id="agg" class="trace agg" aria-label="aggregate operation" hidden>
   <div class="trace-top">
@@ -181,8 +188,10 @@
     <div id="agg-tools" class="trace-tools">
       <button id="agg-close" type="button" title="back to where you came from (Esc)">Close</button>
       <button id="agg-reload" type="button" title="aggregate again over the page's range">Reload</button>
-      <button id="agg-collapse" type="button" title="collapse every span with children">Collapse all</button>
+      <button id="agg-hide-leaves" type="button" title="collapse the lowest open level of the tree; click again to climb a level">Hide leaves</button>
+      <button id="agg-expand-leaves" type="button" title="expand every collapsed span shown, one level per click">Expand leaves</button>
       <button id="agg-expand" type="button" title="expand every span">Expand all</button>
+      <span id="agg-copy"></span>
     </div>
   </div>
   <div id="agg-legend" class="trace-legend"></div>
