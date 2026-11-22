@@ -924,3 +924,61 @@ func TestTraceAPIErrors(t *testing.T) {
 		t.Errorf("service filter changed the trace: %d nodes", len(got.Nodes))
 	}
 }
+
+const aggFile = "../../testdata/web/aggregate.jsonl"
+
+func TestAggregateAPI(t *testing.T) {
+	f := newFixture(t, aggFile)
+	var got struct {
+		Traces int
+		Nodes  []struct {
+			Name        string
+			SerialCalls int
+		}
+	}
+	f.getJSON(t, "/api/aggregate?name=GET%20%2Forders&from=all", &got)
+	if got.Traces != 5 || len(got.Nodes) != 6 {
+		t.Fatalf("traces %d, %d nodes", got.Traces, len(got.Nodes))
+	}
+	if n := got.Nodes[2]; n.Name != "SELECT orders" || n.SerialCalls != 9 {
+		t.Errorf("nodes[2] = %+v", n)
+	}
+}
+
+func TestAggregateAPIErrors(t *testing.T) {
+	f := newFixture(t, aggFile)
+	for _, tc := range []struct {
+		path string
+		code int
+		msg  string
+	}{
+		{"/api/aggregate", 400, "name is required"},
+		{"/api/aggregate?name=" + strings.Repeat("a", 1025), 400, "name too long"},
+		{"/api/aggregate?name=GET%20%2Forders&from=yesterday", 400, "range from"},
+		{"/api/aggregate?name=nope", 404, "no root spans with that name in range"},
+		{"/api/aggregate?service=pricing&name=GET%20%2Forders", 404, "no root spans with that name in range"},
+	} {
+		code, b := f.do(t, http.MethodGet, tc.path, "", "")
+		wantError(t, code, tc.code, b)
+		var e struct{ Error string }
+		_ = json.Unmarshal(b, &e)
+		if !strings.Contains(e.Error, tc.msg) {
+			t.Errorf("%s: error %q; want %q", tc.path, e.Error, tc.msg)
+		}
+	}
+	// 1024 bytes is not too long.
+	code, b := f.do(t, http.MethodGet, "/api/aggregate?name="+strings.Repeat("a", 1024), "", "")
+	wantError(t, code, 404, b)
+}
+
+func TestAggregateAPIRange(t *testing.T) {
+	f := newFixture(t, aggFile)
+	var got struct {
+		Traces int
+		From   string
+	}
+	f.getJSON(t, "/api/aggregate?name=GET%20%2Forders&from=2026-11-17T17:02:30Z", &got)
+	if got.Traces != 2 || got.From != "2026-11-17T17:02:30Z" {
+		t.Errorf("traces %d from %q", got.Traces, got.From)
+	}
+}

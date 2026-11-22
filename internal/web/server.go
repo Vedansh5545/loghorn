@@ -89,6 +89,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("POST /api/query", s.query)
 	mux.HandleFunc("GET /api/record", s.record)
 	mux.HandleFunc("GET /api/trace", s.trace)
+	mux.HandleFunc("GET /api/aggregate", s.aggregate)
 	mux.HandleFunc("GET /api/favorites", s.listFavorites)
 	mux.HandleFunc("PUT /api/favorites/{name}", s.putFavorite)
 	mux.HandleFunc("DELETE /api/favorites/{name}", s.deleteFavorite)
@@ -495,6 +496,35 @@ func (s *server) trace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+// aggregate answers GET /api/aggregate?name=&service=&from=&to=: the merge of
+// the traces whose operation root span is named name. service ("" or "*": all)
+// restricts the roots only; from/to are query range values.
+func (s *server) aggregate(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	name := q.Get("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(name) > 1024 {
+		writeError(w, http.StatusBadRequest, "name too long")
+		return
+	}
+	rng := query.Range{From: q.Get("from"), To: q.Get("to")}
+	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.Info().RunStart)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	recs, _ := s.o.Store.Snapshot()
+	op, ok := trace.Aggregate(recs, trace.AggOptions{Name: name, Service: q.Get("service"), From: from, To: to})
+	if !ok {
+		writeError(w, http.StatusNotFound, "no root spans with that name in range")
+		return
+	}
+	writeJSON(w, http.StatusOK, op)
 }
 
 func (s *server) record(w http.ResponseWriter, r *http.Request) {
