@@ -1072,7 +1072,7 @@ export function render(result) {
   const head = $("head");
   head.replaceChildren();
   const names = shortNames(result.columns.map((c) => c.path));
-  for (const c of result.columns) head.append(headerCell(c, result.columns.length, names));
+  for (const c of result.columns) head.append(headerCell(c, names));
   const body = $("body");
   body.replaceChildren();
   for (const row of result.rows) {
@@ -1139,13 +1139,22 @@ function breakable(text) {
 
 const SVG = "http://www.w3.org/2000/svg";
 
-function trashIcon() {
+// ICONS are 16×16 stroke paths for the column menu's icon row.
+const ICONS = {
+  hide: ["M2 8s2.2-4 6-4 6 4 6 4-2.2 4-6 4-6-4-6-4z", "M8 6.3a1.7 1.7 0 1 0 0 3.4 1.7 1.7 0 1 0 0-3.4", "M2.5 13.5l11-11"],
+  first: ["M3.5 3v10", "M12.5 3L7 8l5.5 5"],
+  left: ["M10.5 3L5 8l5.5 5"],
+  right: ["M5.5 3l5.5 5-5.5 5"],
+  last: ["M12.5 3v10", "M3.5 3L9 8l-5.5 5"],
+};
+
+function icon(name) {
   const svg = document.createElementNS(SVG, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
-  svg.setAttribute("width", "13");
-  svg.setAttribute("height", "13");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
   svg.setAttribute("aria-hidden", "true");
-  for (const d of ["M2.5 4h11", "M6 4V2.5h4V4", "M4 4l.8 9.5h6.4L12 4", "M6.8 6.5v5", "M9.2 6.5v5"]) {
+  for (const d of ICONS[name]) {
     const p = document.createElementNS(SVG, "path");
     p.setAttribute("d", d);
     p.setAttribute("fill", "none");
@@ -1158,7 +1167,7 @@ function trashIcon() {
   return svg;
 }
 
-function headerCell(c, count, names) {
+function headerCell(c, names) {
   const th = el("th");
   th.dataset.path = c.path;
   th.title = c.path + " : " + c.type;
@@ -1175,14 +1184,6 @@ function headerCell(c, count, names) {
     openColumnMenu(c.path, label);
   });
   inner.append(label, sortArrows(c.path));
-  const del = el("button", "col-del");
-  del.type = "button";
-  del.title = "hide this column";
-  del.setAttribute("aria-label", "hide column " + c.path);
-  del.disabled = count <= 1;
-  del.append(trashIcon());
-  del.addEventListener("click", () => hideColumn(c.path));
-  inner.append(del);
   th.append(inner, resizeGrip(th));
   return th;
 }
@@ -1293,7 +1294,7 @@ function applyWidths(extra) {
   for (const tr of $("body").children) {
     if (tr.classList.contains("detail")) continue;
     Array.from(tr.children).forEach((td, i) => {
-      if (cut[i] && !td.title && td.scrollWidth > td.clientWidth) td.title = td.textContent;
+      if (cut[i] && !td.dataset.full && td.scrollWidth > td.clientWidth) td.dataset.full = td.textContent;
     });
   }
 }
@@ -1302,6 +1303,43 @@ function watchTableShown() {
   new ResizeObserver(() => {
     if (widthsStale && $("table").getClientRects().length) applyWidths();
   }).observe($("results"));
+}
+
+// The full text of a cut-off cell shows in the page's own tip: a native
+// title tooltip waits as long as the browser likes, and that can't be set.
+const TIP_DELAY_MS = 375;
+
+function wireCellTips() {
+  const tip = el("div", "cell-tip");
+  tip.hidden = true;
+  document.body.append(tip);
+  let timer = 0;
+  let cell = null;
+  const hide = () => {
+    clearTimeout(timer);
+    cell = null;
+    tip.hidden = true;
+  };
+  $("body").addEventListener("mouseover", (e) => {
+    const td = e.target.closest("td[data-full]");
+    if (td === cell) return;
+    hide();
+    if (!td) return;
+    cell = td;
+    timer = setTimeout(() => {
+      tip.textContent = td.dataset.full;
+      tip.hidden = false;
+      const r = td.getBoundingClientRect();
+      const t = tip.getBoundingClientRect();
+      let left = Math.min(r.left, window.innerWidth - 8 - t.width);
+      let top = r.bottom + 4;
+      if (top + t.height > window.innerHeight - 8) top = Math.max(8, r.top - 4 - t.height);
+      tip.style.left = Math.max(8, left) + "px";
+      tip.style.top = top + "px";
+    }, TIP_DELAY_MS);
+  });
+  $("body").addEventListener("mouseleave", hide);
+  document.addEventListener("scroll", hide, true);
 }
 
 const MIN_COL = 40;
@@ -2205,8 +2243,41 @@ function moveColumnAfter(path, afterPath) {
   setColumns(cols);
 }
 
-function moveColumnToStart(path) {
-  setColumns([path, ...currentColumns().filter((p) => p !== path)]);
+// columnIcons is the column menu's icon row: hide, then move to the start,
+// one left, one right and to the end.
+function columnIcons(path, shown) {
+  const row = el("div", "menu-icons");
+  const i = shown.indexOf(path);
+  const last = shown.length - 1;
+  const add = (name, tip, disabled, onClick) => {
+    const b = el("button", "menu-icon");
+    b.type = "button";
+    b.title = tip;
+    b.setAttribute("aria-label", tip + " (" + path + ")");
+    b.disabled = disabled;
+    b.append(icon(name));
+    b.addEventListener("click", onClick);
+    row.append(b);
+  };
+  add("hide", shown.length <= 1 ? "the last column cannot be hidden" : "hide column", i < 0 || shown.length <= 1, () => hideColumn(path));
+  row.append(el("span", "menu-icons-gap"));
+  add("first", "move to start", i <= 0, () => moveColumnTo(path, 0));
+  add("left", "move left", i <= 0, () => moveColumnTo(path, i - 1));
+  add("right", "move right", i < 0 || i === last, () => moveColumnTo(path, i + 1));
+  add("last", "move to end", i < 0 || i === last, () => moveColumnTo(path, last));
+  return row;
+}
+
+// moveColumnTo puts shown column path at index to, then reopens the menu on
+// its new heading so the arrows can be clicked again.
+async function moveColumnTo(path, to) {
+  const cols = currentColumns().filter((p) => p !== path);
+  cols.splice(to, 0, path);
+  closeColumnMenu();
+  state.columns = cols;
+  await runQuery();
+  const label = $("head").querySelector('th[data-path="' + CSS.escape(path) + '"] .th-menu');
+  if (label) openColumnMenu(path, label);
 }
 
 // alphabetizeColumns orders the shown columns by their last path element,
@@ -2277,7 +2348,7 @@ function openColumnMenu(path, anchorEl) {
   const shown = currentColumns();
   const title = el("div", "menu-title fpath");
   title.append(breakable(path));
-  menu.append(title);
+  menu.append(title, columnIcons(path, shown));
   const ro = readOnly();
   const fmt = (control) => {
     if (ro) {
@@ -2311,9 +2382,6 @@ function openColumnMenu(path, anchorEl) {
   menu.append(menuRow("label", fmt(label)));
   menu.append(menuRow("long text", fmt(selectOf(["crop", "wrap"], f.wrap ? "wrap" : "crop", (v) => saveFieldFormat(path, { wrap: v === "wrap" })))));
   menu.append(el("hr"));
-  const hide = menuButton("Hide", () => hideColumn(path), shown.length <= 1 || !shown.includes(path));
-  if (hide.disabled) hide.title = "the last column cannot be hidden";
-  menu.append(hide);
   for (const [text, d] of [["Sort ascending", false], ["Sort descending", true]]) {
     const on = sortedBy(path, d);
     const b = menuButton((on ? "✓ " : "") + text, () => sortBy(path, d));
@@ -2325,7 +2393,6 @@ function openColumnMenu(path, anchorEl) {
   const sub = menuButton("Add / Move ▸", () => openColumnSubmenu(path, sub));
   sub.setAttribute("aria-haspopup", "true");
   menu.append(sub);
-  menu.append(menuButton("Move to start", () => moveColumnToStart(path), shown[0] === path || !shown.includes(path)));
   placeMenu(menu, anchorEl, false);
 }
 
@@ -2864,6 +2931,7 @@ async function init() {
   wireSchema();
   wireFavorites();
   watchTableShown();
+  wireCellTips();
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();

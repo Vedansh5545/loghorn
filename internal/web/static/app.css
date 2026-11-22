@@ -115,10 +115,6 @@ table.fixed tr.row td { overflow: hidden; text-overflow: ellipsis; }
 .sort-btn { padding: 0 2px; border: none; background: transparent; color: var(--muted); opacity: 0.35; font-size: 8px; line-height: 1; }
 .sort-btn:hover, .sort-btn:focus-visible { opacity: 1; background: var(--row-hover); }
 .sort-btn.on { opacity: 1; color: var(--accent); }
-.col-del { flex: none; display: inline-flex; padding: 1px 2px; border: none; background: transparent; color: var(--muted); opacity: 0.45; }
-th:hover .col-del, .col-del:focus-visible { opacity: 1; }
-.col-del:hover { color: var(--err-fg); background: var(--row-hover); }
-.col-del:disabled { visibility: hidden; }
 .col-resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; touch-action: none; user-select: none; }
 .col-resize:hover, .resizing .col-resize:active { border-right: 2px solid var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; }
@@ -272,6 +268,12 @@ td .muted { color: var(--muted); }
 .col-menu > .menu-title { color: var(--fg); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 4px 6px; margin-bottom: 2px; }
 .menu-row { display: grid; grid-template-columns: 5.5em minmax(0, 1fr); align-items: center; gap: 6px; color: var(--muted); padding: 1px 4px; }
 .menu-row select, .menu-row input { min-width: 0; }
+.menu-icons { display: flex; align-items: center; gap: 2px; padding: 2px 0 4px; }
+.menu-icons-gap { width: 10px; }
+.menu-icon { display: inline-flex; padding: 4px 6px; border-color: transparent; background: transparent; color: var(--fg); }
+.menu-icon:hover:not(:disabled) { background: var(--row-hover); color: var(--accent); }
+.menu-icon:disabled { color: var(--muted); opacity: 0.4; cursor: default; }
+.cell-tip { position: fixed; z-index: 40; max-width: min(640px, calc(100vw - 16px)); max-height: 50vh; overflow: hidden; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--fg); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
 .menu-item { text-align: left; border-color: transparent; background: transparent; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item:hover:not(:disabled) { background: var(--row-hover); }
 .menu-item.checked { color: var(--accent); }
