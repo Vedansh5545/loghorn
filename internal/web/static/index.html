@@ -28,16 +28,16 @@
 <div class="layout">
 <aside id="sidebar" class="sidebar">
   <section id="sb-view" class="sb tabs" role="tablist" aria-label="view">
-    <button type="button" class="tab" role="tab" data-view="samples">Samples</button>
-    <button type="button" class="tab" role="tab" data-view="table">Table</button>
-    <button type="button" class="tab" role="tab" data-view="graph">Graph</button>
+    <button type="button" class="tab" role="tab" data-view="samples">Samples<span class="tab-sym" aria-hidden="true">≡</span></button>
+    <button type="button" class="tab" role="tab" data-view="table">Table<span class="tab-sym" aria-hidden="true">▦</span></button>
+    <button type="button" class="tab" role="tab" data-view="graph">Graph<span class="tab-sym" aria-hidden="true">∿</span></button>
   </section>
   <div class="sb-form">
     <div id="sb-mode" class="sb-field">
       <span class="sb-l" id="sb-mode-label">Mode</span>
       <div class="sb-body tabs" role="group" aria-labelledby="sb-mode-label">
-        <button type="button" class="tab" data-source="log">Logs</button>
-        <button type="button" class="tab" data-source="otel">Spans</button>
+        <button type="button" class="tab" data-source="otel">Spans<span class="tab-sym" aria-hidden="true">⟷</span></button>
+        <button type="button" class="tab" data-source="log">Logs<span class="tab-sym" aria-hidden="true">¶</span></button>
       </div>
     </div>
     <div id="sb-service" class="sb-field">
