@@ -141,6 +141,24 @@
     <button id="schema-open" type="button">Schema…</button>
   </span>
 </footer>
+<section id="trace" class="trace" aria-label="trace waterfall" hidden>
+  <div class="trace-top">
+    <div id="trace-head" class="trace-head"></div>
+    <div id="trace-tools" class="trace-tools">
+      <button id="trace-close" type="button" title="back to the table (Esc)">Close</button>
+      <button id="trace-reload" type="button" title="fetch this trace again">Reload</button>
+      <button id="trace-collapse" type="button" title="collapse every span with children">Collapse all</button>
+      <button id="trace-expand" type="button" title="expand every span">Expand all</button>
+    </div>
+  </div>
+  <div id="trace-legend" class="trace-legend"></div>
+  <div id="trace-grid" class="trace-grid">
+    <div id="trace-axis" class="trace-axis"></div>
+    <div id="trace-rows" class="trace-rows"></div>
+  </div>
+  <div id="trace-detail" class="detail trace-detail"></div>
+  <div id="trace-self" class="trace-self"></div>
+</section>
 </div>
 </div>
 <dialog id="schema-dialog" class="schema-dialog">

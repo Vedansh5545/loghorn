@@ -30,6 +30,15 @@
   --series-9: #0e8fb3;
   --series-10: #8a6d00;
   --series-other: #9a9891;
+  /* Trace waterfall bar colours, one per span type group. They refer to the
+     series tokens, so the dark block's series values apply to them too. */
+  --trace-db: var(--series-1);
+  --trace-http: var(--series-2);
+  --trace-rpc: var(--series-3);
+  --trace-messaging: var(--series-4);
+  --trace-gen_ai: var(--series-5);
+  --trace-span: var(--series-6);
+  --trace-missing: var(--series-other);
   /* SQL colours: the terminal UI's hues, darkened to 4.5:1 on --bg. */
   --sql-kw: #884cff;
   --sql-type: #007da6;
@@ -299,3 +308,52 @@ td .muted { color: var(--muted); }
 .sql-str { color: var(--sql-str); }
 .sql-num { color: var(--sql-num); }
 .sql-com { color: var(--muted); }
+
+/* ---- trace waterfall ---- */
+.trace-link { color: var(--accent); text-decoration: none; }
+.trace-link:hover { text-decoration: underline; }
+.trace { padding: 8px 0 16px; }
+.trace-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.trace-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
+.trace-head .trace-id { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }
+.trace-head .trace-note { color: var(--bad-fg); }
+.trace-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.trace-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 6px 0; color: var(--muted); font-size: 12px; }
+.legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
+.trace-grid { display: grid; font-family: var(--mono); font-size: 12.5px; }
+.trace-axis, .trace-rows, .trace-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.trace-axis { position: sticky; top: 0; z-index: 1; height: 22px; background: var(--bg); border-bottom: 1px solid var(--line); }
+.ax-track { position: relative; }
+.ax-label { position: absolute; top: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; transform: translateX(-50%); }
+.ax-label.first { transform: none; }
+.ax-label.last { transform: translateX(-100%); }
+.trace-row { min-height: 22px; cursor: pointer; }
+.trace-row:hover { background: var(--row-hover); }
+.trace-row.selected { background: var(--panel); box-shadow: inset 3px 0 var(--accent); }
+.tr-name { display: flex; align-items: stretch; min-width: 0; overflow: hidden; padding-right: 8px; }
+.tr-svc { align-self: center; padding-right: 12px; color: var(--muted); white-space: nowrap; }
+.tr-label { align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-row.missing .tr-label { color: var(--muted); font-style: italic; }
+.tg, .tw-pad { flex: none; width: 14px; position: relative; }
+.tg.v::before, .tg.tee::before, .tg.end::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; border-left: 1px solid var(--muted); opacity: 0.5; }
+.tg.end::before { bottom: 50%; }
+.tg.tee::after, .tg.end::after { content: ""; position: absolute; left: 6px; right: 0; top: 50%; border-top: 1px solid var(--muted); opacity: 0.5; }
+.twisty { flex: none; width: 14px; padding: 0; border: none; background: transparent; color: var(--muted); font-size: 10px; line-height: 1; }
+.twisty:hover { color: var(--accent); }
+.tr-bar { position: relative; background-image: linear-gradient(to right, var(--line) 1px, transparent 1px); background-size: var(--grid-step, 100%) 100%; }
+.tbar { position: absolute; top: 5px; height: 12px; border-radius: 2px; background: var(--trace-span); }
+.bar-db { background: var(--trace-db); }
+.bar-http { background: var(--trace-http); }
+.bar-rpc { background: var(--trace-rpc); }
+.bar-messaging { background: var(--trace-messaging); }
+.bar-gen_ai { background: var(--trace-gen_ai); }
+.bar-span { background: var(--trace-span); }
+.bar-missing { background: repeating-linear-gradient(135deg, var(--trace-missing) 0 3px, transparent 3px 6px); box-shadow: inset 0 0 0 1px var(--trace-missing); }
+.bar-error { outline: 2px solid var(--sev-error); outline-offset: 1px; }
+.bar-label { position: absolute; top: 4px; font-size: 11px; line-height: 14px; color: var(--muted); white-space: nowrap; }
+.bar-label.inside { color: #fff; }
+.trace-detail { margin-top: 10px; padding: 8px 12px; background: var(--panel); border-radius: 4px; }
+.trace-detail:empty { display: none; }
+.trace-detail .ph-title { font-weight: 600; margin: 0 0 4px; }
+.trace-detail .ph-line { margin: 0; font-family: var(--mono); font-size: 12.5px; }

@@ -2,6 +2,7 @@
 // textContent or attributes, never innerHTML.
 
 import { drawGraph } from "./graph.js";
+import { initTrace, openTrace, restoreTraceFromURL, traceURLParams } from "./trace.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -331,8 +332,9 @@ function saveURL() {
   // A missing source means log, so only otel is written.
   if (full.source !== "otel") delete full.source;
   if (!full.service) delete full.service;
-  const q = "?q=" + encodeURIComponent(JSON.stringify(full));
-  if (location.search !== q) history.replaceState(null, "", q);
+  const q = "?q=" + encodeURIComponent(JSON.stringify(full)) + traceURLParams();
+  // history.state marks an entry the trace view pushed; keep it.
+  if (location.search !== q) history.replaceState(history.state, "", q);
 }
 
 // applyQuery replaces state with q (from the URL or a favorite), filling in
@@ -927,6 +929,30 @@ function resetQueryParts() {
 
 const NUMERIC = new Set(["int", "float", "duration"]);
 
+// Cells of these columns link to the trace waterfall.
+export const TRACE_PATHS = new Set(["trace_id", "trace"]);
+export const SPAN_PATHS = new Set(["span_id", "spanId", "parent_span_id"]);
+
+// traceLinked wraps node, the rendered cell of column path, in a link that
+// opens the waterfall when the cell holds a non-empty string ID; else it
+// returns node as it is.
+function traceLinked(node, cell, path) {
+  const isTrace = TRACE_PATHS.has(path);
+  if (!isTrace && !SPAN_PATHS.has(path)) return node;
+  const v = cell && !cell.bad ? cell.v : undefined;
+  if (typeof v !== "string" || !v.trim()) return node;
+  const a = el("a", "trace-link");
+  a.href = "#";
+  a.title = isTrace ? "open this trace" : "open this span in its trace";
+  a.append(node);
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // not the row's detail toggle
+    openTrace(isTrace ? { trace: v } : { span: v });
+  });
+  return a;
+}
+
 function cellNode(row, cell, col) {
   if (col.path === "timestamp" && row.timeInherited && (!cell || cell.v === null || cell.v === undefined)) {
     const d = new Date(row.time);
@@ -983,7 +1009,7 @@ function renderTable(result) {
       if (c.group && (!cell || cell.v === null || cell.v === undefined) && !(cell && cell.bad)) {
         td.append(el("span", "muted", "(empty)"));
       } else {
-        td.append(visualize(cell, c));
+        td.append(traceLinked(visualize(cell, c), cell, c.path));
       }
       tr.append(td);
     });
@@ -1034,7 +1060,7 @@ export function render(result) {
     tr.dataset.seq = String(row.seq);
     result.columns.forEach((c, i) => {
       const td = el("td", NUMERIC.has(c.type) ? "num" : "");
-      td.append(cellNode(row, row.cells[i], c));
+      td.append(traceLinked(cellNode(row, row.cells[i], c), row.cells[i], c.path));
       tr.append(td);
     });
     tr.addEventListener("click", () => toggleDetail(tr, result.columns.length));
@@ -1328,9 +1354,15 @@ async function toggleDetail(tr, span) {
   td.append(el("span", "", "loading…"));
   d.append(td);
   tr.after(d);
+  await fillRecordDetail(td, tr.dataset.seq);
+}
+
+// fillRecordDetail replaces container's children with record seq: its SQL
+// fields formatted and coloured, then the raw record. An error shows in place.
+export async function fillRecordDetail(container, seq) {
   try {
-    const rec = await api("GET", "/api/record?seq=" + encodeURIComponent(tr.dataset.seq));
-    td.replaceChildren();
+    const rec = await api("GET", "/api/record?seq=" + encodeURIComponent(seq));
+    container.replaceChildren();
     for (const path of Object.keys(rec.sql || {}).sort()) {
       const toks = rec.sqlTokens && rec.sqlTokens[path];
       let pre = preOf(rec.sql[path]);
@@ -1338,11 +1370,11 @@ async function toggleDetail(tr, span) {
         pre = el("pre");
         pre.append(sqlSpan(toks, rec.sql[path]));
       }
-      td.append(el("h3", "", path + " (SQL)"), pre);
+      container.append(el("h3", "", path + " (SQL)"), pre);
     }
-    td.append(el("h3", "", "record"), preOf(rec.raw));
+    container.append(el("h3", "", "record"), preOf(rec.raw));
   } catch (err) {
-    td.replaceChildren(el("span", "bad", err.message));
+    container.replaceChildren(el("span", "bad", err.message));
   }
 }
 
@@ -1390,7 +1422,9 @@ async function refresh() {
     showError(err.message);
     return;
   }
-  runQuery();
+  // Awaited so init opens a deep-linked trace after the query's answer, which
+  // would otherwise clear the trace's error banner.
+  await runQuery();
 }
 
 // ---- schema of the current stream ----
@@ -2793,7 +2827,9 @@ async function init() {
   wireColumns();
   wireSchema();
   wireFavorites();
+  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass });
   await refresh();
+  restoreTraceFromURL();
   rebuildExplore();
 }
 
