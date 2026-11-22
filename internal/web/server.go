@@ -22,6 +22,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
+	"github.com/jimbeveridge/loghorn/internal/sqlcolor"
 	"github.com/jimbeveridge/loghorn/internal/sqlfmt"
 	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/svcconf"
@@ -498,6 +499,7 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sql := map[string]string{}
+	tokens := map[string][]sqlcolor.Token{}
 	for _, f := range sch.Fields {
 		if f.Visualizer != schema.VSQL {
 			continue
@@ -511,11 +513,13 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		} else {
 			sql[f.Path] = v
 		}
+		tokens[f.Path] = sqlcolor.Tokens(sql[f.Path])
 	}
 	writeJSON(w, http.StatusOK, struct {
-		Raw string            `json:"raw"`
-		SQL map[string]string `json:"sql"`
-	}{raw, sql})
+		Raw       string                      `json:"raw"`
+		SQL       map[string]string           `json:"sql"`
+		SQLTokens map[string][]sqlcolor.Token `json:"sqlTokens"`
+	}{raw, sql, tokens})
 }
 
 func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {

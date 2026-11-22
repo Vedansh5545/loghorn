@@ -277,8 +277,9 @@ func TestRecordSQLFormatted(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got struct {
-		Raw string
-		SQL map[string]string
+		Raw       string
+		SQL       map[string]string
+		SQLTokens map[string][]struct{ C, T string }
 	}
 	f.getJSON(t, "/api/record?seq=2", &got)
 	if !strings.Contains(got.Raw, "\n  \"severity\"") {
@@ -287,6 +288,15 @@ func TestRecordSQLFormatted(t *testing.T) {
 	sql := got.SQL["databaseContext.metadata.query"]
 	if !strings.Contains(sql, "\n") || !strings.Contains(strings.ToLower(sql), "from") {
 		t.Fatalf("sql not formatted: %q (all %v)", sql, got.SQL)
+	}
+	var rebuilt strings.Builder
+	kw := false
+	for _, tk := range got.SQLTokens["databaseContext.metadata.query"] {
+		rebuilt.WriteString(tk.T)
+		kw = kw || tk.C == "kw"
+	}
+	if rebuilt.String() != sql || !kw {
+		t.Fatalf("sql tokens %v do not colour %q", got.SQLTokens, sql)
 	}
 	// Big ints keep their digits in raw.
 	f.getJSON(t, "/api/record?seq=4", &got)

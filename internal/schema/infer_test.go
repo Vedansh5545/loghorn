@@ -136,6 +136,11 @@ func TestDefaultVisualizerLogEntry(t *testing.T) {
 			t.Errorf("%s=%s want %s", p, got, w)
 		}
 	}
+	for _, p := range []string{"db.query.text", "db.statement"} {
+		if got := DefaultVisualizer(p, TString); got != VSQL {
+			t.Errorf("%s=%s want sql", p, got)
+		}
+	}
 	if got := DefaultVisualizer("other", TInt); got != VNumber {
 		t.Errorf("int=%s", got)
 	}
@@ -186,5 +191,67 @@ func TestInferService(t *testing.T) {
 		if s := Infer(svc, "otel", "db", recs); len(s.Fields) != 2 || s.Fields[0].Count != 3 {
 			t.Fatalf("service %q: %+v", svc, s.Fields)
 		}
+	}
+}
+
+// The always-shown fields are kept regardless of the cap, after the lead and
+// before any count-ordered filler; filler only fills up to maxDefaultColumns.
+func TestDefaultColumnsAlways(t *testing.T) {
+	var fs []Field
+	add := func(p string, n int) { fs = append(fs, Field{Path: p, Type: TString, Count: n}) }
+	add("timestamp", 100)
+	add("severity", 100)
+	add("message", 100)
+	add("otel.resource.host.name", 100)
+	add("loghorn.run.id", 100)
+	add("latency", 40)
+	add("span_id", 30)
+	add("duration_ms", 20)
+	for _, p := range []string{"otel.attributes.z", "otel.attributes.a.b", "otel.attributes.c", "otel.attributes.d", "otel.attributes.e", "otel.attributes.f"} {
+		add(p, 5)
+	}
+	fs = append(fs, Field{Path: "otel.attributes.hidden", Type: TString, Count: 5, Hidden: true})
+	fs = append(fs, Field{Path: "otel.attributes.obj", Type: TJSON, Count: 5})
+	got := DefaultColumns("", fs)
+	want := []string{"timestamp", "severity", "message", "latency", "duration_ms", "span_id",
+		"otel.attributes.a.b", "otel.attributes.c", "otel.attributes.d", "otel.attributes.e", "otel.attributes.f", "otel.attributes.z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns=%v\nwant     %v", got, want)
+	}
+
+	// Fewer always-shown fields: filler by count tops up to the cap.
+	got = DefaultColumns("", []Field{
+		{Path: "timestamp", Count: 9}, {Path: "message", Count: 9}, {Path: "otel.attributes.x", Count: 1},
+		{Path: "a", Count: 8}, {Path: "b", Count: 7}, {Path: "c", Count: 6}, {Path: "d", Count: 5}, {Path: "e", Count: 4}, {Path: "f", Count: 3},
+	})
+	want = []string{"timestamp", "message", "otel.attributes.x", "a", "b", "c", "d", "e"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns=%v\nwant     %v", got, want)
+	}
+
+	// Spans keep their lead, then the always-shown fields.
+	got = DefaultColumns("otel", []Field{
+		{Path: "timestamp", Count: 9}, {Path: "name", Count: 9}, {Path: "duration_ms", Count: 9},
+		{Path: "severity", Count: 9}, {Path: "span_id", Count: 9}, {Path: "trace_id", Count: 9},
+	})
+	want = []string{"timestamp", "name", "duration_ms", "severity", "span_id", "trace_id"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("otel columns=%v\nwant     %v", got, want)
+	}
+}
+
+// Spans always show kind, span_id and every attribute, after the span lead.
+func TestDefaultColumnsSpanAttributes(t *testing.T) {
+	var fs []Field
+	for _, p := range []string{"timestamp", "name", "duration_ms", "severity", "trace_id", "parent_span_id",
+		"kind", "span_id", "span.type", "end", "otel.resource.host.name", "otel.scope.name",
+		"db.system.name", "db.query.text", "db.namespace", "db.operation.name", "db.collection.name", "db.response.returned_rows", "attributes.name"} {
+		fs = append(fs, Field{Path: p, Type: TString, Count: 10})
+	}
+	got := DefaultColumns("otel", fs)
+	want := []string{"timestamp", "name", "duration_ms", "severity", "span_id", "kind",
+		"attributes.name", "db.collection.name", "db.namespace", "db.operation.name", "db.query.text", "db.response.returned_rows", "db.system.name"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns=%v\nwant     %v", got, want)
 	}
 }

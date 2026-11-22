@@ -150,11 +150,18 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 	return s
 }
 
+// alwaysColumns are shown by default whenever present, after the source's
+// lead and in this order, however many there are; then, for spans, kind;
+// then every attribute by path (otel.attributes.* for logs, each field from
+// the span's attributes for spans).
+var alwaysColumns = []string{"timestamp", "severity", "message", "latency", "duration_ms", "span_id"}
+
 // DefaultColumns picks the columns shown when a query names none: the
 // source's lead fields that are present (timestamp, severity, message for
-// log; timestamp, name, duration_ms for otel), then the rest by Count
-// descending, capped at maxDefaultColumns. Hidden, labels.* and json fields
-// are skipped.
+// log; timestamp, name, duration_ms for otel), then the always-shown fields
+// (alwaysColumns, for spans kind, then attributes by path), then the rest by Count
+// descending while fewer than maxDefaultColumns are picked. Hidden, labels.*
+// and json fields are skipped.
 func DefaultColumns(source string, fields []Field) []string {
 	lead := []string{"timestamp", "severity", "message"}
 	if src, _ := record.ParseSource(source); src == record.SourceOtel {
@@ -164,17 +171,44 @@ func DefaultColumns(source string, fields []Field) []string {
 	for _, f := range fields {
 		byPath[f.Path] = f
 	}
+	shown := func(f Field) bool {
+		return !f.Hidden && !strings.HasPrefix(f.Path, "labels.") && f.Type != TJSON
+	}
 	var cols []string
 	used := map[string]bool{}
+	pick := func(p string) {
+		if f, ok := byPath[p]; ok && !used[p] && shown(f) {
+			cols = append(cols, p)
+			used[p] = true
+		}
+	}
 	for _, p := range lead {
 		if _, ok := byPath[p]; ok {
 			cols = append(cols, p)
 			used[p] = true
 		}
 	}
+	for _, p := range alwaysColumns {
+		pick(p)
+	}
+	isAttr := func(p string) bool { return strings.HasPrefix(p, "otel.attributes.") }
+	if src, _ := record.ParseSource(source); src == record.SourceOtel {
+		pick("kind")
+		isAttr = record.IsSpanAttribute
+	}
+	var attrs []string
+	for _, f := range fields {
+		if isAttr(f.Path) {
+			attrs = append(attrs, f.Path)
+		}
+	}
+	sort.Strings(attrs)
+	for _, p := range attrs {
+		pick(p)
+	}
 	rest := make([]Field, 0, len(fields))
 	for _, f := range fields {
-		if used[f.Path] || f.Hidden || strings.HasPrefix(f.Path, "labels.") || f.Type == TJSON {
+		if used[f.Path] || !shown(f) {
 			continue
 		}
 		rest = append(rest, f)
@@ -209,6 +243,8 @@ func DefaultVisualizer(path string, t Type) string {
 		return VDuration
 	case path == "httpRequest.requestUrl":
 		return VLink
+	case path == "db.query.text", path == "db.statement": // OTel's SQL text, current and older name
+		return VSQL
 	}
 	switch t {
 	case TInt, TFloat:

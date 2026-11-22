@@ -46,6 +46,7 @@ let started = false; // the first refresh has checked the URL's kind
 
 const ALL_SERVICES = "*";
 const SERVICE_KEY = "loghorn.service"; // localStorage: the last service chosen
+const SIDEBAR_KEY = "loghorn.sidebar"; // localStorage: "closed" when the controls are hidden
 const TOP_KINDS = 10;
 let lastResult = null;
 let lastResultStream = ""; // the streamKey() lastResult belongs to
@@ -213,6 +214,26 @@ export function linkify(text, max) {
   return out;
 }
 
+// sqlSpan renders SQL colour tokens ({c: class, t: text}) as a <span>, each
+// classed token in a span of class sql-<c>. With max, it clips like linkify:
+// the first max characters, an ellipsis, and the full text as the title.
+export function sqlSpan(tokens, text, max) {
+  const out = el("span", "sql");
+  const clip = max !== undefined && text.length > max;
+  let budget = clip ? max - 1 : Infinity;
+  for (const tk of tokens) {
+    if (budget <= 0) break;
+    const t = tk.t.length > budget ? tk.t.slice(0, budget) : tk.t;
+    budget -= t.length;
+    out.append(tk.c ? el("span", "sql-" + tk.c, t) : document.createTextNode(t));
+  }
+  if (clip) {
+    out.append(document.createTextNode("…"));
+    out.title = text;
+  }
+  return out;
+}
+
 // WRAP_MAX is the cell clip for a column set to wrap: wrapping is for
 // reading long values, but one huge value should not fill the page.
 const WRAP_MAX = 2000;
@@ -271,6 +292,8 @@ export function visualize(cell, column) {
       // JSON.parse rounds integers above 2^53.
       return truncated(asText(v), clip(80));
     case "sql":
+      if (cell && Array.isArray(cell.sql)) return sqlSpan(cell.sql, asText(v), clip(120));
+    // falls through: a value the server did not colour shows as raw
     case "raw":
     default:
       return truncated(asText(v), clip(120));
@@ -932,12 +955,12 @@ export function metricLabel(a) {
 }
 
 // tableHeaderCell is a column header with a resize grip but no remove button.
-function tableHeaderCell(c) {
+function tableHeaderCell(c, names) {
   const th = el("th");
   th.dataset.path = c.path;
   th.title = c.path + " : " + c.type;
   const inner = el("div", "th-inner");
-  inner.append(breakable(c.label || c.path));
+  inner.append(breakable(colName(c, names)));
   const grip = el("span", "col-resize");
   grip.title = "drag to resize · double-click to fit";
   if (!c.group) th.dataset.temp = "1"; // a metric: not a schema field
@@ -948,7 +971,8 @@ function tableHeaderCell(c) {
 // renderTable shows grouped results: one row per group, no expansion.
 function renderTable(result) {
   const head = $("head");
-  head.replaceChildren(...result.columns.map(tableHeaderCell));
+  const names = shortNames(result.columns.map((c) => c.path));
+  head.replaceChildren(...result.columns.map((c) => tableHeaderCell(c, names)));
   const body = $("body");
   body.replaceChildren();
   for (const row of result.rows) {
@@ -1001,7 +1025,8 @@ export function render(result) {
   lastResultStream = streamKey();
   const head = $("head");
   head.replaceChildren();
-  for (const c of result.columns) head.append(headerCell(c, result.columns.length));
+  const names = shortNames(result.columns.map((c) => c.path));
+  for (const c of result.columns) head.append(headerCell(c, result.columns.length, names));
   const body = $("body");
   body.replaceChildren();
   for (const row of result.rows) {
@@ -1021,6 +1046,33 @@ export function render(result) {
   $("footer-text").textContent = foot;
   renderColumnNames();
   applyWidths();
+}
+
+// shortNames maps each path to its shortest dot-separated tail that no other
+// path in paths shares as a tail, so otel.attributes.httpRequest.status shows
+// as status, and latency next to otel.attributes.httpRequest.latency shows as
+// httpRequest.latency.
+export function shortNames(paths) {
+  const out = {};
+  paths.forEach((p, i) => {
+    const parts = p.split(".");
+    for (let n = 1; n <= parts.length; n++) {
+      const tail = parts.slice(-n).join(".");
+      if (!paths.some((q, j) => j !== i && (q === tail || q.endsWith("." + tail)))) {
+        out[p] = tail;
+        return;
+      }
+    }
+    out[p] = p;
+  });
+  return out;
+}
+
+// colName is a column's shown name: its label, else its short name. The
+// server sends the path as the label when none is set.
+function colName(c, names) {
+  if (c.label && c.label !== c.path) return c.label;
+  return names[c.path] || c.path;
 }
 
 // breakable renders text with a line-break opportunity after each period, so
@@ -1055,12 +1107,12 @@ function trashIcon() {
   return svg;
 }
 
-function headerCell(c, count) {
+function headerCell(c, count, names) {
   const th = el("th");
   th.dataset.path = c.path;
   th.title = c.path + " : " + c.type;
   const inner = el("div", "th-inner");
-  const label = breakable(c.label || c.path);
+  const label = breakable(colName(c, names));
   label.classList.add("th-menu");
   label.tabIndex = 0;
   label.setAttribute("role", "button");
@@ -1071,7 +1123,7 @@ function headerCell(c, count) {
     e.preventDefault();
     openColumnMenu(c.path, label);
   });
-  inner.append(label);
+  inner.append(label, sortArrows(c.path));
   const del = el("button", "col-del");
   del.type = "button";
   del.title = "hide this column";
@@ -1113,38 +1165,76 @@ function savedWidths() {
   return Object.assign(w, tempWidths);
 }
 
-// applyWraps marks the cells of columns set to wrap; the others crop.
+// applyWraps marks the cells of columns set to wrap; the others crop. It
+// returns, per column, whether it wraps.
 function applyWraps(ths) {
   const wrap = ths.map((th) => !th.dataset.temp && !!(fieldByPath(th.dataset.path) || {}).wrap);
   for (const tr of $("body").children) {
     if (tr.classList.contains("detail")) continue;
     Array.from(tr.children).forEach((td, i) => td.classList.toggle("wrap", !!wrap[i]));
   }
+  return wrap;
+}
+
+// AUTO_MAX_CH caps a column sized from its content, in characters of the
+// table font, so one long value doesn't make the column as wide as itself.
+// message and columns set to wrap are not capped.
+const AUTO_MAX_CH = 40;
+
+let chPx = 0;
+
+// autoMaxPx is AUTO_MAX_CH in pixels of the table's monospace font.
+function autoMaxPx() {
+  if (!chPx) {
+    const probe = el("span", "", "0".repeat(100));
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font-family:var(--mono);font-size:12.5px";
+    document.body.append(probe);
+    chPx = probe.getBoundingClientRect().width / 100;
+    probe.remove();
+  }
+  return Math.round(AUTO_MAX_CH * chPx);
+}
+
+// capped reports whether a column without a dragged width is held to
+// autoMaxPx.
+function capped(th, i, wrap) {
+  return th.dataset.path !== "message" && !wrap[i];
 }
 
 // applyWidths lays the table out from its content, then, if any column has a
-// dragged width, freezes every column at its width (dragged or natural) with
-// a fixed table layout so a column can be narrower than its content. It sets
-// each column's crop or wrap first, since that changes the natural widths.
+// dragged width or a content width over autoMaxPx, freezes every column at
+// its width (dragged, capped or natural) with a fixed table layout so a
+// column can be narrower than its content; a value cut short by the cap gets
+// its full text as a tooltip. It sets each column's crop or wrap first, since
+// that changes the natural widths.
 function applyWidths(extra) {
   const table = $("table");
   const ths = Array.from($("head").children);
-  applyWraps(ths);
+  const wrap = applyWraps(ths);
   const w = Object.assign(savedWidths(), extra || {});
   table.classList.remove("fixed");
   table.style.width = "";
   for (const th of ths) th.style.width = "";
   renderRestore();
-  if (!ths.some((th) => th.dataset.path in w)) return;
   const natural = ths.map((th) => th.getBoundingClientRect().width);
+  const max = autoMaxPx();
+  const cut = ths.map((th, i) => !(th.dataset.path in w) && capped(th, i, wrap) && natural[i] > max);
+  if (!ths.some((th) => th.dataset.path in w) && !cut.some(Boolean)) return;
   let total = 0;
   ths.forEach((th, i) => {
-    const px = th.dataset.path in w ? w[th.dataset.path] : natural[i];
+    const px = th.dataset.path in w ? w[th.dataset.path] : cut[i] ? max : natural[i];
     th.style.width = px + "px";
     total += px;
   });
   table.style.width = total + "px";
   table.classList.add("fixed");
+  if (!cut.some(Boolean)) return;
+  for (const tr of $("body").children) {
+    if (tr.classList.contains("detail")) continue;
+    Array.from(tr.children).forEach((td, i) => {
+      if (cut[i] && !td.title && td.scrollWidth > td.clientWidth) td.title = td.textContent;
+    });
+  }
 }
 
 const MIN_COL = 40;
@@ -1194,6 +1284,22 @@ function renderRestore() {
   const def = schemaData && schemaData.schema && Array.isArray(schemaData.schema.columns) ? schemaData.schema.columns : [];
   const cols = currentColumns();
   $("col-restore").hidden = !def.length || (cols.length === def.length && cols.every((p, i) => p === def[i]));
+  $("col-all").hidden = !unshownFields().length;
+}
+
+// unshownFields are the stream's fields, not hidden, that are not shown as
+// columns, by path.
+function unshownFields() {
+  const shown = new Set(currentColumns());
+  return schemaFields()
+    .filter((f) => !f.hidden && !shown.has(f.path))
+    .map((f) => f.path)
+    .sort();
+}
+
+// showAllColumns keeps the shown columns in order and adds every other field.
+function showAllColumns() {
+  setColumns([...currentColumns(), ...unshownFields()]);
 }
 
 // preOf is a <pre> whose http(s) URLs are links.
@@ -1221,7 +1327,13 @@ async function toggleDetail(tr, span) {
     const rec = await api("GET", "/api/record?seq=" + encodeURIComponent(tr.dataset.seq));
     td.replaceChildren();
     for (const path of Object.keys(rec.sql || {}).sort()) {
-      td.append(el("h3", "", path + " (SQL)"), preOf(rec.sql[path]));
+      const toks = rec.sqlTokens && rec.sqlTokens[path];
+      let pre = preOf(rec.sql[path]);
+      if (Array.isArray(toks)) {
+        pre = el("pre");
+        pre.append(sqlSpan(toks, rec.sql[path]));
+      }
+      td.append(el("h3", "", path + " (SQL)"), pre);
     }
     td.append(el("h3", "", "record"), preOf(rec.raw));
   } catch (err) {
@@ -1321,9 +1433,10 @@ function renderColumnNames() {
   const box = $("colnames");
   box.replaceChildren();
   const cols = lastResult ? lastResult.columns : [];
+  const names = shortNames(cols.map((c) => c.path));
   cols.forEach((c, i) => {
     if (i) box.append(el("span", "sep", " · "));
-    const b = el("button", "colname", c.label || c.path);
+    const b = el("button", "colname", colName(c, names));
     b.type = "button";
     b.title = c.path;
     b.setAttribute("aria-haspopup", "true");
@@ -2022,10 +2135,11 @@ function moveColumnToStart(path) {
 }
 
 // alphabetizeColumns orders the shown columns by their last path element,
-// ignoring case, then by full path.
+// ignoring case, then by full path. A shown timestamp column stays first.
 function alphabetizeColumns() {
   const key = (p) => p.slice(p.lastIndexOf(".") + 1).toLowerCase();
   const cols = currentColumns().sort((a, b) => {
+    if (a === "timestamp" || b === "timestamp") return a === "timestamp" ? -1 : b === "timestamp" ? 1 : 0;
     const ka = key(a);
     const kb = key(b);
     if (ka !== kb) return ka < kb ? -1 : 1;
@@ -2125,13 +2239,49 @@ function openColumnMenu(path, anchorEl) {
   const hide = menuButton("Hide", () => hideColumn(path), shown.length <= 1 || !shown.includes(path));
   if (hide.disabled) hide.title = "the last column cannot be hidden";
   menu.append(hide);
-  menu.append(menuButton("Sort ascending", () => sortBy(path, false)));
-  menu.append(menuButton("Sort descending", () => sortBy(path, true)));
+  for (const [text, d] of [["Sort ascending", false], ["Sort descending", true]]) {
+    const on = sortedBy(path, d);
+    const b = menuButton((on ? "✓ " : "") + text, () => sortBy(path, d));
+    b.setAttribute("role", "menuitemcheckbox");
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    b.classList.toggle("checked", on);
+    menu.append(b);
+  }
   const sub = menuButton("Add / Move ▸", () => openColumnSubmenu(path, sub));
   sub.setAttribute("aria-haspopup", "true");
   menu.append(sub);
   menu.append(menuButton("Move to start", () => moveColumnToStart(path), shown[0] === path || !shown.includes(path)));
   placeMenu(menu, anchorEl, false);
+}
+
+// sortedBy reports whether the rows are in path's order, descending or not.
+// With no sort chosen the server orders by timestamp, newest first.
+function sortedBy(path, desc) {
+  const field = state.sort.field || "timestamp";
+  const d = state.sort.field ? state.sort.desc : true;
+  return field === path && d === desc;
+}
+
+// sortArrows are a column's ascending and descending buttons. The one matching
+// the current order is lit (with no sort chosen, the server orders by
+// timestamp, newest first); clicking a lit arrow returns to that default.
+function sortArrows(path) {
+  const box = el("span", "col-sort");
+  for (const d of [false, true]) {
+    const b = el("button", "sort-btn", d ? "▼" : "▲");
+    b.type = "button";
+    const on = sortedBy(path, d);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.title = on ? "sorted " + (d ? "descending" : "ascending") + "; click for the default order" : "sort " + (d ? "descending" : "ascending");
+    b.setAttribute("aria-label", "sort " + path + (d ? " descending" : " ascending"));
+    b.addEventListener("click", () => {
+      state.sort = on ? { field: "", desc: true } : { field: path, desc: d };
+      runQuery();
+    });
+    box.append(b);
+  }
+  return box;
 }
 
 function sortBy(path, desc) {
@@ -2192,6 +2342,7 @@ function wireColumns() {
     setColumns([]);
   });
   $("col-az").addEventListener("click", alphabetizeColumns);
+  $("col-all").addEventListener("click", showAllColumns);
 }
 
 // ---- saving a column's formatting ----
@@ -2599,7 +2750,38 @@ function wireFavorites() {
   $("fav-save-menu").addEventListener("click", saveFavorite);
 }
 
+// setSidebar slides the controls panel open or closed. The panel stays in
+// the DOM, inert while closed so its controls leave the tab order.
+function setSidebar(open) {
+  document.body.classList.toggle("sidebar-closed", !open);
+  $("sidebar").inert = !open;
+  const b = $("sb-toggle");
+  b.textContent = open ? "◀" : "▶";
+  b.title = open ? "hide the controls" : "show the controls";
+  b.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function wireSidebarToggle() {
+  let open = true;
+  try {
+    open = localStorage.getItem(SIDEBAR_KEY) !== "closed";
+  } catch {
+    // remembering the panel is a per-browser convenience only
+  }
+  setSidebar(open);
+  $("sb-toggle").addEventListener("click", () => {
+    const next = document.body.classList.contains("sidebar-closed");
+    setSidebar(next);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, next ? "open" : "closed");
+    } catch {
+      // as above
+    }
+  });
+}
+
 async function init() {
+  wireSidebarToggle();
   loadURL();
   wireBar();
   syncView();

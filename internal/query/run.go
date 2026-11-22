@@ -12,6 +12,7 @@ import (
 
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
+	"github.com/jimbeveridge/loghorn/internal/sqlcolor"
 )
 
 // Column describes one result column.
@@ -29,6 +30,8 @@ type Column struct {
 type Cell struct {
 	V   any  `json:"v"`
 	Bad bool `json:"bad,omitempty"`
+	// SQL colours a string in a column shown with the sql visualizer.
+	SQL []sqlcolor.Token `json:"sql,omitempty"`
 }
 
 // Row is one matched record.
@@ -302,6 +305,9 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		row := Row{Seq: r.Seq, Time: r.Time, TimeInherited: r.TimeInherited, Cells: make([]Cell, len(fields))}
 		for i, f := range fields {
 			row.Cells[i] = cell(r.Fields[f.Path], f)
+			if s, ok := row.Cells[i].V.(string); ok && f.Visualizer == schema.VSQL && !row.Cells[i].Bad {
+				row.Cells[i].SQL = sqlcolor.Tokens(s)
+			}
 		}
 		res.Rows = append(res.Rows, row)
 	}

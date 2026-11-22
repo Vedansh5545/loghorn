@@ -210,6 +210,33 @@ func spanRecord(obj map[string]any, raw []byte) (Record, bool) {
 	return r, true
 }
 
+// spanOwnFields are the span record fields that are not span attributes: the
+// span line's own keys and those spanRecord adds.
+var spanOwnFields = map[string]bool{
+	"trace_id": true, "span_id": true, "parent_span_id": true, "name": true, "kind": true,
+	"start": true, "end": true, "duration_ms": true, "status": true, "status_message": true,
+	"events": true, "links": true, "service.name": true, "loghorn.run.id": true,
+	"span.type": true, "timestamp": true, "severity": true, "attributes": true,
+}
+
+// IsSpanAttribute reports whether a span record field came from the span's
+// attributes. Attributes are flattened to top-level paths, or under
+// attributes. when they collide with a span field.
+func IsSpanAttribute(path string) bool {
+	if strings.HasPrefix(path, "attributes.") {
+		return true
+	}
+	if spanOwnFields[path] || strings.HasPrefix(path, "otel.resource.") || strings.HasPrefix(path, "otel.scope.") {
+		return false
+	}
+	for _, p := range []string{"events.", "links."} {
+		if strings.HasPrefix(path, p) {
+			return false
+		}
+	}
+	return true
+}
+
 // spanKeyTaken reports whether key, an ancestor path of it, or a key beneath
 // it is already a field.
 func spanKeyTaken(fields map[string]any, key string) bool {

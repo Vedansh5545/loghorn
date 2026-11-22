@@ -10,7 +10,10 @@
 </head>
 <body>
 <header class="top">
-  <h1 id="title">loghorn</h1>
+  <div class="top-left">
+    <button id="sb-toggle" class="sb-toggle" type="button" aria-controls="sidebar" aria-expanded="true" title="hide the controls">◀</button>
+    <h1 id="title">loghorn</h1>
+  </div>
   <div class="menu-wrap">
     <button id="fav-button" type="button" aria-haspopup="true" aria-expanded="false">Favorites ▾</button>
     <div id="fav-menu" class="menu" hidden>
@@ -113,7 +116,8 @@
       <span id="colnames" class="colnames"></span>
     </div>
     <div class="sb-row">
-      <button id="col-az" type="button" title="order the columns by their last name part, A to Z">A→Z</button>
+      <button id="col-az" type="button" title="order the columns by their last name part, A to Z; timestamp stays first">A→Z</button>
+      <button id="col-all" type="button" title="add every field of the stream as a column">show all</button>
       <button id="col-restore" type="button" title="show the stream's default columns" hidden>restore defaults</button>
     </div>
   </section>

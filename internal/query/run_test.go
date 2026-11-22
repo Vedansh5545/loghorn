@@ -381,3 +381,17 @@ func TestRunIntervalColumns(t *testing.T) {
 		t.Fatalf("explicit columns = %+v", res.Columns)
 	}
 }
+
+// A string in a sql-visualized column carries its colour tokens; others don't.
+func TestRunSQLTokens(t *testing.T) {
+	recs := []record.Record{rec(1, t0.Add(-time.Minute), "x", "q", "select 1", "n", "select 2")}
+	s := sch(schema.Field{Path: "q", Type: schema.TString, Visualizer: schema.VSQL}, schema.Field{Path: "n", Type: schema.TString, Visualizer: schema.VRaw})
+	res := run(t, recs, s, Query{Stream: "a", Columns: []string{"q", "n"}})
+	q, n := res.Rows[0].Cells[0], res.Rows[0].Cells[1]
+	if len(q.SQL) == 0 || q.SQL[0].Class != "kw" || q.SQL[0].Text != "select" {
+		t.Fatalf("sql cell tokens = %+v", q.SQL)
+	}
+	if n.SQL != nil {
+		t.Fatalf("raw cell has tokens %+v", n.SQL)
+	}
+}

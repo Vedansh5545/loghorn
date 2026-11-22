@@ -30,6 +30,12 @@
   --series-9: #0e8fb3;
   --series-10: #8a6d00;
   --series-other: #9a9891;
+  /* SQL colours: the terminal UI's hues, darkened to 4.5:1 on --bg. */
+  --sql-kw: #884cff;
+  --sql-type: #007da6;
+  --sql-param: #de0094;
+  --sql-str: #418341;
+  --sql-num: #9c6b00;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -62,6 +68,12 @@
     --series-9: #2a9fc0;
     --series-10: #a88a10;
     --series-other: #7d7b75;
+    /* The terminal UI's SQL colours as it showed them on a dark background. */
+    --sql-kw: #af87ff;
+    --sql-type: #5fd7ff;
+    --sql-param: #ff87d7;
+    --sql-str: #5faf5f;
+    --sql-num: #ffaf00;
   }
 }
 * { box-sizing: border-box; }
@@ -69,6 +81,8 @@
 html, body { margin: 0; background: var(--bg); color: var(--fg); }
 body { font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 0 16px 16px; }
 .top { display: flex; align-items: baseline; gap: 12px; }
+.top-left { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.sb-toggle { flex: none; padding: 0 6px; font-size: 11px; line-height: 20px; color: var(--muted); }
 .top h1 { font-size: 15px; font-weight: 600; margin: 12px 0 8px; }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .bar label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
@@ -88,6 +102,10 @@ table.fixed { table-layout: fixed; }
 table.fixed th { overflow: hidden; }
 table.fixed .th-label { overflow-wrap: anywhere; }
 table.fixed tr.row td { overflow: hidden; text-overflow: ellipsis; }
+.col-sort { flex: none; display: inline-flex; flex-direction: column; }
+.sort-btn { padding: 0 2px; border: none; background: transparent; color: var(--muted); opacity: 0.35; font-size: 8px; line-height: 1; }
+.sort-btn:hover, .sort-btn:focus-visible { opacity: 1; background: var(--row-hover); }
+.sort-btn.on { opacity: 1; color: var(--accent); }
 .col-del { flex: none; display: inline-flex; padding: 1px 2px; border: none; background: transparent; color: var(--muted); opacity: 0.45; }
 th:hover .col-del, .col-del:focus-visible { opacity: 1; }
 .col-del:hover { color: var(--err-fg); background: var(--row-hover); }
@@ -145,7 +163,10 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .schema-table { font-family: system-ui, sans-serif; font-size: 13px; }
 .schema-table td { padding: 2px 8px 2px 0; vertical-align: middle; }
 .schema-table input[type="text"] { width: 10em; }
-.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 0 20px; align-items: start; }
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 0 20px; align-items: start; transition: grid-template-columns 0.2s ease, column-gap 0.2s ease; }
+.sidebar-closed .layout { grid-template-columns: 0 minmax(0, 1fr); column-gap: 0; }
+.sidebar-closed .sidebar { overflow: hidden; visibility: hidden; transition: visibility 0s 0.2s; }
+@media (prefers-reduced-motion: reduce) { .layout { transition: none; } }
 .content { min-width: 0; }
 .sidebar { display: flex; flex-direction: column; gap: 14px; padding: 8px 0 16px; min-width: 0; }
 .sb { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
@@ -205,6 +226,19 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 @media (max-width: 800px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
 }
+/* Wide screens: the page is one viewport tall and the results scroll inside
+   main, so a wide table's horizontal scrollbar stays on screen instead of
+   sitting below every row. The sidebar scrolls on its own. */
+@media (min-width: 801px) {
+  body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  .layout { flex: 1; min-height: 0; align-items: stretch; }
+  .sidebar { overflow-y: auto; }
+  .content { display: flex; flex-direction: column; min-height: 0; }
+  main { flex: 1; min-height: 0; overflow: auto; }
+  /* Column headings stay put while the rows scroll under them. A collapsed
+     border scrolls away with the rows, so the rule under them is a shadow. */
+  #head th { position: sticky; top: 0; z-index: 1; background: var(--bg); border-bottom: none; box-shadow: inset 0 -1px 0 var(--line); }
+}
 
 .sb-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .sb-body .field-pick { min-width: 0; font-family: var(--mono); font-size: 12.5px; }
@@ -229,6 +263,7 @@ td .muted { color: var(--muted); }
 .menu-row select, .menu-row input { min-width: 0; }
 .menu-item { text-align: left; border-color: transparent; background: transparent; padding: 3px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item:hover:not(:disabled) { background: var(--row-hover); }
+.menu-item.checked { color: var(--accent); }
 .menu-item:disabled { color: var(--muted); cursor: default; opacity: 0.6; }
 .menu-list { display: flex; flex-direction: column; gap: 1px; min-width: 160px; max-width: 280px; max-height: calc(60vh - 20px); overflow-y: auto; }
 .menu-empty { padding: 3px 6px; font-size: 12px; }
@@ -257,3 +292,10 @@ td .muted { color: var(--muted); }
 .kind-row:hover .kind-pin:not(.pinned), .kind-row:focus-within .kind-pin:not(.pinned) { opacity: .6; }
 .kind-pin:disabled { cursor: not-allowed; }
 .kind-row:hover .kind-pin.pinned:disabled { opacity: .5; }
+
+.sql-kw { color: var(--sql-kw); }
+.sql-type { color: var(--sql-type); }
+.sql-param { color: var(--sql-param); }
+.sql-str { color: var(--sql-str); }
+.sql-num { color: var(--sql-num); }
+.sql-com { color: var(--muted); }

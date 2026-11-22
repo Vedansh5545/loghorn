@@ -58,3 +58,18 @@ func TestServiceKey(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSpanAttribute(t *testing.T) {
+	for p, want := range map[string]bool{
+		"db.query.text": true, "http.route": true, "attributes.name": true, "attributes.kind.x": true,
+		"name": false, "kind": false, "span_id": false, "trace_id": false, "parent_span_id": false,
+		"start": false, "end": false, "duration_ms": false, "status": false, "status_message": false,
+		"events": false, "links": false, "service.name": false, "loghorn.run.id": false, "span.type": false,
+		"timestamp": false, "severity": false, "otel.resource.host.name": false, "otel.scope.name": false,
+		"otel.scope.version": false, "attributes": false,
+	} {
+		if got := IsSpanAttribute(p); got != want {
+			t.Errorf("IsSpanAttribute(%q)=%v want %v", p, got, want)
+		}
+	}
+}
