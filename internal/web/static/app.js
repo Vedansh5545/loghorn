@@ -804,7 +804,8 @@ function linkGroupedNames(result) {
     b.type = "button";
     b.title = "list the " + name + " spans" + (heatSel ? " of this cell" : "");
     b.addEventListener("click", () => narrowToGroup(name, typeof svc === "string" ? svc : ""));
-    td.replaceChildren(b);
+    if (td.firstChild) td.firstChild.replaceWith(b); // keep the cell's copy button
+    else td.append(b);
   });
 }
 
@@ -837,8 +838,9 @@ function wireHeatList() {
   syncHeatTabs();
   // Capture, so this sees a menu still open before its own Esc closes it.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || !heatSel || state.view !== "heatmap" || e.defaultPrevented) return;
-    if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || $("schema-dialog").open) return;
+    if (e.key !== "Escape" || !heatSel || state.view !== "heatmap") return;
+    // An open menu, pane or dialog takes the Esc for itself.
+    if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
     if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     clearHeatSelection();
   }, true);
