@@ -1,6 +1,7 @@
 // Package sqlfmt pretty-prints SQL with GoSQLX
 // (github.com/ajitpratap0/GoSQLX), which parses the statement and renders it
-// one clause per line, with joins flush with FROM. Rendering is from the
+// one clause per line, with joins flush with FROM; reflow then breaks lines
+// longer than maxWidth, which GoSQLX does not. Rendering is from the
 // parse tree, so the output can differ from what was logged beyond layout:
 // keywords are uppercased, quotes around plain names are dropped and a
 // trailing semicolon is added.
@@ -63,7 +64,7 @@ func Format(sql, system string) (string, error) {
 	for _, d := range tries {
 		out, err := formatter.New(formatter.Options{Dialect: d}).Format(sql)
 		if err == nil && strings.TrimSpace(out) != "" {
-			return out, nil
+			return reflow(out, maxWidth, d), nil
 		}
 		if first == nil {
 			first = err
