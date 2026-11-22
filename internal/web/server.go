@@ -26,6 +26,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/sqlfmt"
 	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/svcconf"
+	"github.com/jimbeveridge/loghorn/internal/trace"
 )
 
 //go:embed static
@@ -87,6 +88,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("PUT /api/schema", s.putSchema)
 	mux.HandleFunc("POST /api/query", s.query)
 	mux.HandleFunc("GET /api/record", s.record)
+	mux.HandleFunc("GET /api/trace", s.trace)
 	mux.HandleFunc("GET /api/favorites", s.listFavorites)
 	mux.HandleFunc("PUT /api/favorites/{name}", s.putFavorite)
 	mux.HandleFunc("DELETE /api/favorites/{name}", s.deleteFavorite)
@@ -464,6 +466,35 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// trace answers GET /api/trace?trace=<id>&span=<id>: the tree of one trace
+// over every service's records. trace wins; with only span, the trace of that
+// span is found first.
+func (s *server) trace(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	traceID, spanID := q.Get("trace"), q.Get("span")
+	if len(traceID) > 256 || len(spanID) > 256 {
+		writeError(w, http.StatusBadRequest, "id too long")
+		return
+	}
+	if traceID == "" && spanID == "" {
+		writeError(w, http.StatusBadRequest, "trace or span is required")
+		return
+	}
+	recs, _ := s.o.Store.Snapshot()
+	if traceID == "" {
+		if traceID = trace.Find(recs, spanID); traceID == "" {
+			writeError(w, http.StatusNotFound, "no record with that span id")
+			return
+		}
+	}
+	t, ok := trace.Build(recs, traceID, trace.Limit)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no spans or logs with that trace id")
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
 
 func (s *server) record(w http.ResponseWriter, r *http.Request) {

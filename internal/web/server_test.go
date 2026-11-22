@@ -860,3 +860,67 @@ func TestFavoritesPerService(t *testing.T) {
 		t.Fatalf("DELETE = %d %s", code, b)
 	}
 }
+
+const traceFile = "../../testdata/web/trace.jsonl"
+
+const traceT1 = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+func TestTraceAPIByTrace(t *testing.T) {
+	f := newFixture(t, traceFile)
+	var got struct {
+		TraceID string
+		Nodes   []json.RawMessage
+	}
+	f.getJSON(t, "/api/trace?trace="+traceT1, &got)
+	if got.TraceID != traceT1 || len(got.Nodes) != 22 {
+		t.Errorf("traceId %q, %d nodes", got.TraceID, len(got.Nodes))
+	}
+}
+
+func TestTraceAPIBySpan(t *testing.T) {
+	f := newFixture(t, traceFile)
+	for _, id := range []string{"1000000000000013", "ffffffffffffff02"} {
+		var got struct{ TraceID string }
+		f.getJSON(t, "/api/trace?span="+id, &got)
+		if got.TraceID != traceT1 {
+			t.Errorf("span %s: traceId %q", id, got.TraceID)
+		}
+	}
+}
+
+func TestTraceAPIByCloudTraceForm(t *testing.T) {
+	f := newFixture(t, traceFile)
+	var got struct{ TraceID string }
+	f.getJSON(t, "/api/trace?trace="+url.QueryEscape("projects/example-project/traces/"+strings.ToUpper(traceT1)), &got)
+	if got.TraceID != traceT1 {
+		t.Errorf("traceId %q", got.TraceID)
+	}
+}
+
+func TestTraceAPIErrors(t *testing.T) {
+	f := newFixture(t, traceFile)
+	for _, tc := range []struct {
+		path string
+		code int
+		msg  string
+	}{
+		{"/api/trace", 400, "trace or span is required"},
+		{"/api/trace?trace=" + strings.Repeat("a", 300), 400, "id too long"},
+		{"/api/trace?span=" + strings.Repeat("a", 300), 400, "id too long"},
+		{"/api/trace?trace=deadbeef", 404, "no spans or logs with that trace id"},
+		{"/api/trace?span=deadbeef", 404, "no record with that span id"},
+	} {
+		code, b := f.do(t, http.MethodGet, tc.path, "", "")
+		wantError(t, code, tc.code, b)
+		var e struct{ Error string }
+		_ = json.Unmarshal(b, &e)
+		if e.Error != tc.msg {
+			t.Errorf("%s: error %q; want %q", tc.path, e.Error, tc.msg)
+		}
+	}
+	var got struct{ Nodes []json.RawMessage }
+	f.getJSON(t, "/api/trace?service=pricing&trace="+traceT1, &got)
+	if len(got.Nodes) != 22 {
+		t.Errorf("service filter changed the trace: %d nodes", len(got.Nodes))
+	}
+}
