@@ -2847,7 +2847,7 @@ async function init() {
   wireColumns();
   wireSchema();
   wireFavorites();
-  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate, getService: () => state.service });
+  initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });
   initAggregate({ api, el, showError, clearError, formatDuration, getRange: () => state.range, getService: () => state.service });
   await refresh();
   restoreTraceFromURL();
