@@ -930,8 +930,8 @@ function resetQueryParts() {
 const NUMERIC = new Set(["int", "float", "duration"]);
 
 // Cells of these columns link to the trace waterfall.
-export const TRACE_PATHS = new Set(["trace_id", "trace"]);
-export const SPAN_PATHS = new Set(["span_id", "spanId", "parent_span_id"]);
+const TRACE_PATHS = new Set(["trace_id", "trace"]);
+const SPAN_PATHS = new Set(["span_id", "spanId", "parent_span_id"]);
 
 // traceLinked wraps node, the rendered cell of column path, in a link that
 // opens the waterfall when the cell holds a non-empty string ID; else it

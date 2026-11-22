@@ -37,8 +37,8 @@ type Trace struct {
 	Services   []string    `json:"services"` // sorted, non-empty strings only
 	Truncated  bool        `json:"truncated"`
 	Nodes      []Node      `json:"nodes"`      // pre-order
-	SerialRuns []SerialRun `json:"serialRuns"` // [] until analysed
-	SelfTime   []NameTime  `json:"selfTime"`   // [] until analysed
+	SerialRuns []SerialRun `json:"serialRuns"` // set by analyze
+	SelfTime   []NameTime  `json:"selfTime"`   // set by analyze
 }
 
 // Node is a span, a log line or a placeholder for an absent span.
@@ -53,9 +53,9 @@ type Node struct {
 	Service    string    `json:"service,omitempty"`  //
 	StartMs    float64   `json:"startMs"`            // from Trace.Start
 	DurationMs float64   `json:"durationMs"`         // 0 for logs
-	SelfMs     float64   `json:"selfMs"`             // set by Analyze
+	SelfMs     float64   `json:"selfMs"`             // set by analyze
 	Error      bool      `json:"error,omitempty"`    // span status "error"
-	Critical   bool      `json:"critical,omitempty"` // set by Analyze
+	Critical   bool      `json:"critical,omitempty"` // set by analyze
 	Children   int       `json:"children"`           // direct children, spans + logs
 	LogTicks   []float64 `json:"logTicks,omitempty"` // StartMs of direct child logs
 	Severity   string    `json:"severity,omitempty"` // logs
@@ -222,6 +222,7 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 	for _, ph := range missing {
 		phs = append(phs, ph)
 	}
+	sort.Slice(phs, func(i, j int) bool { return phs[i].ID < phs[j].ID })
 	for _, ph := range phs {
 		extents(ph)
 		tops = append(tops, ph)
@@ -256,7 +257,7 @@ func Build(recs []record.Record, traceID string, limit int) (Trace, bool) {
 	order := func(xs []*item) {
 		sort.SliceStable(xs, func(i, j int) bool {
 			a, b := xs[i], xs[j]
-			if a.start != b.start {
+			if !a.start.Equal(b.start) {
 				return a.start.Before(b.start)
 			}
 			if (a.Kind == KindLog) != (b.Kind == KindLog) {

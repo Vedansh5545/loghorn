@@ -332,6 +332,7 @@ td .muted { color: var(--muted); }
 .ax-label.first { transform: none; }
 .ax-label.last { transform: translateX(-100%); }
 .trace-row { min-height: 22px; cursor: pointer; }
+.trace-row.serial { background: rgba(127, 127, 127, 0.12); }
 .trace-row:hover { background: var(--row-hover); }
 .trace-row.selected { background: var(--panel); box-shadow: inset 3px 0 var(--accent); }
 .tr-name { display: flex; align-items: stretch; min-width: 0; overflow: hidden; padding-right: 8px; }
@@ -365,7 +366,6 @@ td .muted { color: var(--muted); }
 .tmark { position: absolute; top: 6px; width: 8px; height: 8px; margin-left: -4px; transform: rotate(45deg); background: var(--muted); }
 .ttick { position: absolute; top: 2px; bottom: 2px; width: 1px; background: var(--fg); opacity: 0.55; pointer-events: none; }
 .trace-row.match .tr-label { background: var(--match-bg, rgba(255, 213, 0, 0.35)); border-radius: 2px; }
-.trace-row.serial { background: rgba(127, 127, 127, 0.12); }
 .serial-chip { align-self: center; flex: none; margin-left: 8px; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 #trace-critical[aria-pressed="true"] { background: var(--accent); color: #fff; }
 .critical-on .trace-row:not(.crit) .tbar { opacity: 0.25; }

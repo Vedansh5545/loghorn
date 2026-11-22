@@ -222,3 +222,36 @@ func TestBuildLongMessage(t *testing.T) {
 		t.Errorf("message has %d runes", n)
 	}
 }
+
+// Placeholders with equal starts come out in ID order on every build.
+func TestBuildPlaceholderOrderStable(t *testing.T) {
+	recs := []record.Record{
+		span(1, "a1", "pz", "a", 0, 5), span(2, "b1", "py", "b", 0, 5),
+		span(3, "c1", "px", "c", 0, 5), span(4, "d1", "pw", "d", 0, 5),
+	}
+	for i := 0; i < 30; i++ {
+		tr, _ := Build(recs, t1, Limit)
+		var got []string
+		for _, n := range tr.Nodes {
+			if n.Kind == KindMissing {
+				got = append(got, n.ID)
+			}
+		}
+		want := []string{"missing:pw", "missing:px", "missing:py", "missing:pz"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: placeholders = %v; want %v", i, got, want)
+		}
+	}
+}
+
+// Equal instants in different locations still fall through to the Seq
+// tie-breaker: the placeholder (Seq 0) sorts before the root span.
+func TestBuildEqualStartsDifferentZones(t *testing.T) {
+	root := span(1, "r", "", "root", 0, 5)
+	orphan := span(2, "o", "gone", "orphan", 0, 5)
+	orphan.Time = orphan.Time.In(time.FixedZone("x", 3600))
+	tr, _ := Build([]record.Record{root, orphan}, t1, Limit)
+	if len(tr.Nodes) < 1 || tr.Nodes[0].Kind != KindMissing {
+		t.Errorf("first node = %+v; want the placeholder", tr.Nodes)
+	}
+}

@@ -206,7 +206,10 @@ export async function openTrace({ trace, span }, { push = true } = {}) {
   setData(data);
   if (!same) tv.collapsed = new Set();
   let sel = null;
-  if (span) sel = byId.get(String(span).trim().toLowerCase()) || byId.get(span) || null;
+  if (span) {
+    const norm = String(span).trim().toLowerCase();
+    sel = byId.get(norm) || byId.get(span) || byId.get("missing:" + norm) || null;
+  }
   else if (same && prev && byId.has(prev)) sel = byId.get(prev);
   tv.selected = sel ? sel.id : null;
   if (sel) expandAncestors(sel);
@@ -225,7 +228,7 @@ function reloadTrace() {
 
 // closeTrace returns to the table: Back when openTrace pushed this entry,
 // else the URL loses its trace parameters in place.
-export function closeTrace() {
+function closeTrace() {
   ++traceSeq;
   if (!isOpen()) return;
   if (history.state && history.state.loghornTrace) {
@@ -362,7 +365,7 @@ function renderTrace() {
   $("trace-critical").setAttribute("aria-pressed", tv.critical ? "true" : "false");
   $("trace-logs").textContent = tv.logs === "tree" ? "Logs: in tree" : "Logs: hidden";
   const matched = new Set(tv.find.matches);
-  const runOf = new Map(); // span id -> true, first span id -> its run
+  const runOf = new Map(); // span id -> its run; first span id -> its run
   const runFirst = new Map();
   for (const r of data.serialRuns || []) {
     runFirst.set(r.first, r);
