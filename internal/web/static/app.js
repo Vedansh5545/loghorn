@@ -299,7 +299,6 @@ export function visualize(cell, column) {
   if (v === null || v === undefined) return el("span");
   const wrap = !!(fieldByPath(column.path) || {}).wrap;
   const clip = (n) => (wrap ? WRAP_MAX : n);
-  if (column.path === "error_rate" && typeof v === "number") return el("span", "", percent(v));
   switch (column.visualizer) {
     case "local-time": {
       const d = toDate(v);
@@ -780,7 +779,7 @@ function pinnedKinds() {
 let pinSaves = Promise.resolve();
 
 function togglePin(name) {
-  if (readOnly()) return;
+  if (readOnly() || name === ALL_KINDS) return;
   const svc = state.service;
   const source = state.source;
   // Saves run one after another and each builds its list when it runs, from
@@ -1129,7 +1128,7 @@ function renderResult(result) {
 // metricLabel names an aggregate: "count", or its operator and field.
 export function metricLabel(a) {
   if (!a || a.op === "count") return "count";
-  if (fieldless(a.op)) return METRIC_LABELS[a.op];
+  if (fieldless(a.op)) return METRIC_LABELS[a.op] || a.op;
   const f = fieldByPath(a.field);
   return a.op + " " + ((f && f.label) || a.field);
 }
@@ -1163,7 +1162,10 @@ function renderTable(result) {
       if (c.group && (!cell || cell.v === null || cell.v === undefined) && !(cell && cell.bad)) {
         td.append(el("span", "muted", "(empty)"));
       } else {
-        td.append(traceLinked(visualize(cell, c), cell, c.path, row));
+        // The error-rate metric is a fraction shown as a percentage; a group-by
+        // column that happens to be named error_rate is the user's data.
+        const rate = !c.group && c.path === "error_rate" && cell && typeof cell.v === "number";
+        td.append(traceLinked(rate ? el("span", "", percent(cell.v)) : visualize(cell, c), cell, c.path, row));
         addSQLCopy(td, cell, c);
       }
       tr.append(td);
@@ -2357,10 +2359,11 @@ function drawMetrics() {
     }
     op.value = r.op;
     op.addEventListener("change", () => {
+      const had = metricReady(r);
       r.op = op.value;
       syncAggregates();
       drawMetrics();
-      if (metricReady(r)) runQuery();
+      if (had || metricReady(r)) runQuery();
     });
     const fsel = el("select", "m-field");
     fsel.setAttribute("aria-label", "number field");
