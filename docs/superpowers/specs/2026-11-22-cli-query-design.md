@@ -141,13 +141,13 @@ in a new file in `internal/query`. The handler runs the query first and
 passes the `Result`, because three things the SQL needs exist only after a
 run: the bucket `auto` resolved to, the heatmap band edges, and the Samples
 column list when the URL names none (`intervalColumns`). These are frozen
-into the SQL as resolved; the range stays relative (`now() - INTERVAL …`) so
-the SQL reads as the user's intent, and the header comment gives the
-resolved `from`/`to` literals. Re-running it later may therefore pick
-different rows than the frozen buckets and bands were sized for; it stays a
-valid query. Output is DuckDB SQL, formatted with
-`internal/sqlfmt`, preceded by a comment block that states the table model
-and how the times were resolved, so an LLM editing it knows what it targets.
+into the SQL as resolved. The range is translated as the URL states it, with
+no rewriting: a relative range stays relative, an absolute one stays
+absolute. The page will offer copying the URL either way, so the user picks
+there. Re-running a relative query later may pick different rows than the
+frozen buckets and bands were sized for; it stays a valid query. Output is
+DuckDB SQL, formatted with `internal/sqlfmt`, preceded by a comment block
+that states the table model, so an LLM editing it knows what it targets.
 
 Table model (the contract the DuckDB work must implement):
 
