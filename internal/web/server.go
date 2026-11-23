@@ -45,6 +45,13 @@ type Options struct {
 	// (svcconf.Dir) with pins, favorites and field settings.
 	ConfigBase string
 	Now        func() time.Time // nil means time.Now
+
+	// Instance identity, reported by /api/session so a CLI can pick among
+	// running instances: process id, working directory, TCP port and start time.
+	PID     int
+	Cwd     string
+	Port    int
+	Started time.Time
 }
 
 // schemaKey identifies a cached inferred schema.
@@ -104,15 +111,20 @@ func New(o Options) http.Handler {
 
 // guard enforces the loopback Host on every request and the page's own
 // Origin on every non-GET request. POST /api/query alone may omit Origin (a
-// curl client); a present, foreign Origin is refused everywhere.
+// curl client); a present, foreign Origin is refused everywhere. Requests on
+// the per-user unix socket skip both checks: those guard against a browser
+// page reaching the TCP port, and a browser cannot reach the socket (its 0700
+// directory is the access control).
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		port := listenerPort(r)
-		if port == "" || (r.Host != "127.0.0.1:"+port && r.Host != "localhost:"+port) {
-			writeError(w, http.StatusForbidden, "forbidden host")
-			return
+		if !onUnixSocket(r) {
+			port := listenerPort(r)
+			if port == "" || (r.Host != "127.0.0.1:"+port && r.Host != "localhost:"+port) {
+				writeError(w, http.StatusForbidden, "forbidden host")
+				return
+			}
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !onUnixSocket(r) && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			origin := r.Header.Get("Origin")
 			exempt := origin == "" && r.Method == http.MethodPost && r.URL.Path == "/api/query"
 			if !exempt && origin != "http://"+r.Host {
@@ -126,6 +138,12 @@ func (s *server) guard(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// onUnixSocket reports whether the request arrived on a unix socket listener.
+func onUnixSocket(r *http.Request) bool {
+	_, ok := r.Context().Value(http.LocalAddrContextKey).(*net.UnixAddr)
+	return ok
 }
 
 // listenerPort is the port of the local address the request arrived on, or
@@ -225,6 +243,10 @@ type sessionJSON struct {
 	Latest     *time.Time `json:"latest"`
 	Count      int        `json:"count"`
 	ConfigBase string     `json:"configBase"`
+	PID        int        `json:"pid"`
+	Cwd        string     `json:"cwd"`
+	Port       int        `json:"port"`
+	Started    time.Time  `json:"started"`
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
@@ -232,6 +254,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionJSON{
 		Mode: in.Mode, RunStart: timePtr(in.RunStart), Earliest: timePtr(in.Earliest),
 		Latest: timePtr(in.Latest), Count: in.Count, ConfigBase: s.o.ConfigBase,
+		PID: s.o.PID, Cwd: s.o.Cwd, Port: s.o.Port, Started: s.o.Started,
 	})
 }
 

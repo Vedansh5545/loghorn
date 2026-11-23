@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -238,6 +239,9 @@ type webServer struct {
 	st  *store.Store
 	srv *http.Server
 	url string
+
+	sockSrv  *http.Server // the per-user unix socket; nil when it could not start
+	sockPath string
 }
 
 func (w *webServer) store() *store.Store {
@@ -250,6 +254,10 @@ func (w *webServer) store() *store.Store {
 func (w *webServer) close() {
 	if w != nil {
 		w.srv.Close()
+		if w.sockSrv != nil {
+			w.sockSrv.Close() // closes the listener, which unlinks the file
+			_ = os.Remove(w.sockPath)
+		}
 	}
 }
 
@@ -308,12 +316,38 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 		fmt.Fprintln(os.Stderr, "loghorn: -web:", err)
 		os.Exit(1)
 	}
-	srv := &http.Server{
-		Handler:           web.New(web.Options{Store: st, ConfigBase: base}),
-		ReadHeaderTimeout: 10 * time.Second,
+	port := 0
+	if a, ok := ln.Addr().(*net.TCPAddr); ok {
+		port = a.Port
 	}
+	handler := web.New(web.Options{
+		Store: st, ConfigBase: base,
+		PID: os.Getpid(), Cwd: cwd, Port: port, Started: time.Now(),
+	})
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
-	return &webServer{st: st, srv: srv, url: "http://" + ln.Addr().String() + "/"}
+	ws := &webServer{st: st, srv: srv, url: "http://" + ln.Addr().String() + "/"}
+	ws.serveSocket(handler)
+	return ws
+}
+
+// serveSocket also serves handler on this process's unix socket in the
+// per-user socket dir, where the CLI finds running instances. A failure is
+// reported and never fatal: the TCP view still works.
+func (w *webServer) serveSocket(handler http.Handler) {
+	dir, err := web.SocketDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn: -web: socket:", err)
+		return
+	}
+	ln, path, err := web.ListenSocket(dir, os.Getpid())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "loghorn: -web: socket:", err)
+		return
+	}
+	w.sockSrv = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	w.sockPath = path
+	go func() { _ = w.sockSrv.Serve(ln) }()
 }
 
 // childService returns the value of the last OTEL_SERVICE_NAME entry in env,
