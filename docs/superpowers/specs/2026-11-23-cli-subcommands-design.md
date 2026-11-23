@@ -55,6 +55,8 @@ against other local users.
 - **[user]** When `serve` is down, what `run` does is the user's choice
   (`serve-down` setting), so `run` never quietly takes over for a failed
   `serve`.
+- **[user]** `loghorn ui` opens `serve`'s web page in the browser, using
+  the URL the socket reports.
 - **[user]** `loghorn status` shows the environment variables an OTEL client
   needs to send to `serve`.
 - **[user]** Phase 1 of this spec runs before the CLI query plan, whose last
@@ -93,6 +95,7 @@ against other local users.
 | `loghorn run [flags] < pipe` | until end of input | 1 | Record piped input, copying it to stdout. |
 | `loghorn open [flags] <log>` | 1: until Ctrl-C; 2: one shot | 1 | Open a finished log: a file, `-` (stdin), or a GitHub Actions run or job. |
 | `loghorn query [flags] <url\|@file\|@->` | one shot | 1 (CLI query plan) | Print a web view's data. |
+| `loghorn ui [-print]` | one shot | 1 | Open `serve`'s web page in the default browser. |
 | `loghorn status [-env]` | one shot | 1 | `serve` health, ports, data folder, incoming runs, and the OTEL client environment. |
 | `loghorn config` | one shot | 1 | Print the config file in effect and the settings it resolves to. |
 | `loghorn source add\|list\|pause\|resume\|rm` | one shot | 3 | Edit scheduled pulls; `serve` runs them. |
@@ -134,6 +137,7 @@ Capture
   open <log>       open a finished log: a file, or a GitHub Actions run or job
 
 Read
+  ui               open the web explorer in your browser
   query <url>      print a web view's data as TSV, CSV, Markdown, JSON, ...
   status           show serve's state and the OTEL environment for apps
   config           show the config file in effect
@@ -380,6 +384,26 @@ files, then deletes the folder. A folder still locked belongs to a running
 `run` and is left for later. If the data folder can't be found or created,
 `record` degrades to `skip` with a warning.
 
+## `loghorn ui`
+
+Asks the socket for `serve`'s web URL (`/api/session`) and opens it in the
+default browser: `open` on macOS, `xdg-open` on Linux,
+`rundll32 url.dll,FileProtocolHandler` on Windows. It prints the URL to
+stderr as well, and exits 0 once the opener has been started; it doesn't
+wait for the browser.
+
+- `-print` prints the URL to stdout and opens nothing, for a remote shell
+  or a script.
+- If the opener is missing or fails (a headless box, no `xdg-open`), `ui`
+  prints the URL and a one-line note, and exits 1.
+- With `serve` down it prints the "isn't running" message and exits 1;
+  it never starts `serve`.
+- It honours `$LOGHORN_SOCKET`, so it opens a second instance's page when
+  pointed at that instance.
+
+The opener lives in a small package of its own, so phase 2's `open` (which
+prints `serve`'s URL filtered to the imported run) can offer the same.
+
 ## `loghorn status`
 
 Prints, in order:
@@ -459,6 +483,9 @@ instead of top-level flags. `-instances` is dropped: `status` covers it.
   write two, `serve` starts while they hold their locks, adopts each once
   its run ends, and `status` reports them in between.
 - `status` and `status -env` with `serve` up and down.
+- `ui` with the opener replaced by a test double: the URL from
+  `/api/session` reaches it; `-print` prints it and starts nothing; a
+  failing opener prints the URL and exits 1; `serve` down exits 1.
 - Existing e2e and main tests move to the new forms.
 - `go vet`, `go test -race ./...`, `GOOS=windows go vet ./internal/...` on
   the packages `serve` uses; the README usage block is checked against
