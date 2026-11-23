@@ -44,9 +44,10 @@ must stay available so structure can be pulled out later.
 - The Claude cloud session that started this work has Go 1.24.7, no
   DuckDB, no package installs and no push access. Build and test on a
   machine with Go 1.26.1 and cgo.
-- Repo rules from `CLAUDE.md`: never pipe data into a loghorn binary; tests
-  never write into the repo's own `.loghorn/`; nothing may `os.Exit` after
-  the child is launched.
+- Repo rules: nothing may `os.Exit` after the child is launched
+  (`CLAUDE.md`); never pipe data into a loghorn binary, and tests never
+  write into the repo's own `.loghorn/` (Global Constraints in
+  `docs/superpowers/plans/2026-11-19-otel-spans.md`).
 - Someone else is working on ingestion (`internal/ingest`, `internal/otlp`,
   `internal/recorder`, the `internal/logfile` writer). Avoid changing it.
 
