@@ -136,7 +136,7 @@ Graph series folded into `other`.
 
 ### SQL (`format: sql`)
 
-`query.ToSQL(q Query, s schema.Schema, r *Result, runStart time.Time) (string, error)`
+`query.ToSQL(q Query, s schema.Schema, r *Result) (string, error)`
 in a new file in `internal/query`. The handler runs the query first and
 passes the `Result`, because three things the SQL needs exist only after a
 run: the bucket `auto` resolved to, the heatmap band edges, and the Samples
@@ -172,14 +172,18 @@ Translation:
 - Service other than `*` → `service = '…'`.
 - Range: a relative `from` becomes `time >= now() - INTERVAL '…'`; RFC 3339
   becomes a literal. `to` likewise; `now`/empty adds nothing.
-- `this-run`: `time >= '<run start>'`, plus, when the instance has an OTLP
-  run ID (`-otel`), `("loghorn.run.id" = '<id>' OR "loghorn.run.id" IS
-  NULL)`. A comment explains that the command's own output lines carry no
-  run ID, so after later runs are stored the query also matches their
-  untagged lines. Wrapped commands are a developer-testing convenience,
-  rarely used in production, so captured lines are not stamped with the run
-  ID; stored records are unchanged. An instance with no run (replay, or
-  `-web` alone) exports the time filter only.
+- `this-run` is relative, like `now()`: it stays symbolic in the SQL rather
+  than becoming the current run's literal start and ID. (An absolute export
+  is the page's job: its "copy absolute URL" button replaces `this-run` with
+  timestamps before the CLI ever sees it.) It becomes
+  `time >= loghorn.this_run_start() AND ("loghorn.run.id" =
+  loghorn.this_run_id() OR "loghorn.run.id" IS NULL)`. The two macros are
+  part of the table-model contract: the DuckDB layer defines them for the
+  run that is current when the SQL executes. A comment explains that the
+  command's own output lines carry no run ID, so once later runs are stored
+  the query also matches their untagged lines. Wrapped commands are a
+  developer-testing convenience, rarely used in production, so captured
+  lines are not stamped with the run ID; stored records are unchanged.
 - Filters: every operator in `hasOp` maps to SQL with the same semantics
   (case-insensitive `contains` → `ILIKE` with `%`/`_` escaped; `in` →
   `IN (…)`; `empty` → `IS NULL OR = ''` for strings). Literals are quoted
