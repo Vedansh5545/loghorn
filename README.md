@@ -317,7 +317,11 @@ loghorn -instances            # pid, port, start time and directory of each runn
 - `-to-sql` prints DuckDB SQL that reproduces the view instead of its data.
 - `-limit N` overrides the URL's row limit (samples) or top (table, graph).
 - Without a host the URL goes through the instance's socket; with several instances
-  running, pass the full URL of one (`-instances` lists them).
+  running, pass the full URL of one (`-instances` lists them). Discovery looks in
+  `$TMPDIR`, so a shell with a different `TMPDIR` than the instance needs the full URL.
+- The page's Copy button copies the same export for Samples, Table and Graph. In the
+  Heatmap view it copies the span list under the heatmap; the heatmap itself is
+  exported only from the command line.
 - Query mode never launches a command, never records anything and ignores stdin
   (except for `-url @-`), so it is safe to run from a script or an agent shell. It can't
   be combined with a command, `-web`, `-otel` or a replay.

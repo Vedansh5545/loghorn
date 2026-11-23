@@ -211,7 +211,14 @@ export function copyTableBar(source, cls = "", { formats = ["md", "csv", "tsv"],
           // Hand the clipboard a promise so the click's permission outlives the fetch.
           const blob = fetchText(f).then((t) => new Blob([t], { type: "text/plain" }));
           blob.catch(() => {}); // reported below; no unhandled rejection
-          await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+          try {
+            await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+          } catch (err) {
+            // A failed fetch rejects the write with a generic DOMException;
+            // the fetch's own error (the server's text) says what went wrong.
+            await blob;
+            throw err;
+          }
         } else {
           await copyText(await fetchText(f));
         }

@@ -1121,7 +1121,7 @@ func TestQueryFormatSQL(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != "application/sql; charset=utf-8" {
 		t.Errorf("Content-Type = %q", ct)
 	}
-	for _, want := range []string{query.SQLHeader, `FROM logs."app"`, `raw ILIKE '%x'' or 1=1%' ESCAPE '\'`, `ORDER BY "time" DESC, seq DESC`} {
+	for _, want := range []string{query.SQLHeader, `FROM logs."app"`, `raw ILIKE '%x'' or 1=1%' ESCAPE '\'`, `ORDER BY "time" DESC NULLS LAST, seq DESC`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks %q:\n%s", want, body)
 		}

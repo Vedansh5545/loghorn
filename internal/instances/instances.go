@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -33,8 +34,15 @@ type Instance struct {
 	Socket    string // path of its unix socket
 }
 
+// ResponseTimeout bounds the wait for a query's response headers, so a
+// wedged instance cannot hang the CLI. The server writes its headers only
+// once the whole answer is built, so this bounds its compute time and never
+// cuts off a long body. A var so tests can shorten it.
+var ResponseTimeout = 60 * time.Second
+
 // Client is an HTTP client whose every request goes to the unix socket at
-// path, whatever the URL's host. It uses no proxy.
+// path, whatever the URL's host. It uses no proxy, and a request fails when
+// the response headers take longer than ResponseTimeout.
 func Client(path string) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		Proxy: nil,
@@ -42,14 +50,16 @@ func Client(path string) *http.Client {
 			d := net.Dialer{Timeout: dialTimeout}
 			return d.DialContext(ctx, "unix", path)
 		},
-		DisableKeepAlives: true,
+		DisableKeepAlives:     true,
+		ResponseHeaderTimeout: ResponseTimeout,
 	}}
 }
 
 // List asks every *.sock socket in dir for its /api/session and returns the
 // instances that answered, by PID. dir should come from web.SocketDir, which
 // checks that only this user can reach it. A socket that refuses the
-// connection belongs to an instance that is gone and is removed; one that
+// connection and whose pid has exited belongs to an instance that is gone
+// and is removed; one that
 // answers badly or too slowly is skipped and kept. Entries that are not
 // sockets are left alone.
 func List(dir string) ([]Instance, error) {
@@ -65,7 +75,7 @@ func List(dir string) ([]Instance, error) {
 		path := filepath.Join(dir, e.Name())
 		in, err := probe(path)
 		if err != nil {
-			if errors.Is(err, syscall.ECONNREFUSED) {
+			if errors.Is(err, syscall.ECONNREFUSED) && gone(e.Name()) {
 				_ = os.Remove(path)
 			}
 			continue
@@ -74,6 +84,18 @@ func List(dir string) ([]Instance, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out, nil
+}
+
+// gone reports whether the process a <pid>.sock is named after has exited.
+// A live instance whose listen backlog is full also refuses connections
+// (macOS), so a refusal alone is no proof the socket is stale. A name that is
+// not a pid is not gone: it is left alone.
+func gone(name string) bool {
+	pid, err := strconv.Atoi(strings.TrimSuffix(name, ".sock"))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
 // probe reads the session of the instance listening on path.

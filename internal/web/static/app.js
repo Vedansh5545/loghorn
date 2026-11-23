@@ -1425,6 +1425,9 @@ function cellCopyText(td) {
 // returns the text. It sends what runQuery sends (limit included) and, for a
 // Samples batch past the first, that batch's offset and columns as loadBatch
 // does, so the copy is the table on screen, not the first page of it.
+// In the Heatmap view that table is the span list (listQuery), not the
+// heatmap the CLI exports for the same URL: a deliberate exception (spec,
+// "Copy buttons in the page").
 function batchPart() {
   const base = lastResult;
   if (!base || (base.view && base.view !== "samples") || groupedList() || !base.offset) return {};

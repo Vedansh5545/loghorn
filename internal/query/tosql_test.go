@@ -62,7 +62,7 @@ func TestToSQLHeader(t *testing.T) {
 	}
 	want := SQLHeader + `SELECT "message"
 FROM logs."app"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `
 	if got != want {
@@ -81,44 +81,44 @@ func TestToSQLSamples(t *testing.T) {
 			`SELECT "message", "code"
 FROM logs."app"
 WHERE service = 'api'
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"all services", Query{Stream: "app", Service: "*"}, samplesRes("message"),
 			`SELECT "message"
 FROM logs."app"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"spans all kinds", Query{Stream: "*", Source: "otel"}, samplesRes("duration_ms"),
 			`SELECT "duration_ms"
 FROM spans."*"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"no columns", Query{Stream: "http.server", Source: "otel"}, samplesRes(),
 			`SELECT *
 FROM spans."http.server"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"query columns without result", Query{Stream: "app", Columns: []string{"ok"}}, nil,
 			`SELECT "ok"
 FROM logs."app"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"sort field asc offset", Query{Stream: "app", Sort: Sort{Field: "code"}, Offset: 200}, samplesRes("code"),
 			`SELECT "code"
 FROM logs."app"
-ORDER BY "code" ASC, seq ASC
+ORDER BY "code" ASC NULLS LAST, seq ASC
 LIMIT 100
 OFFSET 200;
 `},
 		{"sort field desc limit capped", Query{Stream: "app", Sort: Sort{Field: "code", Desc: true}, Limit: 50000}, samplesRes("code"),
 			`SELECT "code"
 FROM logs."app"
-ORDER BY "code" DESC, seq DESC
+ORDER BY "code" DESC NULLS LAST, seq DESC
 LIMIT 10000;
 `},
 		{"sort time asc", Query{Stream: "app", Sort: Sort{Field: "timestamp"}, Limit: 5}, samplesRes("code"),
@@ -131,14 +131,14 @@ LIMIT 5;
 			`SELECT "message"
 FROM logs."app"
 WHERE raw ILIKE '%ab\%%' ESCAPE '\'
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"injection", Query{Stream: "app", Filters: []Filter{{Field: "a\"b", Op: "=", Values: []string{"x' OR 1=1 --"}}}}, samplesRes("a\"b"),
 			`SELECT "a""b"
 FROM logs."app"
 WHERE "a""b" = 'x'' OR 1=1 --'
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 		{"long select list", Query{Stream: "app"}, samplesRes("message", "code", "ratio", "latency", "ok", "at", "body", "duration_ms", "nope"),
@@ -153,7 +153,7 @@ LIMIT 100;
   "duration_ms",
   "nope"
 FROM logs."app"
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `},
 	}
@@ -210,7 +210,7 @@ FROM logs."app"
 WHERE
   "time" >= loghorn.this_run_start()
   AND ("loghorn.run.id" = loghorn.this_run_id() OR "loghorn.run.id" IS NULL)
-ORDER BY "time" DESC, seq DESC
+ORDER BY "time" DESC NULLS LAST, seq DESC
 LIMIT 100;
 `
 		if body != want {

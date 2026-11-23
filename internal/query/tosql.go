@@ -29,8 +29,12 @@ const SQLHeader = `-- loghorn query as DuckDB SQL. Table model:
 --   Field types: string VARCHAR, int BIGINT, float DOUBLE, duration DOUBLE
 --   (ms), bool BOOLEAN, time TIMESTAMPTZ, json JSON.
 --   A missing value, null or empty string is NULL. A value that does not fit
---   its field's type (a bad value) also loads as NULL: loghorn counts a bad
---   value as not-empty, SQL does not.
+--   its field's type (a bad value) also loads as NULL, so SQL treats it as
+--   empty. In loghorn a bad value matches only not-empty; here it fails
+--   not-empty and matches empty, != and not-in, like any NULL.
+--   Durations load as milliseconds rounded to 15 significant digits, and a
+--   duration filter compares against its value in ms rounded the same way,
+--   so a value within rounding of a filter edge can fall on the other side.
 --   A field named seq, time, service or raw (in any case) has no column.
 --   Macros: loghorn.this_run_start() is the start of the run that is current
 --   when the SQL executes, and loghorn.this_run_id() is its run ID.
@@ -847,7 +851,7 @@ func sqlOrder(so Sort, s schema.Schema) (string, error) {
 	if field == "timestamp" {
 		// Run sorts a record with no time as the zero time: first ascending.
 		if desc {
-			return `"time" DESC, seq DESC`, nil
+			return `"time" DESC NULLS LAST, seq DESC`, nil
 		}
 		return `"time" ASC NULLS FIRST, seq ASC`, nil
 	}
@@ -855,7 +859,9 @@ func sqlOrder(so Sort, s schema.Schema) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return id + dir + ", seq" + dir, nil
+	// Run sorts a missing or bad value last in either direction. Explicit,
+	// so a changed default_null_order can't reorder the rows.
+	return id + dir + " NULLS LAST, seq" + dir, nil
 }
 
 // fieldIdent quotes a field path as a column name. A path that is one of

@@ -9,12 +9,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/instances"
 	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/web"
 )
@@ -75,6 +77,9 @@ func cliTCP(t *testing.T) (*httptest.Server, *bodyRecorder) {
 
 // qURL is the page URL of a query on base.
 func qURL(base, q string) string { return base + "/?q=" + url.QueryEscape(q) }
+
+// deadPID is above every OS's pid limit, so no process has it.
+const deadPID = 1 << 30
 
 // noSockets is a socket dir lookup for tests that must not use one.
 func noSockets() (string, error) { return "", errors.New("test: no socket dir") }
@@ -374,6 +379,31 @@ func TestQueryServerError(t *testing.T) {
 	}
 }
 
+func TestQueryFlagAfterURL(t *testing.T) {
+	u := "http://127.0.0.1:1/?q=" + url.QueryEscape(allQuery)
+	r := runCLI(t, opts{args: []string{u, "-o", "x.csv"}}, nil, nil)
+	if r.code != 2 || !strings.Contains(r.stderr, "put flags before the URL") || !strings.Contains(r.stderr, "-o") {
+		t.Fatalf("exit %d; stderr %q", r.code, r.stderr)
+	}
+}
+
+func TestQueryWedgedInstance(t *testing.T) {
+	old := instances.ResponseTimeout
+	instances.ResponseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { instances.ResponseTimeout = old })
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(func() { close(release); srv.Close() })
+	start := time.Now()
+	r := runCLI(t, opts{url: qURL(srv.URL, allQuery)}, nil, nil)
+	if r.code != 1 || !strings.Contains(r.stderr, "can't reach") {
+		t.Fatalf("exit %d; stderr %q", r.code, r.stderr)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("gave up after %v", d)
+	}
+}
+
 func TestQueryUnreachable(t *testing.T) {
 	srv, _ := cliTCP(t)
 	u := srv.URL
@@ -452,11 +482,11 @@ func TestQueryDiscovery(t *testing.T) {
 func TestQueryDiscoveryStale(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := sockDir(t)
-	ln, _, err := web.ListenSocket(dir, 999)
+	ln, _, err := web.ListenSocket(dir, deadPID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := filepath.Join(dir, "999.sock")
+	stale := filepath.Join(dir, strconv.Itoa(deadPID)+".sock")
 	ln.(interface{ SetUnlinkOnClose(bool) }).SetUnlinkOnClose(false)
 	ln.Close()
 	r := runCLI(t, opts{url: "/?q=" + url.QueryEscape(allQuery)}, nil, func() (string, error) { return dir, nil })

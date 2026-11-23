@@ -28,7 +28,8 @@ use it when no URL is given.
 - `-to-sql` prints DuckDB SQL equivalent to the query instead of data.
 - Every view the URL can name works: Samples, Table, Graph, Heatmap.
 - The page's copy bars become one "Copy" button with a format droplist, and
-  the main views copy exactly what the CLI prints.
+  the main views copy exactly what the CLI prints (Heatmap excepted: it
+  copies the span list below it; see "Copy buttons in the page").
 - Computed numbers carry no binary-float noise (`23.84`, not
   `23.839999999999996`).
 - Every `-web` instance listens on `$TMPDIR/loghorn/<pid>.sock` too;
@@ -241,6 +242,12 @@ displayed (formatted) table.
   included. Formats: all seven data formats. The bar shows for Graph too,
   which has no copy today. The query sent is the one behind the rows shown
   (same offset and limit for Samples).
+- **Heatmap exception:** in the Heatmap view the bar sits under the list of
+  spans, so it copies that list as the server exports it: the selected cell's
+  spans (Samples with `cell`), the whole heatmap's spans when no cell is
+  selected, or the Grouped tab's table. That is not what `loghorn <url>`
+  prints for the page URL, which is the heatmap itself (wide bands); the
+  heatmap is exported from the command line only.
 - Values copy raw (`1234.5`, not `1.2 s`). This is a visible change from
   today's formatted copy, and the point of it.
 - **Trace and aggregate views** keep building the text in the page; the

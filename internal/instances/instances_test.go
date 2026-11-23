@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -81,7 +82,7 @@ func TestInstancesListRemovesStale(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := shortDir(t)
 	serve(t, dir, 4001, 5001, "/work/a")
-	stale := staleSocket(t, dir, "999.sock")
+	stale := staleSocket(t, dir, deadPIDSock)
 	// Not sockets, or not *.sock: never touched.
 	plain := filepath.Join(dir, "888.sock")
 	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
@@ -138,6 +139,55 @@ func TestInstancesListSlowSocketTimesOut(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("slow socket removed: %v", err)
+	}
+}
+
+// deadPIDSock names a socket after a pid above every OS's pid limit, so no
+// process has it.
+const deadPIDSock = "1073741824.sock"
+
+func TestInstancesListKeepsRefusingLiveSocket(t *testing.T) {
+	// A live instance with a full listen backlog refuses connections too: a
+	// refusing socket whose pid is alive is kept. So is one not named a pid.
+	dir := shortDir(t)
+	live := staleSocket(t, dir, strconv.Itoa(os.Getpid())+".sock")
+	named := staleSocket(t, dir, "x.sock")
+	got, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("List = %+v; want none", got)
+	}
+	for _, p := range []string{live, named} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("%s removed: %v", p, err)
+		}
+	}
+}
+
+func TestClientResponseTimeout(t *testing.T) {
+	old := ResponseTimeout
+	ResponseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { ResponseTimeout = old })
+	dir := shortDir(t)
+	path := filepath.Join(dir, "1.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release })}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { close(release); srv.Close() })
+	start := time.Now()
+	resp, err := Client(path).Post("http://loghorn/api/query", "application/json", nil)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a wedged instance answered")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("gave up after %v", d)
 	}
 }
 

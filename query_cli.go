@@ -84,6 +84,14 @@ func queryConflict(o opts) string {
 		return ""
 	}
 	positional := len(o.args) > 0 && isQueryURL(o.args[0])
+	if positional {
+		// Flag parsing stops at the URL, so a flag after it lands here.
+		for _, a := range o.args[1:] {
+			if strings.HasPrefix(a, "-") {
+				return "put flags before the URL; " + a + " comes after it"
+			}
+		}
+	}
 	switch {
 	case o.url != "" && len(o.args) > 0, positional && len(o.args) > 1:
 		return "a query can't be combined with a command"
@@ -200,9 +208,10 @@ func runQuery(o opts, env queryEnv) int {
 		client, endpoint, where = instances.Client(list[0].Socket), "http://loghorn/api/query", fmt.Sprintf("pid %d", list[0].PID)
 	} else {
 		client = &http.Client{Transport: &http.Transport{
-			Proxy:             nil,
-			DialContext:       (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-			DisableKeepAlives: true,
+			Proxy:                 nil,
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			DisableKeepAlives:     true,
+			ResponseHeaderTimeout: instances.ResponseTimeout,
 		}}
 		endpoint, where = "http://"+u.Host+"/api/query", u.Host
 	}
