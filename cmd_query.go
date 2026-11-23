@@ -58,7 +58,7 @@ type queryEnv struct {
 	socket         string
 }
 
-// maxURLArg bounds what -url @- and -url @file read.
+// maxURLArg bounds what @- and @file read.
 const maxURLArg = 1 << 20
 
 // isQueryURL reports whether a positional argument is a loghorn page URL

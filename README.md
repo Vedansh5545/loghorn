@@ -2,13 +2,13 @@
 
 # loghorn
 
-Wrap a dev server, record its logs, and surface the failures.
+Capture, store and query the logs and traces of the apps on your machine.
 
-loghorn runs your command and stays out of the way: its output reaches the
-terminal unchanged, and every record is also kept in a per-project log file. From
-there `-filter` prints only the lines that matter and `-web` serves a query view of
-them — so a request that failed is findable in context rather than lost in ten
-thousand routine lines.
+`loghorn serve` runs in the background and keeps everything: OpenTelemetry logs and
+traces your apps send it, and the output of every command you start with
+`loghorn run`. The command's output still reaches the terminal unchanged. The web
+explorer (`loghorn ui`) and `loghorn query` read it back, so a request that failed is
+findable in context rather than lost in ten thousand routine lines.
 
 A line is a **failure** if any of these holds:
 
@@ -59,110 +59,127 @@ Run 'loghorn help <command>' for its flags.
 ```
 <!-- /loghorn help -->
 
+**Start the store** once, in a terminal (it stays in the foreground) or as a login
+service:
+
+```sh
+loghorn serve
+```
+
+`serve` receives OTLP/HTTP on `127.0.0.1:4318`, serves the web explorer on
+`127.0.0.1:4380`, and listens on the unix socket `/tmp/loghorn.sock`, where every
+other command finds it. It keeps its data in a per-user folder (see *Where data
+lives*), not in the current directory, and stops cleanly on `SIGTERM` or `Ctrl-C`. It
+fails at once, with a message naming the setting to change, when a port is taken,
+another `serve` holds the data folder, or another answers on the socket.
+
 **Wrap the producer:**
 
 ```sh
-loghorn -- npm run dev
+loghorn run -- npm run dev
+loghorn -- npm run dev          # the same
 ```
 
-loghorn is a transparent wrapper. The command's stdout and stderr reach the terminal
+`run` is a transparent wrapper. The command's stdout and stderr reach the terminal
 unchanged — through a pty when stdout is a terminal, so colours, progress bars and
 prompts work as they do without loghorn — and the keyboard stays the command's.
 `Ctrl-C` goes straight to the command; `SIGTERM` and `SIGHUP` sent to loghorn are
-forwarded to it, and a command still running `--shutdown-grace` after a `SIGTERM` is
-killed. loghorn exits with the command's status (127 when it can't be found).
-Meanwhile every record is appended to the project's log file, with escape sequences
-removed.
+forwarded to it, and a command still running `-shutdown-grace` after a `SIGTERM` is
+killed. loghorn exits with the command's status (127 when it can't be found). Flags go
+before the command; everything from the command on is the command's.
+
+Meanwhile every record, with escape sequences removed, goes to `serve`, under a
+service name: `-service NAME`, else the command's `OTEL_SERVICE_NAME`, else the
+repository's directory name and the command (`shop-npm`). `run` also points the
+command's OpenTelemetry SDK at `serve` (`OTEL_EXPORTER_OTLP_*`, `OTEL_LOGS_EXPORTER`,
+`OTEL_TRACES_EXPORTER`, and `loghorn.run.id` in `OTEL_RESOURCE_ATTRIBUTES`), so its own
+OTLP logs and spans arrive too. Once the command's OTLP logs arrive, its stdout lines
+that are JSON objects are no longer stored, since they are most likely the same events
+logged twice. If `serve` stops answering mid-run, the output keeps flowing and loghorn
+says how many lines were not recorded.
 
 **Record a pipe** — the input is copied to stdout and recorded the same way:
 
 ```sh
-kubectl logs -f pod | loghorn
-gcloud beta logging tail --json | loghorn
+kubectl logs -f pod | loghorn run
+gcloud beta logging tail --json | loghorn run
 ```
+
+A bare `loghorn` with piped input prints the help and records nothing.
 
 **Show only the failures** — `-filter` prints just the failing records to stdout,
-one per line, instead of everything. From a command or a pipe they are printed as
-recorded, with escape sequences removed; from a replay, as they were stored. It works
-with every input; with a command the exit status is still the command's:
+one per line, instead of everything; everything is still recorded. With a command the
+exit status is still the command's:
 
 ```sh
-loghorn -filter -- go test ./...
-loghorn -filter < capture.json
+loghorn run -filter -- go test ./...
 ```
 
-**Browse in a web view** — `-web` serves a query view (see below) and prints its URL
-to stderr. It combines with a command, a pipe, a replay and `-filter`. On its own it
-browses the stored logs:
+**Apps that send OpenTelemetry themselves** — point them at `serve` with the
+environment `loghorn status` prints:
 
 ```sh
-loghorn -web -- npm run dev
-loghorn -web
+eval "$(loghorn status -env)"
 ```
 
-**Receiving OTEL logs and traces (`-otel`)** — for a command that exports
-OpenTelemetry logs or traces, `-otel` starts an OTLP/HTTP receiver on `127.0.0.1`
-(a free port) and points the command at it:
+That sets `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`,
+`OTEL_LOGS_EXPORTER=otlp`, `OTEL_TRACES_EXPORTER=otlp` and `OTEL_METRICS_EXPORTER=none`
+(serve discards metrics). Set `OTEL_SERVICE_NAME` per app. Each OTLP log record's
+stream is its `event.name`, else its instrumentation scope name, else `otel`; the
+body, attributes, `event.name`, `otel.scope.name`, `service.name`, `trace_id`,
+`span_id` and the run id are stored as fields, and `loghorn.source` is `otlp`. Spans
+are stored one JSON object per line (`trace_id`, `span_id`, `parent_span_id`, `name`,
+`kind`, `start`, `end`, `duration_ms`, `status`, `status_message`, `attributes`,
+`events`, `links`, `service.name`, `loghorn.run.id`, `otel.resource` and the
+instrumentation scope) and appear in the web view as span streams.
+
+**When serve isn't running**, `run` still runs the command. What it records is your
+choice, set in `[run] serve-down` (below) or per run with `-serve-down`:
+
+- `record` (the default) writes the run to the data folder's `incoming/<run id>/`,
+  including the command's own OTLP, and `serve` adopts it when it next starts. Apps
+  sending OTLP on their own are not recorded until `serve` is back.
+- `skip` records nothing.
+- `fail` exits 1 without running the command, for scripts and CI that must capture
+  everything.
+
+`run` says so on stderr every time, and `loghorn status` reports the runs waiting in
+`incoming/`.
+
+**Open a finished log** — `open` shows a file, stdin or a GitHub Actions job in a
+temporary web view of its own (its URL goes to stderr; `Ctrl-C` ends it), or with
+`-filter` prints its failures. It records nothing:
 
 ```sh
-loghorn -otel -- node server.js
+loghorn open capture.json
+loghorn open -filter capture.json
+kubectl logs pod | loghorn open -filter -
+loghorn open https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
+loghorn open https://github.com/owner/repo/actions/runs/43954926722
+loghorn open -filter -gh-job 133607019104
 ```
 
-loghorn sets `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (`http://127.0.0.1:<port>/v1/logs`),
-`OTEL_EXPORTER_OTLP_LOGS_PROTOCOL=http/protobuf`, `OTEL_LOGS_EXPORTER=otlp`,
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (`http://127.0.0.1:<port>/v1/traces`),
-`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`, `OTEL_TRACES_EXPORTER=otlp`,
-`OTEL_EXPORTER_OTLP_ENDPOINT` (only when you hadn't set it), `OTEL_RESOURCE_ATTRIBUTES`
-(yours plus `loghorn.run.id=<id>`) and `LOGHORN_RUN_ID` for the command, and prints the
-endpoint and run id to stderr. Received records are appended to `.loghorn/loghorn.log`
-as JSON lines (and shown in `-web`, and counted by `-notify`); they are not printed by
-`-filter`, which shows the command's own output. Each record's stream is its
-`event.name`, else its instrumentation scope name, else `otel`, so `-web` lists it
-under that name; the stream is worked out when the line is read, from those standard
-fields, and no stream label is stored. The body, attributes, `event.name`,
-`otel.scope.name`, `service.name`, `trace_id`, `span_id` and the
-run id are stored as fields, and `loghorn.source` is `otlp`.
+A run URL or `-gh-run` shows the run's first failed job (its first job when none
+failed), listing every job on stderr so you can name another with `-gh-job`. Both go
+through the GitHub CLI, so `gh` must be installed and logged in; a bare ID uses the
+repository of the current directory. An old per-project day from earlier versions
+(`.loghorn/loghorn-2026-11-20.log`) opens the same way.
 
-Spans the command exports are stored one JSON object per line in
-`.loghorn/loghorn.traces.jsonl`, kept and rotated like `loghorn.log` (archived as
-`loghorn-<date>.traces.jsonl`); the file appears with the first span.
-Each line has `trace_id`, `span_id`, `parent_span_id`, `name`, `kind`, `start`, `end`,
-`duration_ms`, `status`, `status_message`, `attributes`, `events`, `links`,
-`service.name`, `loghorn.run.id`, `otel.resource` and the instrumentation scope (empty
-fields are left out). Spans appear in `-web` as span streams, live and from stored days, but are not part of
-`loghorn.log`, `-filter` or `-notify`, and they don't count as OTLP logs below.
-
-Once the first OTLP record arrives, the command's stdout lines that are JSON objects
-are no longer stored, since they are most likely the same events logged twice; other
-lines are still stored, and everything is still printed. If the command sends no OTLP
-logs at all, loghorn says `-otel: no OTLP logs received; stdout was recorded instead`
-on exit. `-otel` needs a command after `--`; it combines with `-web` and `-filter`.
-
-**Replays** read a finished log. They never write the log file, so they need `-web`
-or `-filter` to show anything:
+**Look at it:**
 
 ```sh
-loghorn -filter < capture.json      # a file on stdin
-loghorn -web -historical            # the stored days, oldest first, then today
-loghorn -filter -gh-job 133607019104
-loghorn -web -gh-job https://github.com/owner/repo/actions/runs/43954926722/job/133607019104
-loghorn -web -gh-run https://github.com/owner/repo/actions/runs/43954926722
+loghorn ui                  # open the web explorer in your browser
+loghorn ui -print           # just print its URL
+loghorn status              # is serve running, where, and what apps need
 ```
-
-`-gh-job` takes a job ID (the number after `/job/` in its URL; the run is looked up) or
-the whole URL. `-gh-run` takes a run ID or run URL and shows the run's first failed job
-(its first job when none failed), listing every job on stderr so you can name another
-with `-gh-job`. Both go through the GitHub CLI, so `gh` must be installed and logged
-in; a bare ID uses the repository of the current directory. The replay flags refuse a
-command or piped stdin, so from cron or CI pass `</dev/null`.
 
 ## gcloud
 
 Both shapes gcloud emits are read as-is:
 
 ```sh
-gcloud beta logging tail --json | loghorn
-gcloud logging read --format=yaml | loghorn
+gcloud beta logging tail --json | loghorn run
+gcloud logging read --format=yaml | loghorn open -
 ```
 
 `--json` produces a JSON array whose first line is a bare `[`, with each entry
@@ -187,6 +204,13 @@ worth creating only when a producer needs something unusual.
 format       = "auto"   # auto | json | yaml | text
 field-naming = "auto"   # auto | camel | snake
 severity     = "auto"   # auto | string | numeric
+
+[serve]                 # read from the user-level file only
+web-port       = 4380
+otlp-http-port = 4318
+
+[run]                   # read from the user-level file only
+serve-down = "record"   # record | skip | fail
 ```
 
 - **`format`** — how the stream is split into records. `auto` decides from the first
@@ -197,6 +221,15 @@ severity     = "auto"   # auto | string | numeric
   `camel` and `snake` restrict it to one.
 - **`severity`** — `auto` accepts a string name or a numeric code; `string` and
   `numeric` restrict it to one.
+- **`[serve]`** — the ports `serve` binds; `serve -web-port` and `-otlp-http-port`
+  override them for one start. Clients ask `serve` which ports it bound, so they follow
+  an override.
+- **`[run] serve-down`** — what `run` does when `serve` isn't running (see above).
+
+`serve` and `serve-down` read only the user-level file
+(`~/.config/loghorn/config.toml`), never a repository's: `serve` has no project
+directory, and whether a run may go unrecorded is your call. `[input]` is applied by
+`run` and `open`, which read the file nearest the directory they start in.
 A `display` section, which configured the terminal UI of older versions, is ignored with a warning.
 
 ### Where the file is found
@@ -216,43 +249,49 @@ walk finds that literal path first, so `XDG_CONFIG_HOME` no longer redirects any
 To see which file is in effect and what it resolves to:
 
 ```sh
-loghorn -config
+loghorn config
 ```
 
-`.config/loghorn/` is hand-written and belongs in version control. It is not
-`.loghorn/`, which holds generated logs and ignores itself.
+`.config/loghorn/` is hand-written and belongs in version control.
 
-## The log file
+## Where data lives
 
-Every record loghorn receives is appended to `.loghorn/loghorn.log` in the directory
-it starts in, so each project gets its own logs and its own lock. Each finished day is
-kept as `loghorn-YYYY-MM-DD.log`, and days before the last three are deleted. The
-directory is created owner-only and ignores itself, because a dev server's logs can
-carry tokens and auth headers.
+`serve` keeps everything in a per-user data folder, whatever directory it starts in:
+`~/Library/Application Support/loghorn` on macOS, `$XDG_STATE_HOME/loghorn` (default
+`~/.local/state/loghorn`) on Linux, `%LOCALAPPDATA%\loghorn` on Windows. `serve -data`
+or `$LOGHORN_DATA_DIR` moves it. Records go to `loghorn.log` and spans to
+`loghorn.traces.jsonl`; each finished day is kept as `loghorn-YYYY-MM-DD.log` (and
+`.traces.jsonl`), and days before the last three are deleted. The folder is
+owner-only, because a dev server's logs can carry tokens and auth headers, and a lock
+in it keeps a second `serve` out.
 
-Input read from a file (`loghorn < file`) is not recorded — it is already on disk.
-loghorn never creates or writes `.loghorn` inside its own source tree, so recording
-live input there (a launched command or a pipe) fails; reading a file, `-historical`
-and the GitHub flags work there.
+Runs recorded while `serve` was down wait in `incoming/<run id>/` until `serve`
+adopts them.
+
+**A second instance** needs its own socket, data folder and ports, and its clients
+need `$LOGHORN_SOCKET`:
+
+```sh
+loghorn serve -socket /tmp/loghorn-b.sock -data ~/lh-b -web-port 4390 -otlp-http-port 4328
+LOGHORN_SOCKET=/tmp/loghorn-b.sock loghorn run -- make test
+```
+
+Earlier versions wrote `.loghorn/` in each project; those files are left where they
+are, and `loghorn open` reads them.
 
 ## Web query view
 
-`loghorn -web` also serves a browser view of the run's structured records at
-`http://127.0.0.1:<port>/`; the URL is printed to stderr. With a command it
-serves until the command exits, with a pipe until end of input, and with a
-replay (or alone) until `Ctrl-C`. Pick the port with `-web-port`; the default is a free one.
-The server listens on loopback only and refuses requests for any other Host,
-and writes that do not come from its own origin. It also listens on a per-user unix
-socket, `$TMPDIR/loghorn/<pid>.sock` (else `$XDG_RUNTIME_DIR/loghorn`, else
-`/tmp/loghorn-<uid>`; the directory must be mode 0700 and yours), so the command-line
-query below can find a running instance; the socket is removed on a clean exit.
+`serve` serves a browser view of the stored records at `http://127.0.0.1:4380/`
+(`loghorn ui` opens it), and `open` serves the same page for one finished log. The
+server listens on loopback only and refuses requests for any other Host, and writes
+that do not come from its own origin. The unix socket is reachable only by you
+(mode 0600).
 
 It lists the streams found in the log (database lines, HTTP lines, and so on),
 and for each one a table, newest first, with typed filters, a time range and
 text search. Fields get types by inference (int, float, bool, string, timestamp,
 duration); a value that does not fit its type is shown raw and flagged, and is
-left out of comparisons. Live runs also load the stored days from `.loghorn`;
-`-historical`, `-gh-job` and `-gh-run` feed it their replay.
+left out of comparisons. `serve` loads the stored days when it starts.
 
 The sidebar holds the whole query: the mode tabs, the stream, the time range,
 and the filters, one row per field / operator / value (a bad value is flagged on
@@ -288,8 +327,8 @@ are saved as TOML per service, in `~/.config/loghorn/services/<service>/`
 log and span fields. A field setting applies to every kind of its source in
 that service. A record's service is its `service.namespace`, else its
 `service.name` (or a Cloud Logging `resource.labels.service_name`), else
-`default`; the lines of a launched command (`-- cmd`) that name none take
-`OTEL_SERVICE_NAME` from the environment. *All* services is read only.
+`default`; the lines of a `run` that name none take the run's service (see above).
+*All* services is read only.
 
 Earlier versions saved schemas and favorites in the repo's `.config/loghorn/`;
 that is no longer read, and loghorn says so once per repo. To keep the
@@ -321,61 +360,64 @@ at most the 1000 most recent traces. See `docs/features.md`.
 
 ## Query from the command line
 
-A running `-web` instance can be queried without a browser. Copy the page URL from the
-address bar and give it to loghorn; it prints the same view's data, TSV by default:
+The web view can be queried without a browser. Copy the page URL from the address bar
+and give it to `loghorn query`; it prints the same view's data, TSV by default:
 
 ```
-loghorn 'http://127.0.0.1:53124/?q={"stream":"app","range":{"from":"all"}}'
-loghorn -format csv -url @query-url.txt
-loghorn -o errors.yaml 'http://127.0.0.1:53124/?q=…'
-loghorn -to-sql 'http://127.0.0.1:53124/?q=…'
-loghorn -url '/?q=…'          # no host: the single running -web instance, via its socket
-loghorn -instances            # pid, port, start time and directory of each running one
+loghorn query 'http://127.0.0.1:4380/?q={"stream":"app","service":"*","range":{"from":"all"}}'
+loghorn 'http://127.0.0.1:4380/?q=…'            # the same: a URL alone is a query
+loghorn query @query-url.txt -format csv
+loghorn query 'http://127.0.0.1:4380/?q=…' -o errors.yaml
+loghorn query -to-sql 'http://127.0.0.1:4380/?q=…'
+loghorn query '/?q=…'                            # no host: the running serve, via its socket
 ```
 
-- The positional URL (`http://127.0.0.1` or `http://localhost` only) or `-url` names the
-  view: table, graph, heatmap or samples, with its filters and range. `-url @file` and
-  `-url @-` read a long URL from a file or stdin. A trace or aggregate in the URL is
-  not exported; the main view is.
+- The URL (`http://127.0.0.1` or `http://localhost` only) names the view: table, graph,
+  heatmap or samples, with its filters, range and service. `@file` and `@-` read a long
+  URL from a file or stdin. A trace or aggregate in the URL is not exported; the main
+  view is. A URL from an `open` view works while that view is up.
 - `-format` is one of `tsv` (default), `csv`, `md`, `json`, `jsonl`, `yaml`, `toon` or
   `sql`. `-o FILE` writes a file instead of stdout and picks the format from the
   extension (`.csv`, `.md`, `.json`, `.jsonl`, `.yaml`, `.toon`, `.sql`).
 - `-to-sql` prints DuckDB SQL that reproduces the view instead of its data.
 - `-limit N` overrides the URL's row limit (samples) or top (table, graph).
-- Without a host the URL goes through the instance's socket; with several instances
-  running, pass the full URL of one (`-instances` lists them). Discovery looks in
-  `$TMPDIR`, so a shell with a different `TMPDIR` than the instance needs the full URL.
+- Flags may come before or after the URL.
 - The page's Copy button copies the same export for Samples, Table and Graph. In the
   Heatmap view it copies the span list under the heatmap; the heatmap itself is
   exported only from the command line.
-- Query mode never launches a command, never records anything and ignores stdin
-  (except for `-url @-`), so it is safe to run from a script or an agent shell. It can't
-  be combined with a command, `-web`, `-otel` or a replay.
+- `query` never launches a command, never records anything and ignores stdin (except
+  for `@-`), so it is safe to run from a script or an agent shell.
 
-## Flags
+## Commands and flags
 
-| Flag | Default | |
-|---|---|---|
-| `--filter` | off | print only the failures to stdout instead of everything |
-| `-historical` | off | replay the stored files (needs `-web` or `-filter`) |
-| `-gh-job` | | replay a GitHub Actions job's log, by job ID or URL (needs `-web` or `-filter`) |
-| `-gh-run` | | replay the first failed job of a GitHub Actions run, by run ID or URL (needs `-web` or `-filter`) |
-| `--otel` | off | receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs `-- <command>`) |
-| `-web` | off | serve the web query view on 127.0.0.1 and print its URL to stderr |
-| `-web-port` | `0` | port for `-web` (0 picks a free one) |
-| `-url` | | query a `-web` instance: its page URL, `/?q=…` for the single running one, `@file` or `@-` (see above) |
-| `-o`, `-format`, `-limit`, `-to-sql` | | query output options (see above) |
-| `-instances` | off | list the running `-web` instances |
-| `-config` | off | print the config file in effect, then exit |
-| `--notify` | off | desktop notification on fresh errors |
-| `--notify-max-age` | `1s` | skip notifications for errors older than this |
-| `--notify-reset` | `15s` | quiet gap that ends an error burst |
-| `--notify-sound` | on | play the system alert sound with notifications |
-| `--exclusive` | off | exit rather than run without the log file if another loghorn holds it |
-| `--shutdown-grace` | `5s` | after forwarding SIGTERM to the command, SIGKILL it this much later |
+`loghorn help <command>` lists a command's flags. Flags take one dash or two.
 
-One dash or two makes no difference — `-filter` and `--filter` are the same flag.
-`loghorn --help` is authoritative.
+| Command | Flags |
+|---|---|
+| `serve` | `-data`, `-socket`, `-web-port`, `-otlp-http-port`, `-log FILE` |
+| `run` | `-filter`, `-service`, `-serve-down`, `-notify`, `-notify-max-age`, `-notify-reset`, `-notify-sound`, `-shutdown-grace` |
+| `open` | `-filter`, `-view`, `-web-port`, `-gh-job`, `-gh-run` |
+| `query` | `-o`, `-format`, `-limit`, `-to-sql` |
+| `ui` | `-print` |
+| `status` | `-env` |
+
+Earlier versions took everything as top-level flags. Each now names its new home when
+used:
+
+| Before | Now |
+|---|---|
+| `loghorn -- cmd` | `loghorn run -- cmd` (or still `loghorn -- cmd`) |
+| `cmd \| loghorn` | `cmd \| loghorn run` |
+| `loghorn -web` | `loghorn serve`, then `loghorn ui` |
+| `-web` with a command | `run` always sends to `serve` |
+| `-otel` | `run` always points the command at `serve` |
+| `loghorn -filter < file` | `loghorn open -filter file` |
+| `-historical` | `serve` keeps the stored days; `open` reads one file |
+| `-gh-job`, `-gh-run` | `loghorn open -gh-job …`, `-gh-run …`, or the URL |
+| `-config` | `loghorn config` |
+| `-url`, `-o`, `-format`, `-limit`, `-to-sql` | `loghorn query …` |
+| `-instances` | `loghorn status` |
+| `-exclusive` | gone: `run` no longer writes a log file per directory |
 
 ## Docs
 

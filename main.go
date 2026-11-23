@@ -1,18 +1,14 @@
-// Command loghorn wraps a command, passing its output through unchanged while
-// recording every record, and focuses attention on the important lines.
+// Command loghorn captures, stores and queries the logs and traces of the apps
+// on a developer's machine. Its commands (dispatch.go) are:
 //
-//	loghorn -- npm run dev
+//	loghorn serve           the store: OTLP receiver, data folder, web explorer
+//	loghorn run -- <cmd>    run a command transparently and send its output to serve
+//	loghorn open <log>      show a finished log (a file, stdin, GitHub Actions)
+//	loghorn query <url>     print a web view's data
+//	loghorn status | ui     serve's state and OTEL environment; open the explorer
 //
-// loghorn starts the command in its own process group, copies its stdout and
-// stderr to loghorn's own (through a pty when loghorn's stdout is a terminal,
-// so colour and line editing keep working), forwards signals, and exits with
-// the command's status. Piped input (`npm run dev | loghorn`) passes through
-// the same way.
-//
-// Every record is also appended to .loghorn/loghorn.log in the directory loghorn
-// is started from; see package logfile. -web serves a query view of the records;
-// -filter prints only the important ones. Replays of a finished log (a file on
-// stdin, -historical, -gh-job, -gh-run) need -web or -filter.
+// serve (internal/serve) is the one long-running process; every other command
+// finds it through its unix socket (internal/sock) and exits.
 package main
 
 import (
@@ -25,8 +21,7 @@ import (
 
 func main() { os.Exit(dispatch(os.Args[1:], stdEnv())) }
 
-// opts carries the flag values of run, open and query to the code paths they
-// share.
+// opts carries the flag values of run and query to the code that reads them.
 type opts struct {
 	filter       bool
 	notify       bool
@@ -34,23 +29,14 @@ type opts struct {
 	notifyReset  time.Duration
 	notifySound  bool
 	grace        time.Duration
-	exclusive    bool
-	historical   bool
-	ghRun        string
-	ghJob        string
-	config       bool
-	web          bool
-	otel         bool
-	webPort      int
 
-	// Query mode (query_cli.go).
-	url       string
-	out       string
-	format    string
-	limit     int
-	limitSet  bool // -limit was given
-	toSQL     bool
-	instances bool
+	// query (cmd_query.go).
+	url      string
+	out      string
+	format   string
+	limit    int
+	limitSet bool // -limit was given
+	toSQL    bool
 
 	args []string
 }

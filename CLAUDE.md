@@ -1,11 +1,35 @@
 # loghorn — notes for agents
 
-## Startup ordering (`main.go`)
+## Startup ordering
 
-Validate or bind anything that can fail with `os.Exit` (flag conflicts, the
-`-web` listener) **before** launching the child command. `os.Exit` skips
-deferred cleanup, and the child runs in its own process group, so an exit
-after launch leaves it running.
+- `run` (`cmd_run.go`): validate or bind anything that can fail with
+  `os.Exit` (flags, config, the serve probe, the incoming folder and its
+  receiver) **before** launching the child command. `os.Exit` skips deferred
+  cleanup, and the child runs in its own process group, so an exit after
+  launch leaves it running.
+- `serve` (`internal/serve`): take the data folder's lock, then bind the
+  socket and both ports, and only then serve; a failure undoes what came
+  before it, so a supervisor can restart serve cleanly. serve never forks.
+
+## Commands and serve
+
+- Each command is a `cmdX(args, cliEnv) int` in `cmd_x.go` with its own
+  `flag.FlagSet` (`newFlagSet`, `parseCmd` in `dispatch.go`). `run` parses
+  flags only before the command; the others accept them anywhere. A removed
+  top-level flag gets a message from `migrations` in `dispatch.go`.
+- `topHelp` in `dispatch.go` is copied into README.md between the
+  `<!-- loghorn help -->` markers; `TestReadmeUsageMatchesHelp` keeps them
+  equal, so edit both.
+- Clients find serve only through its socket (`sock.DefaultPath()`:
+  `$LOGHORN_SOCKET`, else `/tmp/loghorn.sock`) and ask `/api/session` for its
+  ports. Never assume 4380/4318 in a client.
+- Tests must never reach a real serve or the real data folder: set
+  `LOGHORN_SOCKET` and `LOGHORN_DATA_DIR` (the e2e helpers `loghornCmd` and
+  `newServeEnv` do), and make socket paths under `os.MkdirTemp("/tmp", …)`:
+  macOS `t.TempDir()` paths overflow sun_path (103 bytes).
+- The web handler maps an empty query service to `default`, and records from
+  `run` carry the run's service, so a hand-written `/?q=` that should see
+  them needs `"service":"*"` (or the service).
 
 ## Web view (`internal/web`)
 
@@ -81,8 +105,8 @@ after launch leaves it running.
   must use `navState(crumb, push)` for the state and call `syncNav()` after
   any show, hide or URL write, or the breadcrumb, back labels and sidebar
   lock go stale. Close through `nav.back()`, never `history.back()` directly.
-- The demo loads spans with `-spans FILE` (lines as in
-  `.loghorn/loghorn.traces.jsonl`); the Spans stream list stays empty until a
+- The demo loads spans with `-spans FILE` (lines as in serve's
+  `loghorn.traces.jsonl`); the Spans stream list stays empty until a
   service is selected.
 
 ## Go modules
