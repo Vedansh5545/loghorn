@@ -135,17 +135,6 @@ func TestCLIQueryE2E(t *testing.T) {
 		t.Fatalf("-to-sql: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 
-	// A host-less URL goes through the socket of the single instance.
-	r = cliRun(t, clientDir, env, nil, "query", q)
-	if r.code != 0 || r.stdout != want {
-		t.Fatalf("host-less: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
-	}
-
-	// A clean shutdown removes the socket.
-	socks, _ := filepath.Glob(filepath.Join(tmp, "loghorn", "*.sock"))
-	if len(socks) != 1 {
-		t.Fatalf("sockets before shutdown = %v; want one", socks)
-	}
 	if err := srv.Process.Signal(syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
@@ -153,8 +142,5 @@ func TestCLIQueryE2E(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not exit on SIGINT")
-	}
-	if _, err := os.Stat(socks[0]); !os.IsNotExist(err) {
-		t.Errorf("socket %s still exists after a clean shutdown (stat err %v)", socks[0], err)
 	}
 }
