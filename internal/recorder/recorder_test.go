@@ -61,7 +61,7 @@ func TestLineStoresEverywhere(t *testing.T) {
 	if len(g.sink) != 2 || g.sink[1] != lineB {
 		t.Errorf("sink = %q", g.sink)
 	}
-	recs, _ := g.st.Snapshot()
+	recs := g.st.Records()
 	if len(recs) != 1 || recs[0].Stream != "web" {
 		t.Errorf("store = %+v", recs)
 	}
@@ -72,7 +72,7 @@ func TestReplayHasNoReceivedTime(t *testing.T) {
 	g := newRig(Options{Live: false, Now: func() time.Time { return now }})
 	g.r.Line([]byte(`{"labels":{"schema":"web"},"message":"first"}`))
 	g.r.Line([]byte(`{"labels":{"schema":"web"},"message":"second","timestamp":"2026-03-04T05:06:07Z"}`))
-	recs, _ := g.st.Snapshot()
+	recs := g.st.Records()
 	if len(recs) != 2 {
 		t.Fatalf("recs = %d", len(recs))
 	}
@@ -102,7 +102,7 @@ func TestDedupeAfterOTLP(t *testing.T) {
 	if c.Message != "c" {
 		t.Errorf("deduped line not parsed: %+v", c)
 	}
-	recs, _ := g.st.Snapshot()
+	recs := g.st.Records()
 	if len(recs) != 2 {
 		t.Errorf("store has %d, want 2 (A and otlp)", len(recs))
 	}
@@ -155,7 +155,7 @@ func TestConcurrentLineAndOTLP(t *testing.T) {
 	if n != 3000 {
 		t.Errorf("sink = %d", n)
 	}
-	if recs, _ := st.Snapshot(); len(recs) != 3000 {
+	if recs := st.Records(); len(recs) != 3000 {
 		t.Errorf("store = %d", len(recs))
 	}
 }

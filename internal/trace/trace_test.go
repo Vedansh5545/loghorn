@@ -24,7 +24,7 @@ func fixture(t *testing.T) []record.Record {
 	if err := store.Preload(st, []string{"../../testdata/web/trace.jsonl"}, config.Input{}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := st.Snapshot()
+	recs := st.Records()
 	return recs
 }
 

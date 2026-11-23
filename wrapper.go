@@ -297,7 +297,7 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 	if msg := repoConfigNotice(cwd, base); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
-	st := store.New(mode, runStart)
+	st := store.NewWithInput(mode, runStart, cfg.Input)
 	if mode == store.ModeLive {
 		if dir, err := logDir(); err == nil {
 			preloadStored(st, dir, cfg.Input)

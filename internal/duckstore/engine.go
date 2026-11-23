@@ -26,6 +26,18 @@ const (
 	maxBatch = 20_000
 )
 
+// item is one queued write: a record, or a time to give records already
+// queued or written.
+type item struct {
+	r    record.Record
+	fill *fill
+}
+
+type fill struct {
+	recs []record.Record
+	t    time.Time
+}
+
 // Engine is one session's DuckDB instance and its writer.
 type Engine struct {
 	connector *duckdb.Connector
@@ -36,7 +48,7 @@ type Engine struct {
 
 	mu        sync.Mutex
 	cond      *sync.Cond
-	queue     []record.Record
+	queue     []item
 	added     uint64 // records accepted by Add (queued or skipped)
 	committed uint64 // records written or given up on
 	closing   bool
@@ -146,7 +158,21 @@ func (e *Engine) Add(r record.Record) {
 		e.skipped[dayOf(r.Seq)] = true
 		return
 	}
-	e.queue = append(e.queue, r)
+	e.queue = append(e.queue, item{r: r})
+	e.cond.Broadcast()
+}
+
+// SetTime gives recs, added earlier with no time, the time t. It is applied
+// in order with the records queued around it.
+func (e *Engine) SetTime(recs []record.Record, t time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.added++
+	if e.closing {
+		e.committed++
+		return
+	}
+	e.queue = append(e.queue, item{fill: &fill{recs: append([]record.Record(nil), recs...), t: t}})
 	e.cond.Broadcast()
 }
 
@@ -192,7 +218,21 @@ func (e *Engine) writer() {
 		}
 		e.mu.Unlock()
 
-		e.write(batch)
+		var recs []record.Record
+		for _, it := range batch {
+			if it.fill == nil {
+				recs = append(recs, it.r)
+				continue
+			}
+			if len(recs) > 0 {
+				e.write(recs)
+				recs = nil
+			}
+			e.applyFill(it.fill)
+		}
+		if len(recs) > 0 {
+			e.write(recs)
+		}
 
 		e.mu.Lock()
 		e.committed += uint64(n)

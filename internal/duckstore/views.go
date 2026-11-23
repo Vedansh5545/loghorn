@@ -238,7 +238,7 @@ func (e *Engine) Records(ctx context.Context, where string, args ...any) ([]reco
 		}
 		for chunk := ids[l]; len(chunk) > 0; {
 			n := min(len(chunk), 5000)
-			recs, err := e.rowsToRecords(ctx, "SELECT _id, _time, _time_inherited, _service, _source, _raw FROM "+refs[l.tid]+" WHERE _id IN ("+strings.Join(chunk[:n], ",")+")")
+			recs, err := e.rowsToRecords(ctx, "SELECT _id, _time, _time_inherited, _service, _source, _stream, _raw FROM "+refs[l.tid]+" WHERE _id IN ("+strings.Join(chunk[:n], ",")+")")
 			if err != nil {
 				return nil, err
 			}
@@ -251,7 +251,7 @@ func (e *Engine) Records(ctx context.Context, where string, args ...any) ([]reco
 }
 
 // rowsToRecords rebuilds the records of a query returning _id, _time,
-// _time_inherited, _service, _source and _raw.
+// _time_inherited, _service, _source, _stream and _raw.
 func (e *Engine) rowsToRecords(ctx context.Context, q string, args ...any) ([]record.Record, error) {
 	rows, err := e.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -263,26 +263,26 @@ func (e *Engine) rowsToRecords(ctx context.Context, q string, args ...any) ([]re
 		var id int64
 		var tm sql.NullTime
 		var inh sql.NullBool
-		var svc, src, raw string
-		if err := rows.Scan(&id, &tm, &inh, &svc, &src, &raw); err != nil {
+		var svc, src, stream, raw string
+		if err := rows.Scan(&id, &tm, &inh, &svc, &src, &stream, &raw); err != nil {
 			return nil, err
 		}
-		if r, ok := e.Rebuild(id, tm.Time, inh.Bool, svc, src, raw); ok {
-			out = append(out, r)
-		}
+		out = append(out, e.Rebuild(id, tm.Time, inh.Bool, svc, src, stream, raw))
 	}
 	return out, rows.Err()
 }
 
 // Rebuild is the record a stored row stands for: its line normalized again,
-// with the row's id, time and service. A zero t means no time.
-func (e *Engine) Rebuild(id int64, t time.Time, inherited bool, service, source, raw string) (record.Record, bool) {
+// with the row's id, time and service. A zero t means no time. A line that
+// no longer normalizes (the input config changed, or a record made by hand)
+// keeps the row's stream and source with no fields.
+func (e *Engine) Rebuild(id int64, t time.Time, inherited bool, service, source, stream, raw string) record.Record {
 	r, ok := e.rebuild(source, []byte(raw))
 	if !ok {
-		return r, false
+		r = record.Record{Stream: stream, Source: source, Fields: map[string]any{}, Raw: []byte(raw)}
 	}
 	r.Seq, r.Service, r.TimeInherited, r.Time = int(id), service, inherited, t
-	return r, true
+	return r
 }
 
 // Tallies merges the per-path tallies of one kind (record.AllStreams: every

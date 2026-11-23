@@ -20,7 +20,7 @@ func aggFixture(t testing.TB) []record.Record {
 	if err := store.Preload(st, []string{"../../testdata/web/aggregate.jsonl"}, config.Input{}); err != nil {
 		t.Fatal(err)
 	}
-	recs, _ := st.Snapshot()
+	recs := st.Records()
 	return recs
 }
 

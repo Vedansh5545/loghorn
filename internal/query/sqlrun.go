@@ -18,7 +18,7 @@ import (
 type Backend interface {
 	Relation(source, service, stream string, cols []schema.Field) (string, []any)
 	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
-	Rebuild(id int64, t time.Time, inherited bool, service, source, raw string) (record.Record, bool)
+	Rebuild(id int64, t time.Time, inherited bool, service, source, stream, raw string) record.Record
 }
 
 // RunSQL answers q as Run does, with SQL deciding which records match, their
@@ -103,10 +103,10 @@ type sqlRun struct {
 	args []any // the WITH clause's arguments, after the relation's
 
 	sort, dur, sev int
-	groups       []int
-	aggs         []int // per q.Aggregates, the value column (-1 for none)
-	order        int   // value column of the order metric (-1 for count/error_rate)
-	plot         int
+	groups         []int
+	aggs           []int // per q.Aggregates, the value column (-1 for none)
+	order          int   // value column of the order metric (-1 for count/error_rate)
+	plot           int
 }
 
 // need adds a projected field and returns its index.
@@ -280,7 +280,7 @@ func (x *sqlRun) samples(res *Result) error {
 	}
 	off := min(x.q.Offset, res.Matched)
 	res.Truncated = res.Matched-off > limit
-	rows, err := x.query("SELECT _id, _time, _time_inherited, _service, _source, _raw FROM m ORDER BY "+order+" LIMIT ? OFFSET ?", []any{limit, off})
+	rows, err := x.query("SELECT _id, _time, _time_inherited, _service, _source, _stream, _raw FROM m ORDER BY "+order+" LIMIT ? OFFSET ?", []any{limit, off})
 	if err != nil {
 		return err
 	}
@@ -290,13 +290,12 @@ func (x *sqlRun) samples(res *Result) error {
 		var id int64
 		var tm sql.NullTime
 		var inh sql.NullBool
-		var svc, src, raw string
-		if err := rows.Scan(&id, &tm, &inh, &svc, &src, &raw); err != nil {
+		var svc, src, stream, raw string
+		if err := rows.Scan(&id, &tm, &inh, &svc, &src, &stream, &raw); err != nil {
 			return err
 		}
-		if r, ok := x.b.Rebuild(id, tm.Time, inh.Bool, svc, src, raw); ok {
-			page = append(page, &r)
-		}
+		r := x.b.Rebuild(id, tm.Time, inh.Bool, svc, src, stream, raw)
+		page = append(page, &r)
 	}
 	if err := rows.Err(); err != nil {
 		return err

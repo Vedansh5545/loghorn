@@ -2,8 +2,8 @@ package duckstore
 
 import (
 	"context"
-	"strings"
 	"fmt"
+	"strings"
 
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"

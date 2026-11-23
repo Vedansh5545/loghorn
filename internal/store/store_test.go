@@ -22,9 +22,9 @@ func TestAddAssignsSeq(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		s.Add(rec("a", t0), time.Time{})
 	}
-	recs, v := s.Snapshot()
-	if v != 3 || len(recs) != 3 {
-		t.Fatalf("version=%d len=%d", v, len(recs))
+	recs := s.Records()
+	if len(recs) != 3 {
+		t.Fatalf("len=%d", len(recs))
 	}
 	for i, r := range recs {
 		if r.Seq != i+1 {
@@ -37,7 +37,7 @@ func TestInheritFromPrevious(t *testing.T) {
 	s := New(ModeHistorical, time.Time{})
 	s.Add(rec("a", t0), time.Time{})
 	s.Add(rec("a", time.Time{}), time.Time{})
-	recs, _ := s.Snapshot()
+	recs := s.Records()
 	if !recs[1].Time.Equal(t0) || !recs[1].TimeInherited || recs[0].TimeInherited {
 		t.Fatalf("got %+v", recs)
 	}
@@ -47,7 +47,7 @@ func TestInheritFromReceived(t *testing.T) {
 	s := New(ModeLive, t0)
 	rcv := t0.Add(5 * time.Second)
 	s.Add(rec("a", time.Time{}), rcv)
-	recs, _ := s.Snapshot()
+	recs := s.Records()
 	if !recs[0].Time.Equal(rcv) || !recs[0].TimeInherited {
 		t.Fatalf("got %+v", recs[0])
 	}
@@ -61,7 +61,7 @@ func TestBackfillLeading(t *testing.T) {
 		t.Fatalf("bounds with no real time: %+v", in)
 	}
 	s.Add(rec("a", t0), time.Time{})
-	recs, _ := s.Snapshot()
+	recs := s.Records()
 	for i, r := range recs {
 		if !r.Time.Equal(t0) {
 			t.Errorf("recs[%d].Time=%v", i, r.Time)
@@ -108,7 +108,7 @@ func TestPreloadReadsFixtures(t *testing.T) {
 	if got := s.Streams(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
-	recs, _ := s.Snapshot()
+	recs := s.Records()
 	last := recs[len(recs)-1]
 	if !last.TimeInherited || last.Time.IsZero() {
 		t.Fatalf("untimed line should inherit previous time: %+v", last)
@@ -129,10 +129,7 @@ func TestConcurrentAddAndRead(t *testing.T) {
 					return
 				default:
 				}
-				recs, v := s.Snapshot()
-				if uint64(len(recs)) != v {
-					t.Errorf("version %d != len %d", v, len(recs))
-				}
+				s.Records()
 				s.Streams()
 				s.Info()
 			}
@@ -147,6 +144,7 @@ func TestConcurrentAddAndRead(t *testing.T) {
 	}
 	close(done)
 	wg.Wait()
+	s.Flush()
 	if s.Info().Count != 10000 {
 		t.Fatal("lost records")
 	}
@@ -256,6 +254,7 @@ func TestKindsBudget(t *testing.T) {
 		}
 		s.Add(r, time.Time{})
 	}
+	s.Flush() // the budget is for the query, not for the writer catching up
 	from, to := t0.Add(n*time.Millisecond/10), t0.Add(n*time.Millisecond*9/10)
 	best := time.Hour
 	for i := 0; i < 5; i++ {

@@ -250,7 +250,7 @@ or has not yet answered.
 
 ## D-020 Untimed leading records appear at end of input
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude
+- **Date:** 2026-11-23 · **Status:** Superseded by D-023 · **Decided by:** Claude
 - **Decision:** A record with no time and no earlier record waits until a
   timed record arrives (and takes its time, as today) or the input ends.
 - **Why:** A stored `_time` never changes after it is written. Today such
@@ -282,6 +282,18 @@ or has not yet answered.
 - **Why:** Binding a wide view cost more than the query itself in tests,
   and converting once (table type → effective type) is closer to
   `schema.Convert` than converting twice through the view's widest type.
+
+## D-023 Untimed leading records are written at once and backfilled (supersedes D-020)
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude
+- **Decision:** A record with no time and no earlier record is written
+  right away with no time. When the first timed record arrives, the writer
+  sets those records' `_time` to its time, in queue order.
+- **Why:** D-020 hid such records until a timed one arrived. Tests showed
+  what that costs: a replay of untimed lines showed nothing in the web
+  view. This keeps today's behaviour exactly; the update touches only the
+  leading records of a session.
+- **Supersedes:** D-020.
 
 ---
 

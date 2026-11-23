@@ -45,21 +45,10 @@ type Options struct {
 	Now        func() time.Time // nil means time.Now
 }
 
-// schemaKey identifies a cached inferred schema.
-type schemaKey struct{ Service, Source, Name string }
-
 type server struct {
 	o       Options
 	static  fs.FS
 	writeMu sync.Mutex // serialises pins, field settings and favorites writes
-
-	cacheMu sync.Mutex
-	cache   map[schemaKey]cachedSchema // inferred schema per (service, source, stream)
-}
-
-type cachedSchema struct {
-	version uint64
-	s       schema.Schema
 }
 
 // Listen opens a TCP listener on 127.0.0.1:port (0 picks a free port).
@@ -76,7 +65,7 @@ func New(o Options) http.Handler {
 	if err != nil {
 		panic(err) // the embed directive guarantees static/ exists
 	}
-	s := &server{o: o, static: sub, cache: map[schemaKey]cachedSchema{}}
+	s := &server{o: o, static: sub}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(sub)))
@@ -331,31 +320,24 @@ func (s *server) putPins(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// effective returns the snapshot and the effective schema of stream k within
-// service svc: the inferred schema (cached per snapshot version) with the
+// effective returns the effective schema of stream k within service svc: the
+// inferred schema (cached by the store until the data changes) with the
 // service's saved field settings applied. For allServices it infers over
 // every service and applies no saved settings. k.Source must already be
 // parsed (record.ParseSource).
-func (s *server) effective(svc string, k record.StreamKey) ([]record.Record, schema.Schema, error) {
-	recs, version := s.o.Store.Snapshot()
-	ck := schemaKey{svc, k.Source, k.Name}
-	s.cacheMu.Lock()
-	c, ok := s.cache[ck]
-	s.cacheMu.Unlock()
-	if !ok || c.version != version {
-		c = cachedSchema{version, schema.Infer(svc, k.Source, k.Name, recs)}
-		s.cacheMu.Lock()
-		s.cache[ck] = c
-		s.cacheMu.Unlock()
+func (s *server) effective(svc string, k record.StreamKey) (schema.Schema, error) {
+	inferred, err := s.o.Store.Schema(svc, k.Source, k.Name)
+	if err != nil {
+		return schema.Schema{}, err
 	}
 	if svc == allServices {
-		return recs, schema.Effective(c.s, nil), nil
+		return schema.Effective(inferred, nil), nil
 	}
 	saved, err := schema.LoadFields(s.svcDir(svc), k.Source)
 	if err != nil {
-		return nil, schema.Schema{}, err
+		return schema.Schema{}, err
 	}
-	return recs, schema.Effective(c.s, saved), nil
+	return schema.Effective(inferred, saved), nil
 }
 
 var allTypes = []schema.Type{schema.TInt, schema.TFloat, schema.TBool, schema.TString, schema.TDuration, schema.TTimestamp, schema.TJSON}
@@ -381,7 +363,7 @@ func (s *server) getSchema(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, sch, err := s.effective(serviceParam(r), record.StreamKey{Source: src, Name: stream})
+	sch, err := s.effective(serviceParam(r), record.StreamKey{Source: src, Name: stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -453,7 +435,7 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q.Service = orDefault(q.Service)
-	recs, sch, err := s.effective(q.Service, record.StreamKey{Source: src, Name: q.Stream})
+	sch, err := s.effective(q.Service, record.StreamKey{Source: src, Name: q.Stream})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -462,7 +444,7 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	res, err := query.Run(recs, sch, q, s.o.Now(), s.o.Store.Info().RunStart)
+	res, err := s.o.Store.Query(r.Context(), sch, q, s.o.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -484,14 +466,13 @@ func (s *server) trace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "trace or span is required")
 		return
 	}
-	recs, _ := s.o.Store.Snapshot()
 	if traceID == "" {
-		if traceID = trace.Find(recs, spanID); traceID == "" {
+		if traceID = trace.Find(s.o.Store.SpanRecords(spanID), spanID); traceID == "" {
 			writeError(w, http.StatusNotFound, "no record with that span id")
 			return
 		}
 	}
-	t, ok := trace.Build(recs, traceID, trace.Limit)
+	t, ok := trace.Build(s.o.Store.TraceRecords(traceID), traceID, trace.Limit)
 	if !ok {
 		writeError(w, http.StatusNotFound, "no spans or logs with that trace id")
 		return
@@ -519,8 +500,7 @@ func (s *server) aggregate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	recs, _ := s.o.Store.Snapshot()
-	op, ok := trace.Aggregate(recs, trace.AggOptions{Name: name, Service: q.Get("service"), From: from, To: to})
+	op, ok := trace.Aggregate(s.o.Store.AggregateRecords(name), trace.AggOptions{Name: name, Service: q.Get("service"), From: from, To: to})
 	if !ok {
 		writeError(w, http.StatusNotFound, "no root spans with that name in range")
 		return
@@ -534,28 +514,18 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "seq must be a positive integer")
 		return
 	}
-	recs, _ := s.o.Store.Snapshot()
-	var rec *record.Record
-	if seq <= len(recs) && recs[seq-1].Seq == seq {
-		rec = &recs[seq-1]
-	} else {
-		for i := range recs {
-			if recs[i].Seq == seq {
-				rec = &recs[i]
-				break
-			}
-		}
-	}
-	if rec == nil {
+	found, ok := s.o.Store.Record(seq)
+	if !ok {
 		writeError(w, http.StatusNotFound, "no record with that seq")
 		return
 	}
+	rec := &found
 	raw := string(rec.Raw)
 	var buf bytes.Buffer
 	if json.Indent(&buf, rec.Raw, "", "  ") == nil {
 		raw = buf.String()
 	}
-	_, sch, err := s.effective(orDefault(rec.Service), rec.Key())
+	sch, err := s.effective(orDefault(rec.Service), rec.Key())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

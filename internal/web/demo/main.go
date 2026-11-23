@@ -38,7 +38,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: demo [-port N] [-spans SPANFILE] FILE...")
 		os.Exit(2)
 	}
-	st := store.New(store.ModeHistorical, time.Time{})
+	st := store.NewWithInput(store.ModeHistorical, time.Time{}, config.Default().Input)
 	if err := store.Preload(st, flag.Args(), config.Default().Input); err != nil {
 		fmt.Fprintln(os.Stderr, "demo:", err)
 		os.Exit(1)

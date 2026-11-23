@@ -303,11 +303,17 @@ func parityQueries(sch schema.Schema, sc streamCase, recs []record.Record) []que
 				})
 			}
 		}
-		add(func(q *query.Query) { q.View, q.Aggregates, q.Plot = "graph", aggs, &query.Aggregate{Op: "max", Field: f.Path} })
+		add(func(q *query.Query) {
+			q.View, q.Aggregates, q.Plot = "graph", aggs, &query.Aggregate{Op: "max", Field: f.Path}
+		})
 		break // one numeric field is enough for the aggregate grid
 	}
 	add(func(q *query.Query) { q.View = "graph"; q.Bucket = "1s" })
-	add(func(q *query.Query) { q.View = "graph"; q.GroupBy = []string{"tags"}; q.Order = &query.Order{Op: "count", Asc: true} })
+	add(func(q *query.Query) {
+		q.View = "graph"
+		q.GroupBy = []string{"tags"}
+		q.Order = &query.Order{Op: "count", Asc: true}
+	})
 	if sc.src == "otel" {
 		for _, bucket := range []string{"auto", "15m", "6h"} {
 			add(func(q *query.Query) { q.View = "heatmap"; q.Bucket = bucket })

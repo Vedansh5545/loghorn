@@ -208,7 +208,7 @@ func TestPreloadStoredReadsLogsAndSpans(t *testing.T) {
 			t.Errorf("missing %v in %v", w, st.Streams())
 		}
 	}
-	recs, _ := st.Snapshot()
+	recs := st.Records()
 	if id := recs[len(recs)-1].Fields["span_id"]; id != "a000000000000009" {
 		t.Errorf("last record span_id = %v, want a000000000000009", id)
 	}

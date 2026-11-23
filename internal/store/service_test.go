@@ -15,7 +15,7 @@ func TestStoreFallbackService(t *testing.T) {
 	named := rec("a", t0)
 	named.Service = "x"
 	s.Add(named, time.Time{})
-	recs, _ := s.Snapshot()
+	recs := s.Records()
 	want := []string{record.DefaultService, "shop-api", "x"}
 	for i, w := range want {
 		if recs[i].Service != w {

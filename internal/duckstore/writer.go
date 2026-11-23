@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
@@ -434,4 +435,40 @@ func (e *Engine) saveTallies(c *catalog) error {
 	}
 	clear(c.changed)
 	return nil
+}
+
+// applyFill sets the time of records written without one.
+func (e *Engine) applyFill(f *fill) {
+	type place struct {
+		c *catalog
+		t *table
+	}
+	ids := map[place][]string{}
+	var order []place
+	for _, r := range f.recs {
+		p, err := e.pairFor(dayOf(r.Seq))
+		if err != nil || p == nil {
+			continue
+		}
+		c := p.cat(r.Key().Source)
+		t := c.tables[tkey{r.Service, tableKey(r)}]
+		if t == nil {
+			continue
+		}
+		pl := place{c, t}
+		if ids[pl] == nil {
+			order = append(order, pl)
+		}
+		ids[pl] = append(ids[pl], strconv.Itoa(r.Seq))
+	}
+	ns := f.t.UnixNano()
+	for _, pl := range order {
+		in := strings.Join(ids[pl], ",")
+		for _, ref := range []string{pl.t.ref(pl.c.alias), pl.c.meta("_records")} {
+			if err := e.exec("UPDATE "+ref+" SET _time = make_timestamp_ns(CAST(? AS BIGINT)) WHERE _id IN ("+in+")", ns); err != nil {
+				e.warnOnce("loghorn: DuckDB: " + err.Error())
+			}
+		}
+	}
+	e.version.Add(1)
 }
