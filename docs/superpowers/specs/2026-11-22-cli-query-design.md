@@ -200,9 +200,10 @@ Every document has `view`, `columns`, the counts (`matched`,
 `jsonl` uses the flat shapes; a Heatmap in `jsonl` is one line per
 non-empty cell: `{time, band, lo, hi, count}`.
 
-TOON is written by a small encoder in loghorn for the subset these shapes
-use (nested objects, primitive arrays, tabular arrays), tested against the
-TOON specification's own examples; no dependency.
+TOON is written with `github.com/toon-format/toon-go` (v1.0.1, the TOON
+project's own Go implementation), YAML with `gopkg.in/yaml.v3` (already a
+dependency). loghorn builds the document as ordered Go values and hands it to
+the library; it does not encode TOON itself.
 
 Row limit: the URL's `limit` and `top` apply as in the page (`limit` 0 is
 the Samples default of 100). `-limit N` on the CLI overrides `limit` for
