@@ -127,11 +127,25 @@ or has not yet answered.
 - **Note:** The proposal was a demo SQL file shared in chat and was never
   added to the repo.
 
+## D-010 One design covers storage and moving the web view's queries to SQL
+
+- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** user (resolves O-1)
+- **Decision:** A single design and plan covers writing to DuckDB (D-001
+  to D-008) and running the web view's queries as SQL against the views
+  (D-004).
+- **Why:** The speed gain arrives in one step.
+- **Alternatives:** Split into two designs, storage first (Claude's
+  recommendation): each half testable sooner, but no speed gain until the
+  second.
+- **Consequences:** A larger design and plan. Nothing can be checked end
+  to end until both halves are built.
+
 ---
 
 ## Open questions
 
-- **O-1 Scope split** (asked 2026-11-23, waiting on user). Option one:
+- **O-1 Scope split** — *Resolved 2026-11-23 by D-010 (one design).* Asked
+  2026-11-23. Option one:
   this design covers storage plus views, and a second design moves the web
   view's queries to SQL. Option two: both in one design. Claude recommends
   the split. The speed gain needs the SQL part (notes #35).

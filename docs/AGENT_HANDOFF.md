@@ -22,9 +22,11 @@ must stay available so structure can be pulled out later.
 
 ## Where things stand
 
-- Brainstorming is in progress: approach and layout are chosen (D-001 to
-  D-008), one question is open (O-1, scope split).
-- No design doc, plan or code yet.
+- Brainstorming: approach, layout and scope are chosen (D-001 to D-010).
+- Design draft: `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`,
+  builder-checked; awaiting the user's answer on "Known differences", then approval.
+  On approval, record the doc's "Claude's calls" in `docs/DECISIONS.md`.
+- No plan or code yet.
 
 ## What to read in the code (as of `331ddc3`)
 
