@@ -7,11 +7,18 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/datadir"
+	"github.com/jimbeveridge/loghorn/internal/incoming"
+	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/otlp"
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 	"github.com/jimbeveridge/loghorn/internal/runner"
@@ -47,6 +54,10 @@ type runTarget struct {
 	sink     func([]byte)
 	childEnv []string
 	finish   func()
+	// attach, when set, is called with the run's recorder before the command
+	// starts: the incoming target stores the command's own OTLP through it,
+	// which turns on the recorder's dedupe of its JSON stdout lines.
+	attach func(*recorder.Recorder)
 }
 
 func cmdRun(args []string, env cliEnv) int {
@@ -54,6 +65,7 @@ func cmdRun(args []string, env cliEnv) int {
 	var o opts
 	runFlags(fs, &o)
 	service := fs.String("service", "", "service name for the recorded output (default the command's OTEL_SERVICE_NAME, else <repo>-<command>)")
+	serveDownFlag := fs.String("serve-down", "", "when serve isn't running: record (to the data folder, for serve to adopt), skip (record nothing) or fail (don't run the command); default [run] serve-down, else record")
 	pos, code, ok := parseCmd(fs, args, false)
 	if !ok {
 		return code
@@ -61,6 +73,10 @@ func cmdRun(args []string, env cliEnv) int {
 	o.args = pos
 	if len(pos) == 0 && !stdinHasInput(env.stdin) {
 		return usageError(env, "run needs a command (loghorn run -- <command>) or piped input")
+	}
+	downMode, code, ok := serveDownMode(*serveDownFlag, env)
+	if !ok {
+		return code
 	}
 	cfg, _, cwd, code, ok := loadRepoConfig(env)
 	if !ok {
@@ -75,10 +91,21 @@ func cmdRun(args []string, env cliEnv) int {
 	if sess, err := sock.Probe(path); err == nil {
 		target = connectServe(sess, svc, runID, cfg.Input, env.stderr)
 	} else {
-		target = serveDown(path, err, env.stderr)
+		var code int
+		if target, code, ok = serveDown(path, err, downMode, incoming.Meta{
+			RunID: runID, Service: svc, Input: cfg.Input, Started: time.Now(),
+		}, env.stderr); !ok {
+			return code
+		}
 	}
 
-	rec := recorder.New(recorder.Options{Sink: target.sink, Input: cfg.Input, Live: true, Alert: notifier(o)})
+	rec := recorder.New(recorder.Options{
+		Sink: target.sink, Input: cfg.Input, Live: true, Alert: notifier(o),
+		DedupeAfterOTLP: target.attach != nil,
+	})
+	if target.attach != nil {
+		target.attach(rec)
+	}
 	if len(pos) > 0 {
 		return runChild(o, cfg, rec, target, env)
 	}
@@ -152,15 +179,98 @@ func connectServe(sess sock.Session, svc, runID string, in config.Input, stderr 
 	}
 }
 
-// serveDown is the target when serve doesn't answer: the command runs, and
-// nothing is recorded.
-func serveDown(path string, err error, stderr io.Writer) runTarget {
-	if errors.Is(err, sock.ErrNotRunning) {
-		fmt.Fprintf(stderr, "loghorn: %s; running without recording\n", notRunningMessage(path))
-	} else {
-		fmt.Fprintf(stderr, "loghorn: serve on %s: %v; running without recording\n", path, err)
+// serveDownMode resolves what run does when serve isn't running: the
+// -serve-down flag, else the user-level [run] serve-down, else record.
+func serveDownMode(flagValue string, env cliEnv) (mode string, code int, ok bool) {
+	if flagValue != "" {
+		if !slices.Contains(config.ServeDownModes, flagValue) {
+			return "", usageError(env, "-serve-down %q is not one of %s", flagValue, strings.Join(config.ServeDownModes, ", ")), false
+		}
+		return flagValue, 0, true
 	}
-	return runTarget{finish: func() {}}
+	cfg, _, err := config.LoadUser()
+	if err != nil {
+		fmt.Fprintln(env.stderr, "loghorn:", err)
+		return "", 2, false
+	}
+	return cfg.Run.Mode(), 0, true
+}
+
+// serveDown is the target when serve doesn't answer, by the serve-down mode:
+// fail stops before the command starts (ok false, code 1); skip runs it
+// without recording; record writes the run to the data folder's incoming/
+// for serve to adopt, and degrades to skip when that can't be set up.
+func serveDown(path string, err error, mode string, m incoming.Meta, stderr io.Writer) (runTarget, int, bool) {
+	why := notRunningMessage(path)
+	if !errors.Is(err, sock.ErrNotRunning) {
+		why = fmt.Sprintf("serve on %s: %v", path, err)
+	}
+	skip := runTarget{finish: func() {}}
+	switch mode {
+	case config.ServeDownFail:
+		fmt.Fprintln(stderr, "loghorn: "+why)
+		return runTarget{}, 1, false
+	case config.ServeDownSkip:
+		fmt.Fprintf(stderr, "loghorn: %s; running without recording\n", why)
+		return skip, 0, true
+	}
+	dataDir, derr := datadir.Dir()
+	if derr == nil {
+		var t runTarget
+		if t, derr = connectIncoming(dataDir, m, stderr); derr == nil {
+			return t, 0, true
+		}
+	}
+	fmt.Fprintf(stderr, "loghorn: %s; can't record this run (%v); running without recording\n", why, derr)
+	return skip, 0, true
+}
+
+// connectIncoming records the run into its own folder under the data folder's
+// incoming/, and receives the command's own OTLP on a private port, storing
+// it there too.
+func connectIncoming(dataDir string, m incoming.Meta, stderr io.Writer) (runTarget, error) {
+	logs, spans, err := incoming.Create(dataDir, m)
+	if err != nil {
+		return runTarget{}, err
+	}
+	ln, err := otlp.Listen()
+	if err != nil {
+		spans.Close()
+		logs.Close()
+		return runTarget{}, err
+	}
+	dir := filepath.Join(dataDir, incoming.Dir, m.RunID)
+	fmt.Fprintf(stderr, "loghorn: serve isn't running; recording this run to %s (apps sending OTLP on their own aren't recorded until serve starts)\n", dir)
+
+	var logOnce, spanOnce sync.Once
+	sink := func(rec []byte) {
+		if err := logs.Write(ingest.CompactRecord(rec)); err != nil {
+			logOnce.Do(func() { fmt.Fprintln(stderr, "loghorn: log file stopped:", err) })
+		}
+	}
+	var rcv *otlp.Receiver
+	return runTarget{
+		sink:     sink,
+		childEnv: otlp.ChildEnv(os.Environ(), "http://"+ln.Addr().String(), m.RunID),
+		attach: func(rec *recorder.Recorder) {
+			rcv = otlp.NewReceiver(rec.OTLP, func(line []byte) {
+				if err := spans.Write(line); err != nil {
+					spanOnce.Do(func() { fmt.Fprintln(stderr, "loghorn: span file stopped:", err) })
+				}
+			}, nil)
+			rcv.Serve(ln)
+		},
+		finish: func() {
+			if rcv != nil {
+				// Deliveries must finish before the files close.
+				rcv.Drain(500*time.Millisecond, 3*time.Second)
+			} else {
+				ln.Close()
+			}
+			spans.Close()
+			logs.Close()
+		},
+	}, nil
 }
 
 // notRunningMessage is every client's word for a serve that doesn't answer.

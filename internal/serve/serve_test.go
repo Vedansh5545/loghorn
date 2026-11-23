@@ -20,6 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/incoming"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/shipper"
@@ -301,5 +302,59 @@ func TestStartFromRoot(t *testing.T) {
 	waitFor(t, "the line in loghorn.log", func() bool { return strings.Contains(logFile(t, o.DataDir), "x\n") })
 	if _, err := os.Stat("/.loghorn"); err == nil {
 		t.Fatal("serve wrote /.loghorn")
+	}
+}
+
+func TestServeAdoptsIncoming(t *testing.T) {
+	o := testOpts(t)
+	t0 := time.Now().Add(-time.Hour)
+	for _, m := range []incoming.Meta{
+		{RunID: "ra", Service: "a", Input: config.Default().Input, Started: t0},
+		{RunID: "rb", Service: "b", Input: config.Default().Input, Started: t0},
+	} {
+		l, sp, err := incoming.Create(o.DataDir, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Write([]byte(`{"labels":{"schema":"app"},"message":"from ` + m.RunID + `"}`))
+		sp.Close()
+		l.Close()
+	}
+	held, heldSpans, err := incoming.Create(o.DataDir, incoming.Meta{RunID: "rc", Service: "c", Started: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.Write([]byte(`{"labels":{"schema":"app"},"message":"from rc"}`))
+
+	s := start(t, o)
+	services := func() map[string]string {
+		got := map[string]string{}
+		for _, r := range records(s) {
+			got[string(r.Raw)] = r.Service
+		}
+		return got
+	}
+	got := services()
+	if got[`{"labels":{"schema":"app"},"message":"from ra"}`] != "a" || got[`{"labels":{"schema":"app"},"message":"from rb"}`] != "b" {
+		t.Fatalf("after Start: %v", got)
+	}
+	if _, ok := got[`{"labels":{"schema":"app"},"message":"from rc"}`]; ok {
+		t.Fatal("a run still held was adopted")
+	}
+	log := logFile(t, o.DataDir)
+	if !strings.Contains(log, "from ra") || !strings.Contains(log, "from rb") {
+		t.Fatalf("loghorn.log = %s", log)
+	}
+	if !strings.Contains(o.Log.(*syncBuf).String(), "adopted run ra (a, 1 records)") {
+		t.Fatalf("serve log = %s", o.Log.(*syncBuf).String())
+	}
+
+	heldSpans.Close()
+	held.Close()
+	waitFor(t, "rc to be adopted", func() bool {
+		return services()[`{"labels":{"schema":"app"},"message":"from rc"}`] == "c"
+	})
+	if list, _ := incoming.List(o.DataDir); len(list) != 0 {
+		t.Fatalf("incoming left: %+v", list)
 	}
 }

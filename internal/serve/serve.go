@@ -75,6 +75,8 @@ type Server struct {
 	st      *store.Store
 	rcv     *otlp.Receiver
 	router  *router
+	sink    func(rec []byte)  // appends a record to loghorn.log
+	spanFn  func(line []byte) // appends a span and stores it
 	handler http.Handler
 	webSrv  *http.Server
 	session sock.Session
@@ -150,8 +152,10 @@ func Start(o Options) (*Server, error) {
 	s.st = store.New(store.ModeLive, o.Now())
 	s.preload()
 
-	s.router = newRouter(s.logSink(), s.st, o.Config.Input, o.Now)
-	s.rcv = otlp.NewReceiver(s.router.otlpLog, s.spanSink(), o.Now)
+	s.sink, s.spanFn = s.logSink(), s.spanSink()
+	s.router = newRouter(s.sink, s.st, o.Config.Input, o.Now)
+	s.rcv = otlp.NewReceiver(s.router.otlpLog, s.spanFn, o.Now)
+	s.adopt()
 	s.rcv.SetRunLines(s.router.runLine)
 
 	webPort := webLn.Addr().(*net.TCPAddr).Port
@@ -211,7 +215,8 @@ func (s *Server) serveSocket(ln net.Listener) {
 	go func() { _ = srv.Serve(ln) }()
 }
 
-// background runs the periodic work: forgetting idle runs, and putting the
+// background runs the periodic work: adopting runs recorded while serve was
+// down, forgetting idle runs, and putting the
 // socket back if something (systemd-tmpfiles cleaning /tmp) deleted it.
 func (s *Server) background() {
 	defer s.wg.Done()
@@ -224,6 +229,7 @@ func (s *Server) background() {
 		case <-s.stop:
 			return
 		case <-adopt.C:
+			s.adopt()
 			s.router.evict(s.o.Now().Add(-idleRun))
 		case <-check.C:
 			s.checkSocket()

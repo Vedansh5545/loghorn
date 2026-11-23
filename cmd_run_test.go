@@ -154,8 +154,118 @@ func TestRunFilterStillLocal(t *testing.T) {
 
 func TestRunServeDownStillRunsChild(t *testing.T) {
 	e := newServeEnv(t)
-	r := e.run(t, nil, nil, "run", "--", "echo", "hi")
+	r := e.run(t, nil, nil, "run", "-serve-down", "skip", "--", "echo", "hi")
 	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "loghorn serve isn't running") {
 		t.Fatalf("code %d stdout %q stderr %q", r.code, r.stdout, r.stderr)
+	}
+}
+
+// incomingDirs lists the run folders under the data folder's incoming/.
+func (e serveEnv) incomingDirs(t *testing.T) []string {
+	t.Helper()
+	ents, err := os.ReadDir(filepath.Join(e.data, "incoming"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, d := range ents {
+		out = append(out, filepath.Join(e.data, "incoming", d.Name()))
+	}
+	return out
+}
+
+func TestServeDownRecord(t *testing.T) {
+	e := newServeEnv(t)
+	r := e.run(t, nil, nil, "run", "--", "echo", "hi")
+	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "serve isn't running; recording this run to "+filepath.Join(e.data, "incoming")) {
+		t.Fatalf("code %d stdout %q stderr %q", r.code, r.stdout, r.stderr)
+	}
+	dirs := e.incomingDirs(t)
+	if len(dirs) != 1 || !strings.Contains(readFile(t, filepath.Join(dirs[0], "loghorn.log")), "hi\n") {
+		t.Fatalf("incoming = %v", dirs)
+	}
+	e.startServe(t)
+	e.waitLog(t, "hi\n")
+	if dirs := e.incomingDirs(t); len(dirs) != 0 {
+		t.Fatalf("not adopted: %v", dirs)
+	}
+}
+
+func TestServeDownChildOTLPRecorded(t *testing.T) {
+	e := newServeEnv(t)
+	r := e.run(t, nil, []string{"LOGHORN_TEST_HELPER=otel-child", "OTEL_SERVICE_NAME=e2e"}, "run", "--", os.Args[0])
+	if r.code != 3 {
+		t.Fatalf("code %d stderr %q", r.code, r.stderr)
+	}
+	dirs := e.incomingDirs(t)
+	if len(dirs) != 1 {
+		t.Fatalf("incoming = %v", dirs)
+	}
+	waitFile(t, filepath.Join(dirs[0], "loghorn.log"), "hello otel", "plain before")
+	waitFile(t, filepath.Join(dirs[0], "loghorn.traces.jsonl"), "e2e.span")
+}
+
+func TestServeDownSkip(t *testing.T) {
+	e := newServeEnv(t)
+	r := e.run(t, nil, nil, "run", "-serve-down", "skip", "--", "echo", "hi")
+	if r.code != 0 || r.stdout != "hi\n" || len(e.incomingDirs(t)) != 0 {
+		t.Fatalf("code %d stdout %q stderr %q incoming %v", r.code, r.stdout, r.stderr, e.incomingDirs(t))
+	}
+}
+
+func TestServeDownFail(t *testing.T) {
+	e := newServeEnv(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	r := e.run(t, nil, nil, "run", "-serve-down", "fail", "--", "touch", marker)
+	if r.code != 1 || !strings.Contains(r.stderr, "loghorn serve isn't running") {
+		t.Fatalf("code %d stderr %q", r.code, r.stderr)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the command ran")
+	}
+}
+
+func TestServeDownBadFlag(t *testing.T) {
+	e := newServeEnv(t)
+	r := e.run(t, nil, nil, "run", "-serve-down", "maybe", "--", "true")
+	if r.code != 2 || !strings.Contains(r.stderr, "record, skip, fail") {
+		t.Fatalf("code %d stderr %q", r.code, r.stderr)
+	}
+}
+
+func TestServeDownFromUserConfig(t *testing.T) {
+	e := newServeEnv(t)
+	p := filepath.Join(e.home, ".config", "loghorn", "config.toml")
+	os.MkdirAll(filepath.Dir(p), 0o755)
+	os.WriteFile(p, []byte("[run]\nserve-down = \"skip\"\n"), 0o644)
+	r := e.run(t, nil, []string{"XDG_CONFIG_HOME="}, "run", "--", "echo", "hi")
+	if r.code != 0 || len(e.incomingDirs(t)) != 0 || !strings.Contains(r.stderr, "running without recording") {
+		t.Fatalf("code %d stderr %q incoming %v", r.code, r.stderr, e.incomingDirs(t))
+	}
+}
+
+func TestServeDownTwoRuns(t *testing.T) {
+	e := newServeEnv(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	a := e.cmd(t, ctx, "run", "--", "sh", "-c", "echo a; sleep 1")
+	b := e.cmd(t, ctx, "run", "--", "sh", "-c", "echo b; sleep 1")
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if dirs := e.incomingDirs(t); len(dirs) != 2 {
+		t.Fatalf("incoming = %v; want two folders", dirs)
 	}
 }
