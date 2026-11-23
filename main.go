@@ -28,6 +28,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/store"
+	"github.com/jimbeveridge/loghorn/internal/web"
 )
 
 func usage() {
@@ -41,6 +42,9 @@ Usage:
   loghorn -web|-filter -historical         replay the stored logs
   loghorn -web|-filter -gh-job <id|url>    replay a GitHub Actions job
   loghorn -web|-filter -gh-run <id|url>    replay one job of a GitHub Actions run
+  loghorn http://127.0.0.1:PORT/?q=…       print a -web view's data (TSV)
+  loghorn -url URL|/?q=…|@file|@- [-o FILE] [-format F] [-limit N] [-to-sql]
+  loghorn -instances                       list the running -web instances
 
 With a command after --, loghorn is a transparent wrapper: the command's
 stdout and stderr reach the terminal unchanged (through a pty when stdout is a
@@ -79,6 +83,16 @@ saved schemas and favorite queries (under .config/loghorn in the repo). With
 a command it serves until the command exits, with a pipe until end of input;
 with a replay, or alone (the stored logs), until Ctrl-C.
 
+A query asks a running -web instance for the view a page URL names (copy it
+from the address bar) and prints it: TSV by default, or -format csv, tsv,
+md, json, jsonl, yaml, toon or sql; -o FILE writes a file whose extension
+picks the format; -to-sql prints DuckDB SQL instead of data; -limit N
+overrides the URL's row limit (samples) or top (table, graph). -url /?q=…
+(no host) goes through the socket of the single running instance, and
+-url @file or @- reads a long URL from a file or stdin. Only 127.0.0.1 and
+localhost are queried. A query never reads stdin otherwise, never records
+anything and can't be combined with a command, -web, -otel or a replay.
+
 Settings come from .config/loghorn/config.toml, found by walking up from the
 directory loghorn starts in; the nearest one wins outright, and if there is
 none, $XDG_CONFIG_HOME/loghorn/config.toml or ~/.config/loghorn/config.toml
@@ -115,7 +129,17 @@ type opts struct {
 	web          bool
 	otel         bool
 	webPort      int
-	args         []string
+
+	// Query mode (query_cli.go).
+	url       string
+	out       string
+	format    string
+	limit     int
+	limitSet  bool // -limit was given
+	toSQL     bool
+	instances bool
+
+	args []string
 }
 
 func parseFlags() opts {
@@ -134,8 +158,19 @@ func parseFlags() opts {
 	flag.BoolVar(&o.otel, "otel", false, "receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs -- <command>)")
 	flag.BoolVar(&o.web, "web", false, "serve the web query view on 127.0.0.1 and print its URL to stderr")
 	flag.IntVar(&o.webPort, "web-port", 0, "port for -web (0 picks a free one)")
+	flag.StringVar(&o.url, "url", "", "query a -web instance: its page URL (http://127.0.0.1:PORT/?q=…), /?q=… for the single running one, @file or @- (stdin)")
+	flag.StringVar(&o.out, "o", "", "write the query's output to this file; its extension picks the format")
+	flag.StringVar(&o.format, "format", "", "query output format: csv, tsv, md, json, jsonl, yaml, toon or sql (default tsv, or -o's extension)")
+	flag.IntVar(&o.limit, "limit", 0, "query rows: overrides the URL's limit (samples) or top (table, graph)")
+	flag.BoolVar(&o.toSQL, "to-sql", false, "print the DuckDB SQL of the URL's query instead of its data")
+	flag.BoolVar(&o.instances, "instances", false, "list the running -web instances (pid, port, start time, cwd)")
 	flag.Usage = usage
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "limit" {
+			o.limitSet = true
+		}
+	})
 	o.args = flag.Args()
 	return o
 }
@@ -148,6 +183,11 @@ func main() {
 		os.Exit(2)
 	}
 	o := parseFlags()
+	// A query is decided before detectInput looks at stdin: it never records
+	// stdin, never launches a command, and exits here.
+	if queryRequested(o) {
+		os.Exit(runQuery(o, queryEnv{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, socketDir: web.SocketDir}))
+	}
 
 	if n := countSet(o.historical, o.ghJob != "", o.ghRun != ""); n > 1 {
 		fmt.Fprintln(os.Stderr, "loghorn: use only one of -historical, -gh-job and -gh-run")
