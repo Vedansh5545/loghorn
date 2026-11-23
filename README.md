@@ -216,7 +216,10 @@ and the GitHub flags work there.
 serves until the command exits, with a pipe until end of input, and with a
 replay (or alone) until `Ctrl-C`. Pick the port with `-web-port`; the default is a free one.
 The server listens on loopback only and refuses requests for any other Host,
-and writes that do not come from its own origin.
+and writes that do not come from its own origin. It also listens on a per-user unix
+socket, `$TMPDIR/loghorn/<pid>.sock` (else `$XDG_RUNTIME_DIR/loghorn`, else
+`/tmp/loghorn-<uid>`; the directory must be mode 0700 and yours), so the command-line
+query below can find a running instance; the socket is removed on a clean exit.
 
 It lists the streams found in the log (database lines, HTTP lines, and so on),
 and for each one a table, newest first, with typed filters, a time range and
@@ -290,6 +293,35 @@ and self time as shares of the operation's time, and an errors badge; `slowest`
 opens the slowest trace holding that span. It aggregates the page's time range,
 at most the 1000 most recent traces. See `docs/features.md`.
 
+## Query from the command line
+
+A running `-web` instance can be queried without a browser. Copy the page URL from the
+address bar and give it to loghorn; it prints the same view's data, TSV by default:
+
+```
+loghorn 'http://127.0.0.1:53124/?q={"stream":"app","range":{"from":"all"}}'
+loghorn -format csv -url @query-url.txt
+loghorn -o errors.yaml 'http://127.0.0.1:53124/?q=…'
+loghorn -to-sql 'http://127.0.0.1:53124/?q=…'
+loghorn -url '/?q=…'          # no host: the single running -web instance, via its socket
+loghorn -instances            # pid, port, start time and directory of each running one
+```
+
+- The positional URL (`http://127.0.0.1` or `http://localhost` only) or `-url` names the
+  view: table, graph, heatmap or samples, with its filters and range. `-url @file` and
+  `-url @-` read a long URL from a file or stdin. A trace or aggregate in the URL is
+  not exported; the main view is.
+- `-format` is one of `tsv` (default), `csv`, `md`, `json`, `jsonl`, `yaml`, `toon` or
+  `sql`. `-o FILE` writes a file instead of stdout and picks the format from the
+  extension (`.csv`, `.md`, `.json`, `.jsonl`, `.yaml`, `.toon`, `.sql`).
+- `-to-sql` prints DuckDB SQL that reproduces the view instead of its data.
+- `-limit N` overrides the URL's row limit (samples) or top (table, graph).
+- Without a host the URL goes through the instance's socket; with several instances
+  running, pass the full URL of one (`-instances` lists them).
+- Query mode never launches a command, never records anything and ignores stdin
+  (except for `-url @-`), so it is safe to run from a script or an agent shell. It can't
+  be combined with a command, `-web`, `-otel` or a replay.
+
 ## Flags
 
 | Flag | Default | |
@@ -301,6 +333,9 @@ at most the 1000 most recent traces. See `docs/features.md`.
 | `--otel` | off | receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs `-- <command>`) |
 | `-web` | off | serve the web query view on 127.0.0.1 and print its URL to stderr |
 | `-web-port` | `0` | port for `-web` (0 picks a free one) |
+| `-url` | | query a `-web` instance: its page URL, `/?q=…` for the single running one, `@file` or `@-` (see above) |
+| `-o`, `-format`, `-limit`, `-to-sql` | | query output options (see above) |
+| `-instances` | off | list the running `-web` instances |
 | `-config` | off | print the config file in effect, then exit |
 | `--notify` | off | desktop notification on fresh errors |
 | `--notify-max-age` | `1s` | skip notifications for errors older than this |

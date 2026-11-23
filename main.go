@@ -77,7 +77,9 @@ variables; the log records it receives are stored with the command's output,
 and spans in .loghorn/loghorn.traces.jsonl (kept and rotated like loghorn.log).
 
 -web serves a query view on 127.0.0.1 (loopback only; -web-port picks the
-port, default a free one) and prints its URL to stderr. It lists the streams
+port, default a free one) and prints its URL to stderr. It also listens on a
+per-user unix socket, $TMPDIR/loghorn/<pid>.sock (else $XDG_RUNTIME_DIR/loghorn,
+else /tmp/loghorn-<uid>), which the query mode below uses to find it. It lists the streams
 of structured records, with typed filters, a time range, search and sort,
 saved schemas and favorite queries (under .config/loghorn in the repo). With
 a command it serves until the command exits, with a pipe until end of input;
