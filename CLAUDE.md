@@ -27,6 +27,11 @@
   `LOGHORN_SOCKET` and `LOGHORN_DATA_DIR` (the e2e helpers `loghornCmd` and
   `newServeEnv` do), and make socket paths under `os.MkdirTemp("/tmp", …)`:
   macOS `t.TempDir()` paths overflow sun_path (103 bytes).
+- `serve` refuses to start (and `run -serve` is ignored) under an AI agent
+  (`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` set; see `agent.go`), and the
+  tests run under one. Binary tests must append `noAgent` to the command's
+  environment, as `loghornCmd` and `serveEnv.environ` do; a hand smoke test
+  of `serve` needs `LOGHORN_ALLOW_AGENT=1`.
 - The web handler maps an empty query service to `default`, and records from
   `run` carry the run's service, so a hand-written `/?q=` that should see
   them needs `"service":"*"` (or the service).
