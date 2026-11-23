@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/svcconf"
 )
@@ -1097,12 +1098,37 @@ func TestQueryFormatCSV(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("X-Loghorn-Note"), "3") {
 		t.Errorf("limited = %d note %q", resp.StatusCode, resp.Header.Get("X-Loghorn-Note"))
 	}
-	for _, fm := range []string{"bogus", "sql"} {
-		resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"` + fm + `"}`)
-		wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
+	resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"bogus"}`)
+	wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
+}
+
+func TestQueryFormatSQL(t *testing.T) {
+	f := newFixture(t, "../../testdata/web/aggregate.jsonl")
+	post := func(body string) (*http.Response, string) {
+		t.Helper()
+		resp, err := f.srv.Client().Post(f.srv.URL+"/api/query", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
 	}
-	resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"sql"}`)
-	if !strings.Contains(body, "format sql is not supported yet") {
-		t.Errorf("sql body = %s", body)
+	resp, body := post(`{"stream":"app","service":"*","range":{"from":"24h"},"search":"x' OR 1=1","format":"sql"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("sql = %d %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/sql; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	for _, want := range []string{query.SQLHeader, `FROM logs."app"`, `raw ILIKE '%x'' or 1=1%' ESCAPE '\'`, `ORDER BY "time" DESC, seq DESC`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q:\n%s", want, body)
+		}
+	}
+	resp, body = post(`{"stream":"app","range":{"from":"all"},"view":"graph","format":"sql"}`)
+	wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
+	if !strings.Contains(body, "samples") {
+		t.Errorf("graph sql body = %s", body)
 	}
 }

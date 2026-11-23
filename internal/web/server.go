@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -455,10 +456,6 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if f == export.SQL {
-			writeError(w, http.StatusBadRequest, "format sql is not supported yet")
-			return
-		}
 		format = f
 	}
 	src, ok := record.ParseSource(q.Source)
@@ -481,11 +478,29 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if format != "" {
+	switch format {
+	case "":
+		writeJSON(w, http.StatusOK, res)
+	case export.SQL:
+		writeSQL(w, q, sch, &res)
+	default:
 		writeExport(w, format, &res, sch, q)
+	}
+}
+
+// writeSQL answers a query with its DuckDB SQL, built from the query and its
+// run (which resolves what the SQL freezes). A query the SQL cannot express
+// exactly is a 400.
+func writeSQL(w http.ResponseWriter, q query.Query, sch schema.Schema, res *query.Result) {
+	text, err := query.ToSQL(q, sch, res)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	w.Header().Set("Content-Type", export.SQL.ContentType())
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, text)
 }
 
 // writeExport answers a query in an export format: the text with the format's
