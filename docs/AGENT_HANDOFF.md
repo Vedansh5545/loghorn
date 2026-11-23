@@ -22,30 +22,37 @@ must stay available so structure can be pulled out later.
 
 ## Where things stand
 
-- Brainstorming: approach, layout and scope are chosen (D-001 to D-010).
-- Design draft: `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`,
-  builder-checked; awaiting the user's answer on "Known differences", then approval.
-  On approval, record the doc's "Claude's calls" in `docs/DECISIONS.md`.
-- No plan or code yet.
+- Design approved (`docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`,
+  D-011), refined by D-014 to D-023.
+- Plan `docs/superpowers/plans/2026-11-23-duckdb-storage.md`: tasks 1–5
+  done and tested; task 6 (speed check, docs, whole-branch review) in
+  progress. Execution ledger (git-ignored):
+  `.superpowers/sdd/2026-11-23-duckdb-storage/progress.md`, with every
+  ruling made while building.
+- `query.Run` and `schema.Infer` stay as the test oracle (D-016). The
+  parity test (`internal/query/parity_test.go`) compares 1 in 10 of 8055
+  queries by default; `PARITY_FULL=1` runs all (about 4 minutes).
+- Speed at about 770k records: `LOGHORN_SPEED=1 go test -run SpeedAtScale -v ./internal/store`.
 
-## What to read in the code (as of `331ddc3`)
+## The code now
 
 | What | Where |
 |---|---|
-| The shared record every view uses | `internal/record/record.go` (`Record`) |
-| How spans become records and get a stream | `internal/record/span.go` (`SpanStream`, `NormalizeSpan`) |
-| The in-memory store DuckDB replaces | `internal/store/store.go` (`Add`, `Snapshot`, `Kinds`) |
-| Query engine (Samples, Table, Graph, heatmap) | `internal/query/` (`Run`, aggregate, graph, heatmap) |
-| Trace waterfall and aggregate | `internal/trace/` (`Build`, `Aggregate`) |
-| Text files loghorn writes | `internal/logfile/` (`loghorn.log`, `loghorn.traces.jsonl`) |
-| Author's architecture decisions and spike results | `docs/superpowers/specs/2026-11-19-architecture-working-notes.md` |
-| Author's SQL interface design (Query ↔ SQL) | `docs/superpowers/specs/2026-11-18-sql-query-design.md` |
+| DuckDB engine: catalogs, writer, column evolution, views, relation | `internal/duckstore/` (`engine.go`, `writer.go`, `views.go`, `sqltype.go`) |
+| Day files: attach, stamp, build, rollover, expiry, failure | `internal/duckstore/days.go` |
+| Store façade and modes (writer, reader, stored days, replay) | `internal/store/store.go`, `internal/store/days.go` |
+| Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |
+| Where a live run opens and closes the store | `wrapper.go` (`openLiveStore`, `closeStore`), `replay.go` |
 
 ## Environment notes
 
-- The Claude cloud session that started this work has Go 1.24.7, no
-  DuckDB, no package installs and no push access. Build and test on a
-  machine with Go 1.26.1 and cgo.
+- On a normal machine: Go 1.26.1 with cgo, then `go mod tidy` once (the
+  branch's `go.sum` lacks the DuckDB driver's entries, D-013) and
+  `go test ./...`.
+- The cloud session that built this branch had no module proxy or push
+  access; it used a local Go 1.26.1 build, module clones and DuckDB's
+  shared library with `-tags=duckdb_use_lib` (D-013). Patches were handed
+  over instead of pushed.
 - Repo rules: nothing may `os.Exit` after the child is launched
   (`CLAUDE.md`); never pipe data into a loghorn binary, and tests never
   write into the repo's own `.loghorn/` (Global Constraints in

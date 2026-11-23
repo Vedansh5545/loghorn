@@ -14,23 +14,45 @@ run and passed.
 | Storage approach chosen (layout B) and first decisions recorded | 2026-11-23 | User answers in chat | `docs/DECISIONS.md` D-001…D-008 |
 | Scope chosen: one design for storage and SQL queries | 2026-11-23 | User answer in chat | D-010 |
 | Design approved | 2026-11-23 | User approval in chat | `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`, D-011 |
-| Local build environment (Go 1.26.1 + DuckDB 2.0.1) | 2026-11-23 | `go build ./...`, `go vet ./...` and `go test ./...` (25 packages) pass on upstream code | D-013 |
-| Implementation plan | 2026-11-23 | Self-review against the spec | `docs/superpowers/plans/2026-11-23-duckdb-storage.md` |
+| Local build environment (Go 1.26.1 + DuckDB 2.0.1) | 2026-11-23 | `go build/vet/test ./...` pass on upstream code | D-013 |
+| Implementation plan | 2026-11-23 | Self-review against the spec | `docs/superpowers/plans/2026-11-23-duckdb-storage.md`, `f398a84` |
+| Task 1: schema tallies (Infer rebuilt on them) | 2026-11-23 | `go test ./internal/schema` | `8e3ff66` |
+| Task 2: `internal/duckstore` engine | 2026-11-23 | `go test ./internal/duckstore` (round trip, widening from `_raw`, bad values, case clashes, conversions vs `schema.Convert`) | `03ebaf3` |
+| Task 3: `query.RunSQL` with parity | 2026-11-23 | All 8055 parity queries match `query.Run` (`PARITY_FULL=1`) | `5233a0a`, D-021, D-022 |
+| Task 4: web view served from DuckDB | 2026-11-23 | `go test ./...` (25 packages); `-race` on store, duckstore, web, recorder | `c2e38af`, D-023 |
+| Task 5: day files, modes, rebuild, rollover, failure | 2026-11-23 | `go test ./...`; smoke run of the built binary (two runs, then `-web` alone over the files) | `25b971e` |
 
 ## In progress
 
 | Work | Started | State |
 |---|---|---|
-| Plan tasks 1–6 (native execution, D-012) | 2026-11-23 | Task 1 next |
+| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Fresh review next |
+
+### Speed at about 770k records (one day, 2-vCPU cloud sandbox)
+
+Median of 5, DuckDB vs today's `query.Run` on the same records (the old
+path's snapshot copy and schema inference are not included, so it was
+slower in real use, as the author's 716 ms / 520 ms show).
+
+| Request | DuckDB | `query.Run` |
+|---|---|---|
+| Samples, one stream | 20 ms | 71 ms |
+| Samples, filter + sort | 23 ms | 149 ms |
+| Search | 68 ms | 112 ms |
+| Table, p95 and error rate by status | 26 ms | 300 ms |
+| Graph by severity | 49 ms | 154 ms |
+| Graph, all kinds | 128 ms | 165 ms |
+| Heatmap, db spans | 32 ms | 60 ms |
+| Kinds / schema / trace | 9 / 5 / 19 ms | — |
+
+Writing: about 25k records/s in this sandbox. A burst beyond the
+200k-record queue is skipped for DuckDB, marks the day dirty, and is
+rebuilt from text at the next start. The logs file for the day is 121 MB.
 
 ## Planned (in order)
 
-1. Task 1: driver and schema tallies.
-2. Task 2: `internal/duckstore` engine (memory catalogs).
-3. Task 3: SQL query execution with parity tests.
-4. Task 4: store façade and web wiring.
-5. Task 5: day files, modes, rebuild, rollover, failure.
-6. Task 6: speed check, docs, whole-branch review.
+1. Fresh whole-branch review; fix Critical/Important findings test-first.
+2. Hand over patches; final summary.
 
 ## Blocked
 
@@ -39,12 +61,20 @@ run and passed.
 | The cloud session can't push to `jimbeveridge/loghorn` | Sharing commits through GitHub | Push access, or the user applies the patches |
 | `go.sum` can't be completed offline | Merging | `go mod tidy` on a normal machine (D-013) |
 
-Resolved: "DuckDB can't be installed" and "Go 1.24.7 only" (both by D-013).
-
 ## Failed
 
 None.
 
+## Known limits (not failures)
+
+- "All kinds" views read every stream table, so they slow down as tables
+  multiply (128 ms above; D-021).
+- Known differences from today: D-011's four, with #1 also covering a field
+  whose type differs between services or days read together.
+- The author has not reviewed this work (`docs/DECISIONS.md` O-2).
+
 ## Next actions
 
-1. Execute the plan, task by task.
+1. Whole-branch review and fixes.
+2. On a normal machine: `go mod tidy`, `go test ./...`, then try `-web` on
+   a real project.
