@@ -171,8 +171,11 @@ func TestBadValueIsNullAndFlagged(t *testing.T) {
 	if vals[1] != nil || bad[1] {
 		t.Errorf("missing value: got (%v, %v), want (nil, false)", vals[1], bad[1])
 	}
-	raw := g.one(`SELECT _raw FROM all_records ORDER BY _id LIMIT 1`).(string)
-	if !strings.Contains(raw, `"soon"`) {
+	recs, err := g.e.Records(context.Background(), "true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw := string(recs[0].Raw); !strings.Contains(raw, `"soon"`) {
 		t.Errorf("_raw lost the value: %s", raw)
 	}
 }
@@ -186,7 +189,7 @@ func TestNamesDifferingInCaseStaySeparate(t *testing.T) {
 	)
 	for _, c := range []struct {
 		svc, stream, path string
-		want             []any
+		want              []any
 	}{
 		{"s", "api", "userId", []any{int64(1), nil}},
 		{"s", "api", "userID", []any{nil, int64(2)}},

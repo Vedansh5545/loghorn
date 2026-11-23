@@ -3,6 +3,8 @@ package duckstore
 import (
 	"context"
 	"database/sql"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,7 +15,8 @@ import (
 // model is what readers know about the views; it is replaced, never
 // changed, so a request keeps a consistent picture.
 type model struct {
-	views []*view
+	views  []*view
+	tables map[string][]string // catalog alias -> table refs by tid
 }
 
 type vkey struct{ source, service, key string }
@@ -25,6 +28,14 @@ type view struct {
 	name   string
 	cols   []*column
 	byPath map[string]*column
+	parts  []frozenPart // the tables, as of this model
+}
+
+// frozenPart is a table's reference and columns, copied so readers never
+// see the writer change them.
+type frozenPart struct {
+	ref    string
+	byPath map[string]column
 }
 
 type viewPart struct {
@@ -39,7 +50,7 @@ func (v *view) ref() string { return sessionSchema + ident(v.name) }
 // rebuildViews regenerates every view from the attached catalogs and
 // publishes the new model. Writer side only.
 func (e *Engine) rebuildViews() error {
-	m := &model{}
+	m := &model{tables: map[string][]string{}}
 	byKey := map[vkey]*view{}
 	namers := map[*view]*namer{}
 	parts := map[*view][]viewPart{}
@@ -63,6 +74,12 @@ func (e *Engine) rebuildViews() error {
 				v.byPath[col.path] = vc
 			}
 			parts[v] = append(parts[v], viewPart{c.alias, t})
+			fp := frozenPart{ref: t.ref(c.alias), byPath: make(map[string]column, len(t.cols))}
+			for _, col := range t.cols {
+				fp.byPath[col.path] = *col
+			}
+			v.parts = append(v.parts, fp)
+			m.tables[c.alias] = append(m.tables[c.alias], t.ref(c.alias))
 		}
 	}
 	shared := make([]string, 0, len(sharedCols))
@@ -89,14 +106,17 @@ func (e *Engine) rebuildViews() error {
 			return err
 		}
 		made[v.name] = true
-		all = append(all, "SELECT "+strings.Join(shared, ", ")+" FROM "+v.ref())
+	}
+	idx := strings.Join(shared[:indexShared], ", ") + ", _tid"
+	for _, c := range e.cats {
+		all = append(all, "SELECT "+idx+", "+lit(c.alias)+" AS _cat FROM "+c.meta("_records"))
 	}
 	if len(all) == 0 {
-		nulls := make([]string, len(sharedCols))
-		for i, sc := range sharedCols {
+		nulls := make([]string, indexShared)
+		for i, sc := range sharedCols[:indexShared] {
 			nulls[i] = "CAST(NULL AS " + sc.typ + ") AS " + ident(sc.name)
 		}
-		all = []string{"SELECT " + strings.Join(nulls, ", ") + " WHERE false"}
+		all = []string{"SELECT " + strings.Join(nulls, ", ") + ", CAST(NULL AS INTEGER) AS _tid, CAST(NULL AS VARCHAR) AS _cat WHERE false"}
 	}
 	if err := e.exec("CREATE OR REPLACE VIEW " + sessionSchema + "all_records AS " + strings.Join(all, " UNION ALL ")); err != nil {
 		return err
@@ -138,29 +158,33 @@ func (e *Engine) Relation(source, service, stream string, cols []schema.Field) (
 		if stream != record.AllStreams && v.key != stream && !(source == record.SourceOtel && v.key == record.StreamSpan) {
 			continue
 		}
-		var sb strings.Builder
-		sb.WriteString("SELECT _id, _time, _time_inherited, _service, _source, _stream, _raw")
-		for i, f := range cols {
-			vi, xi := " AS v"+itoa(i), " AS x"+itoa(i)
-			vc := v.byPath[f.Path]
-			if vc == nil {
-				sb.WriteString(", " + nullOf(norm(f.Type)) + vi + ", false" + xi)
-				continue
+		// The day tables are read directly (D-022): binding a wide view
+		// costs more than the query itself at this size.
+		for _, p := range v.parts {
+			var sb strings.Builder
+			sb.WriteString("SELECT _id, _time, _time_inherited, _service, _source, _stream, _raw")
+			for i, f := range cols {
+				vi, xi := " AS v"+itoa(i), " AS x"+itoa(i)
+				col, ok := p.byPath[f.Path]
+				if !ok {
+					sb.WriteString(", " + nullOf(norm(f.Type)) + vi + ", false" + xi)
+					continue
+				}
+				c := ident(col.name)
+				val := conv(c, col.typ, f)
+				bad := "coalesce(list_contains(_bad, " + lit(f.Path) + "), false)"
+				if norm(col.typ) != norm(f.Type) {
+					bad = "(" + bad + " OR (" + c + " IS NOT NULL AND " + val + " IS NULL))"
+				}
+				sb.WriteString(", " + val + vi + ", " + bad + xi)
 			}
-			c := ident(vc.name)
-			val := conv(c, vc.typ, f)
-			bad := "coalesce(list_contains(_bad, " + lit(f.Path) + "), false)"
-			if norm(vc.typ) != norm(f.Type) {
-				bad = "(" + bad + " OR (" + c + " IS NOT NULL AND " + val + " IS NULL))"
+			sb.WriteString(" FROM " + p.ref)
+			if stream != record.AllStreams {
+				sb.WriteString(" WHERE _stream = ?")
+				args = append(args, stream)
 			}
-			sb.WriteString(", " + val + vi + ", " + bad + xi)
+			branches = append(branches, sb.String())
 		}
-		sb.WriteString(" FROM " + v.ref())
-		if stream != record.AllStreams {
-			sb.WriteString(" WHERE _stream = ?")
-			args = append(args, stream)
-		}
-		branches = append(branches, sb.String())
 	}
 	if len(branches) == 0 {
 		var sb strings.Builder
@@ -176,8 +200,60 @@ func (e *Engine) Relation(source, service, stream string, cols []schema.Field) (
 
 // Records returns the records of all_records matching where (SQL over its
 // columns), oldest _id first, rebuilt from _raw as they were first built.
+// all_records is the per-catalog index (D-021); each record's line is then
+// read from its own table.
 func (e *Engine) Records(ctx context.Context, where string, args ...any) ([]record.Record, error) {
-	rows, err := e.db.QueryContext(ctx, "SELECT _id, _time, _time_inherited, _service, _source, _raw FROM "+sessionSchema+"all_records WHERE "+where+" ORDER BY _id", args...)
+	m := e.snap.Load()
+	rows, err := e.db.QueryContext(ctx, "SELECT _id, _tid, _cat FROM "+sessionSchema+"all_records WHERE "+where+" ORDER BY _id", args...)
+	if err != nil {
+		return nil, err
+	}
+	type loc struct {
+		cat string
+		tid int
+	}
+	ids := map[loc][]string{}
+	var order []loc
+	for rows.Next() {
+		var id int64
+		var l loc
+		if err := rows.Scan(&id, &l.tid, &l.cat); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if ids[l] == nil {
+			order = append(order, l)
+		}
+		ids[l] = append(ids[l], strconv.FormatInt(id, 10))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var out []record.Record
+	for _, l := range order {
+		refs := m.tables[l.cat]
+		if l.tid >= len(refs) {
+			continue // a table newer than this model
+		}
+		for chunk := ids[l]; len(chunk) > 0; {
+			n := min(len(chunk), 5000)
+			recs, err := e.rowsToRecords(ctx, "SELECT _id, _time, _time_inherited, _service, _source, _raw FROM "+refs[l.tid]+" WHERE _id IN ("+strings.Join(chunk[:n], ",")+")")
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, recs...)
+			chunk = chunk[n:]
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+// rowsToRecords rebuilds the records of a query returning _id, _time,
+// _time_inherited, _service, _source and _raw.
+func (e *Engine) rowsToRecords(ctx context.Context, q string, args ...any) ([]record.Record, error) {
+	rows, err := e.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -191,18 +267,22 @@ func (e *Engine) Records(ctx context.Context, where string, args ...any) ([]reco
 		if err := rows.Scan(&id, &tm, &inh, &svc, &src, &raw); err != nil {
 			return nil, err
 		}
-		r, ok := e.rebuild(src, []byte(raw))
-		if !ok {
-			continue
+		if r, ok := e.Rebuild(id, tm.Time, inh.Bool, svc, src, raw); ok {
+			out = append(out, r)
 		}
-		r.Seq, r.Service, r.TimeInherited = int(id), svc, inh.Bool
-		r.Time = time.Time{}
-		if tm.Valid {
-			r.Time = tm.Time
-		}
-		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// Rebuild is the record a stored row stands for: its line normalized again,
+// with the row's id, time and service. A zero t means no time.
+func (e *Engine) Rebuild(id int64, t time.Time, inherited bool, service, source, raw string) (record.Record, bool) {
+	r, ok := e.rebuild(source, []byte(raw))
+	if !ok {
+		return r, false
+	}
+	r.Seq, r.Service, r.TimeInherited, r.Time = int(id), service, inherited, t
+	return r, true
 }
 
 // Tallies merges the per-path tallies of one kind (record.AllStreams: every

@@ -307,6 +307,12 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		matched = matched[off:]
 	}
 
+	samplesRows(matched, s, q, &res)
+	return res, nil
+}
+
+// samplesRows fills res's columns and rows from the page of matched records.
+func samplesRows(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 	paths := q.Columns
 	if len(paths) == 0 {
 		paths = intervalColumns(matched, s)
@@ -346,7 +352,6 @@ func Run(recs []record.Record, s schema.Schema, q Query, now, runStart time.Time
 		}
 		res.Rows = append(res.Rows, row)
 	}
-	return res, nil
 }
 
 // intervalColumns is the default column list inferred from the matched

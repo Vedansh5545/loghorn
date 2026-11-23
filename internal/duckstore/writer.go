@@ -340,6 +340,24 @@ func nullStr(s string) any {
 	return s
 }
 
+// shared is a record's shared column values, _id to _name.
+func shared(r record.Record) []driver.Value {
+	var tm any
+	if !r.Time.IsZero() {
+		tm = r.Time.UTC()
+	}
+	tid, sid := record.TraceRef(r.Fields)
+	var parent, name any
+	if r.Key().Source == record.SourceOtel {
+		p, _ := r.Fields["parent_span_id"].(string)
+		parent = nullStr(record.NormalizeSpanID(p))
+		n, _ := r.Fields["name"].(string)
+		name = nullStr(n)
+	}
+	return []driver.Value{int64(r.Seq), tm, r.TimeInherited, r.Key().Source, r.Service, r.Stream,
+		nullStr(tid), nullStr(sid), parent, name}
+}
+
 func (e *Engine) appendRows(c *catalog, t *table, recs []record.Record) error {
 	return e.wc.Raw(func(dc any) error {
 		a, err := duckdb.NewAppender(dc.(driver.Conn), c.alias, t.schema, t.name)
@@ -347,19 +365,12 @@ func (e *Engine) appendRows(c *catalog, t *table, recs []record.Record) error {
 			return err
 		}
 		row := make([]driver.Value, len(sharedCols)+len(t.cols))
+		idx, err := duckdb.NewAppender(dc.(driver.Conn), c.alias, metaSchema, "_records")
+		if err != nil {
+			a.Close()
+			return err
+		}
 		for _, r := range recs {
-			var tm any
-			if !r.Time.IsZero() {
-				tm = r.Time.UTC()
-			}
-			tid, sid := record.TraceRef(r.Fields)
-			var parent, name any
-			if r.Key().Source == record.SourceOtel {
-				p, _ := r.Fields["parent_span_id"].(string)
-				parent = nullStr(record.NormalizeSpanID(p))
-				n, _ := r.Fields["name"].(string)
-				name = nullStr(n)
-			}
 			var bad []string
 			for i, col := range t.cols {
 				v := schema.Convert(r.Fields[col.path], schema.Field{Path: col.path, Type: col.typ})
@@ -372,14 +383,25 @@ func (e *Engine) appendRows(c *catalog, t *table, recs []record.Record) error {
 			if bad != nil {
 				badv = bad
 			}
-			copy(row, []driver.Value{int64(r.Seq), tm, r.TimeInherited, r.Key().Source, r.Service, r.Stream,
-				nullStr(tid), nullStr(sid), parent, name, badv, string(r.Raw)})
+			sh := shared(r)
+			copy(row, sh)
+			row[indexShared], row[indexShared+1] = badv, string(r.Raw)
 			if err := a.AppendRow(row...); err != nil {
 				a.Close()
+				idx.Close()
 				return fmt.Errorf("append to %s: %w", t.ref(c.alias), err)
 			}
+			if err := idx.AppendRow(append(sh, int32(t.tid))...); err != nil {
+				a.Close()
+				idx.Close()
+				return fmt.Errorf("append to %s: %w", c.meta("_records"), err)
+			}
 		}
-		return a.Close()
+		if err := a.Close(); err != nil {
+			idx.Close()
+			return err
+		}
+		return idx.Close()
 	})
 }
 

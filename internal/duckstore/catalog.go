@@ -2,6 +2,7 @@ package duckstore
 
 import (
 	"context"
+	"strings"
 	"fmt"
 
 	"github.com/jimbeveridge/loghorn/internal/record"
@@ -23,6 +24,20 @@ var (
 	schemaReserved = []string{metaSchema, "information_schema", "pg_catalog", "temp"}
 	viewReserved   = []string{"all_records", "all_fields"}
 )
+
+// indexShared is how many leading shared columns the per-catalog record
+// index (_loghorn._records) keeps: all but _bad and _raw.
+const indexShared = 10
+
+// indexColumns is the record index's column list: the shared columns but
+// _bad and _raw, then the table's position in _tables (D-021).
+func indexColumns() string {
+	var cols []string
+	for _, sc := range sharedCols[:indexShared] {
+		cols = append(cols, ident(sc.name)+" "+sc.typ)
+	}
+	return strings.Join(cols, ", ") + ", _tid INTEGER"
+}
 
 func columnReserved() []string {
 	out := make([]string, len(sharedCols))
@@ -59,6 +74,7 @@ type table struct {
 	byPath       map[string]*column
 	names        *namer
 	kinds        map[string]schema.KindSet
+	tid          int // position in the catalog's _tables
 }
 
 type column struct {
@@ -132,6 +148,7 @@ func (e *Engine) initMeta(c *catalog) error {
 		"CREATE TABLE IF NOT EXISTS " + c.meta("_tables") + " (service VARCHAR, tkey VARCHAR, schema_name VARCHAR, table_name VARCHAR)",
 		"CREATE TABLE IF NOT EXISTS " + c.meta("_columns") + " (schema_name VARCHAR, table_name VARCHAR, path VARCHAR, column_name VARCHAR, type VARCHAR)",
 		"CREATE TABLE IF NOT EXISTS " + c.meta("_fields") + " (service VARCHAR, tkey VARCHAR, kind VARCHAR, path VARCHAR, n BIGINT, kinds INTEGER, PRIMARY KEY (service, tkey, kind, path))",
+		"CREATE TABLE IF NOT EXISTS " + c.meta("_records") + " (" + indexColumns() + ")",
 		"CREATE TABLE IF NOT EXISTS " + c.meta("_day") + " (day INTEGER, clean BOOLEAN, dirty BOOLEAN, text_bytes BIGINT)",
 	} {
 		if err := e.exec(q); err != nil {
@@ -218,6 +235,7 @@ func (c *catalog) addTable(t *table) {
 	}
 	tn.set(t.key, t.name)
 	c.tables[tkey{t.service, t.key}] = t
+	t.tid = len(c.order)
 	c.order = append(c.order, t)
 }
 

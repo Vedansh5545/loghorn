@@ -299,17 +299,19 @@ func runTable(matched []*record.Record, s schema.Schema, q Query, res *Result) {
 	}
 }
 
+// rankStat is what ranking reads of a group: its record count, its order
+// metric (ok false when it has none) and its key.
+type rankStat struct {
+	n   int
+	v   float64
+	ok  bool
+	key string
+}
+
 // rankGroups orders groups by q.Order (count, descending, when nil). A group
 // with no value for the metric sorts last in either direction; ties fall back
 // to count descending, then key.
 func rankGroups[G any](groups []G, of func(G) ([]*record.Record, string), o *Order, s schema.Schema) {
-	type ranked struct {
-		g   G
-		key string
-		n   int
-		v   float64
-		ok  bool
-	}
 	by := Order{Op: "count"}
 	if o != nil {
 		by = *o
@@ -319,17 +321,28 @@ func rankGroups[G any](groups []G, of func(G) ([]*record.Record, string), o *Ord
 	if by.Op != "count" && by.Op != "error_rate" {
 		f = lookupField(s, by.Field)
 	}
-	rs := make([]ranked, len(groups))
-	for i, g := range groups {
+	rankStats(groups, func(g G) rankStat {
 		recs, key := of(g)
-		r := ranked{g: g, key: key, n: len(recs)}
+		r := rankStat{n: len(recs), key: key}
 		if by.Op == "count" {
 			r.v, r.ok = float64(len(recs)), true
 		} else {
 			r.v, r.ok = metricValue(recs, agg, f)
 			r.ok = r.ok && !math.IsNaN(r.v)
 		}
-		rs[i] = r
+		return r
+	}, by.Asc)
+}
+
+// rankStats orders groups by their stats, as rankGroups describes.
+func rankStats[G any](groups []G, stat func(G) rankStat, asc bool) {
+	type ranked struct {
+		g G
+		rankStat
+	}
+	rs := make([]ranked, len(groups))
+	for i, g := range groups {
+		rs[i] = ranked{g, stat(g)}
 	}
 	sort.SliceStable(rs, func(a, b int) bool {
 		x, y := rs[a], rs[b]
@@ -337,7 +350,7 @@ func rankGroups[G any](groups []G, of func(G) ([]*record.Record, string), o *Ord
 			return x.ok
 		}
 		if x.ok && x.v != y.v {
-			if by.Asc {
+			if asc {
 				return x.v < y.v
 			}
 			return x.v > y.v

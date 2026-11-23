@@ -256,6 +256,33 @@ or has not yet answered.
 - **Why:** A stored `_time` never changes after it is written. Today such
   records show with no time until backfilled; live runs never have them.
 
+## D-021 A per-day record index backs `all_records`
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (found while building)
+- **Decision:** Each day database keeps `_loghorn._records`: every record's
+  shared columns (not `_bad` or `_raw`) and its table's position.
+  `all_records` reads these indexes, not every stream table. Lookups that
+  need the line (`/api/record`, traces) find the table there, then read
+  `_raw` from it.
+- **Why:** DuckDB pays about 0.3 ms per table in a `UNION ALL`, measured
+  here (50 tables 14 ms, 400 tables 120 ms). With a table per stream,
+  service and day, a union over every table would miss the ~50 ms target
+  for kinds, streams and traces.
+- **Consequences:** A second, narrow append per record. "All kinds" queries
+  still read every stream table of the source, so they slow down as tables
+  multiply.
+
+## D-022 Queries read day tables directly
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (found while building)
+- **Decision:** The relation a query reads is built from the same model as
+  the views, but selects from each day table directly, converting each
+  column straight to the effective type. The views stay for people and
+  tools reading the databases.
+- **Why:** Binding a wide view cost more than the query itself in tests,
+  and converting once (table type → effective type) is closer to
+  `schema.Convert` than converting twice through the view's widest type.
+
 ---
 
 ## Open questions
