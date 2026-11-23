@@ -171,8 +171,15 @@ Translation:
 
 - Service other than `*` → `service = '…'`.
 - Range: a relative `from` becomes `time >= now() - INTERVAL '…'`; RFC 3339
-  becomes a literal; `this-run` becomes the literal run start with a comment.
-  `to` likewise; `now`/empty adds nothing.
+  becomes a literal. `to` likewise; `now`/empty adds nothing.
+- `this-run`: `time >= '<run start>'`, plus, when the instance has an OTLP
+  run ID (`-otel`), `("loghorn.run.id" = '<id>' OR "loghorn.run.id" IS
+  NULL)`. A comment explains that the command's own output lines carry no
+  run ID, so after later runs are stored the query also matches their
+  untagged lines. Wrapped commands are a developer-testing convenience,
+  rarely used in production, so captured lines are not stamped with the run
+  ID; stored records are unchanged. An instance with no run (replay, or
+  `-web` alone) exports the time filter only.
 - Filters: every operator in `hasOp` maps to SQL with the same semantics
   (case-insensitive `contains` → `ILIKE` with `%`/`_` escaped; `in` →
   `IN (…)`; `empty` → `IS NULL OR = ''` for strings). Literals are quoted
