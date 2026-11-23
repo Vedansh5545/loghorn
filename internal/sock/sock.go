@@ -57,12 +57,16 @@ const (
 
 // Listen listens on path, mode 0600. A socket file something answers on is a
 // live serve: Listen returns *LiveError and leaves it alone. One that refuses
-// connections was left by a crash and is removed first.
+// connections was left by a crash and is removed first. Anything at path that
+// isn't a socket is left alone and refused.
 func Listen(path string) (net.Listener, error) {
 	if len(path) > MaxPath {
 		return nil, fmt.Errorf("socket path %s is %d bytes; the limit is %d", path, len(path), MaxPath)
 	}
-	if _, err := os.Lstat(path); err == nil {
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("%s exists and is not a socket; refusing to replace it", path)
+		}
 		if c, err := net.DialTimeout("unix", path, dialTimeout); err == nil {
 			c.Close()
 			return nil, &LiveError{Path: path}

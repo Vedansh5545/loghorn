@@ -24,7 +24,7 @@ func (s *Server) adopt() {
 			in = s.o.Config.Input
 		}
 		rec := recorder.New(recorder.Options{
-			Sink: s.sink, Store: s.st, Input: in, Service: p.Meta.Service,
+			Sink: taggedSink(s.sink, p.Meta.Service, p.Meta.RunID), Store: s.st, Input: in, Service: p.Meta.Service,
 		})
 		n := 0
 		err := incoming.Adopt(p, func(line []byte) {

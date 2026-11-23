@@ -2,7 +2,9 @@ package serve
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -356,5 +358,34 @@ func TestServeAdoptsIncoming(t *testing.T) {
 	})
 	if list, _ := incoming.List(o.DataDir); len(list) != 0 {
 		t.Fatalf("incoming left: %+v", list)
+	}
+}
+
+func TestRunServiceSurvivesRestart(t *testing.T) {
+	o := testOpts(t)
+	s, err := Start(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ship(s, "api", "r1", `{"labels":{"schema":"app"},"message":"live"}`, `{"labels":{"schema":"app"},"service.name":"own","message":"named"}`)
+	l, sp, err := incoming.Create(o.DataDir, incoming.Meta{RunID: "r2", Service: "web", Started: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Write([]byte(`{"labels":{"schema":"app"},"message":"adopted"}`))
+	sp.Close()
+	l.Close()
+	waitFor(t, "the adoption", func() bool { return strings.Contains(logFile(t, o.DataDir), "adopted") })
+	s.Close()
+
+	s2 := start(t, o)
+	got := map[string]string{}
+	for _, r := range records(s2) {
+		var m map[string]any
+		json.Unmarshal(r.Raw, &m)
+		got[m["message"].(string)] = r.Service + "/" + fmt.Sprint(m["loghorn.run.id"])
+	}
+	if got["live"] != "api/r1" || got["adopted"] != "web/r2" || got["named"] != "own/r1" {
+		t.Fatalf("after restart: %v", got)
 	}
 }

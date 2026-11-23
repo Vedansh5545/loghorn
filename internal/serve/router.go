@@ -68,7 +68,7 @@ func (r *router) recorderFor(l otlp.RunLine) *recorder.Recorder {
 		}
 	}
 	rec := recorder.New(recorder.Options{
-		Sink: r.sink, Store: r.st, Input: in, Live: true, Now: r.now,
+		Sink: taggedSink(r.sink, l.Service, l.RunID), Store: r.st, Input: in, Live: true, Now: r.now,
 		DedupeAfterOTLP: true, Service: l.Service,
 	})
 	if _, ok := r.marked[l.RunID]; ok {

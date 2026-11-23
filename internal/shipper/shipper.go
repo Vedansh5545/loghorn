@@ -54,6 +54,7 @@ type Shipper struct {
 	mu      sync.Mutex
 	dropped int
 	failed  bool
+	closed  bool
 }
 
 // New starts a shipper posting to endpoint+"/v1/logs". onError is called once,
@@ -84,20 +85,32 @@ func strKV(k, v string) *commonpb.KeyValue {
 // is dropped and counted.
 func (s *Shipper) Line(rec []byte) {
 	it := item{line: append([]byte(nil), rec...), at: time.Now()}
+	// Under mu, so Close can't close the queue between the check and the
+	// send: a reader still draining a grandchild's output after the command
+	// exits may call Line after Close, and that line is counted, not sent.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.dropped++
+		return
+	}
 	select {
 	case s.q <- it:
 	default:
-		s.mu.Lock()
 		s.dropped++
-		s.mu.Unlock()
 	}
 }
 
 // Close sends what is queued, waiting at most timeout, and returns how many
-// lines were not delivered (queue full, failed batches, or still queued at the
-// deadline). Line must not be called after Close.
+// lines were not delivered (queue full, failed batches, still queued at the
+// deadline, or sent after Close). Calling it twice is safe.
 func (s *Shipper) Close(timeout time.Duration) (dropped int) {
-	close(s.q)
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.q)
+	}
+	s.mu.Unlock()
 	select {
 	case <-s.done:
 	case <-time.After(timeout):

@@ -89,6 +89,15 @@ func TestAdoptMissingMeta(t *testing.T) {
 	}
 	w.Write([]byte("lost"))
 	w.Close()
+	// A folder without run.json may be a run that is still starting; only an
+	// old one is an orphan.
+	if list, _ := List(data); len(list) != 0 {
+		t.Fatalf("a young folder without run.json was listed: %+v", list)
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
 	list, err := List(data)
 	if err != nil || len(list) != 1 || list[0].Meta.RunID != "orphan" || list[0].Meta.Service != "" {
 		t.Fatalf("List = %+v, %v", list, err)
@@ -106,5 +115,56 @@ func TestListNoIncoming(t *testing.T) {
 	list, err := List(t.TempDir())
 	if err != nil || len(list) != 0 {
 		t.Fatalf("List = %+v, %v", list, err)
+	}
+}
+
+func TestCreateWaitsForABriefLock(t *testing.T) {
+	data := t.TempDir()
+	dir := filepath.Join(data, "incoming", "r1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	release, err := logfile.TryLock(dir) // as status or serve checking it
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		release()
+	}()
+	logs, spans, err := Create(data, meta("r1", "api", time.Now()))
+	if err != nil {
+		t.Fatalf("Create while briefly locked: %v", err)
+	}
+	spans.Close()
+	logs.Close()
+}
+
+func TestAdoptMovesFolderFirst(t *testing.T) {
+	data := t.TempDir()
+	l, sp, err := Create(data, meta("r1", "api", time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Write([]byte("one"))
+	sp.Close()
+	l.Close()
+	list, _ := List(data)
+	var during []string
+	err = Adopt(list[0], func([]byte) {
+		ents, _ := os.ReadDir(filepath.Join(data, "incoming"))
+		for _, e := range ents {
+			during = append(during, e.Name())
+		}
+	}, func([]byte) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// While it is read, the run's own name is free: a run starting with it
+	// can't have its files deleted by the adoption.
+	for _, n := range during {
+		if n == "r1" {
+			t.Fatalf("incoming/r1 still present during adoption: %v", during)
+		}
 	}
 }

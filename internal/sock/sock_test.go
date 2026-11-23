@@ -136,3 +136,16 @@ func TestProbeSession(t *testing.T) {
 		t.Fatalf("OTLPEndpoint = %q", s.OTLPEndpoint())
 	}
 }
+
+func TestListenRefusesNonSocket(t *testing.T) {
+	path := tmpSock(t)
+	if err := os.WriteFile(path, []byte("notes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Listen(path); err == nil || !strings.Contains(err.Error(), "not a socket") {
+		t.Fatalf("Listen over a regular file = %v; want a refusal", err)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "notes" {
+		t.Fatalf("the file was touched: %q, %v", b, err)
+	}
+}

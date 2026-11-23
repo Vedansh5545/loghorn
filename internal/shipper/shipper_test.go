@@ -110,3 +110,18 @@ func TestShipperNeverBlocks(t *testing.T) {
 		t.Fatalf("onError called %d times; want 1", n)
 	}
 }
+
+func TestShipperLineAfterCloseIsDropped(t *testing.T) {
+	c := &collector{}
+	srv := httptest.NewServer(c)
+	defer srv.Close()
+	s := New(srv.URL, Resource{RunID: "r"}, nil)
+	s.Line([]byte("before"))
+	s.Close(time.Second)
+	s.Line([]byte("late")) // a grandchild still writing after the command exits
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.lines) != 1 || c.lines[0] != "before" {
+		t.Fatalf("lines = %q", c.lines)
+	}
+}

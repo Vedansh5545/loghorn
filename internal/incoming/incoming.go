@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
@@ -32,31 +33,51 @@ type Meta struct {
 	Started time.Time    `json:"started"`
 }
 
-// Create makes the run's folder, writes run.json and opens the folder's log
-// and span writers. The log writer holds the folder's lock until it closes.
+// Create makes the run's folder and opens its log and span writers; the log
+// writer holds the folder's lock until it closes. The lock is taken before
+// run.json is written, and List passes over a young folder without run.json,
+// so serve never adopts a run that is still starting. A lock someone holds
+// only briefly (serve or status checking the folder) is waited for.
 func Create(dataDir string, m Meta) (logs, spans *logfile.Writer, err error) {
 	dir := filepath.Join(dataDir, Dir, m.RunID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	for try := 0; ; try++ {
+		logs, err = logfile.Open(dir, time.Now, time.Local)
+		var locked *logfile.LockedError
+		if !errors.As(err, &locked) || try == lockTries {
+			break
+		}
+		time.Sleep(lockWait)
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	b, err := json.Marshal(m)
-	if err != nil {
-		return nil, nil, err
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dir, metaName), b, 0o600)
 	}
-	if err := os.WriteFile(filepath.Join(dir, metaName), b, 0o600); err != nil {
-		return nil, nil, err
+	if err == nil {
+		spans, err = logs.Companion(logfile.SpansBase, logfile.SpansSuffix)
 	}
-	logs, err = logfile.Open(dir, time.Now, time.Local)
-	if err != nil {
-		return nil, nil, err
-	}
-	spans, err = logs.Companion(logfile.SpansBase, logfile.SpansSuffix)
 	if err != nil {
 		logs.Close()
 		return nil, nil, err
 	}
 	return logs, spans, nil
 }
+
+// How long Create waits for a lock held briefly by a reader.
+const (
+	lockTries = 40
+	lockWait  = 25 * time.Millisecond
+)
+
+// orphanAge is how old a folder without run.json must be before List treats
+// it as an orphan to adopt rather than a run that is still starting.
+const orphanAge = time.Minute
+
+// adoptingPrefix marks a folder serve has moved aside to read. One left by a
+// crash mid-adoption is adopted again on the next pass.
+const adoptingPrefix = ".adopting-"
 
 // Pending is an incoming run. Locked means its run is still writing.
 type Pending struct {
@@ -81,12 +102,19 @@ func List(dataDir string) ([]Pending, error) {
 		if !e.IsDir() {
 			continue
 		}
-		p := Pending{Dir: filepath.Join(root, e.Name()), Meta: Meta{RunID: e.Name()}}
-		if b, err := os.ReadFile(filepath.Join(p.Dir, metaName)); err == nil {
+		id := strings.TrimPrefix(e.Name(), adoptingPrefix)
+		p := Pending{Dir: filepath.Join(root, e.Name()), Meta: Meta{RunID: id}}
+		b, err := os.ReadFile(filepath.Join(p.Dir, metaName))
+		switch {
+		case err == nil:
 			var m Meta
 			if json.Unmarshal(b, &m) == nil {
-				m.RunID = e.Name()
+				m.RunID = id
 				p.Meta = m
+			}
+		case errors.Is(err, os.ErrNotExist):
+			if fi, err := e.Info(); err != nil || time.Since(fi.ModTime()) < orphanAge {
+				continue // a run still starting: its lock comes before run.json
 			}
 		}
 		release, err := logfile.TryLock(p.Dir)
@@ -104,18 +132,28 @@ func List(dataDir string) ([]Pending, error) {
 }
 
 // Adopt reads an ended run's records and spans, in order, into line and span,
-// then deletes its folder. A run still writing is *logfile.LockedError.
+// then deletes its folder. A run still writing is *logfile.LockedError. The
+// folder is first moved aside under its lock, so a new run can never write
+// into a folder that is about to be deleted. (Where the move fails, as with
+// open files on Windows, it is read in place.)
 func Adopt(p Pending, line, span func([]byte)) error {
 	release, err := logfile.TryLock(p.Dir)
 	if err != nil {
 		return err
 	}
-	err = read(p.Dir, line, span)
+	dir := p.Dir
+	if base := filepath.Base(dir); !strings.HasPrefix(base, adoptingPrefix) {
+		aside := filepath.Join(filepath.Dir(dir), adoptingPrefix+base)
+		if os.Rename(dir, aside) == nil {
+			dir = aside
+		}
+	}
+	err = read(dir, line, span)
 	release()
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(p.Dir)
+	return os.RemoveAll(dir)
 }
 
 func read(dir string, line, span func([]byte)) error {
