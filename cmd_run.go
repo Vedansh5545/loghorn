@@ -203,11 +203,14 @@ func startOneShot(log io.Writer) (*serve.Server, error) {
 
 // oneShotSignals holds a one-shot serve's stop signals. term (SIGTERM,
 // SIGHUP) means stop now, even mid-run: run forwards those to the command, and
-// whoever sent them wants run gone too. intr (Ctrl-C) during the command is
-// the command's, so it is discarded when the command exits; after that it
-// ends serving. A nil *oneShotSignals does nothing.
+// whoever sent them wants run gone too. A Ctrl-C (intr) while the command runs
+// stops the command (the terminal delivers it there) and, once the command has
+// exited, serve too: one Ctrl-C ends the whole run. Only a command that exits
+// on its own leaves serve up for browsing, until the next Ctrl-C. A nil
+// *oneShotSignals does nothing.
 type oneShotSignals struct {
-	term, intr chan os.Signal
+	term, intr  chan os.Signal
+	interrupted bool // a Ctrl-C arrived while the command ran
 }
 
 func newOneShotSignals() *oneShotSignals {
@@ -218,13 +221,14 @@ func newOneShotSignals() *oneShotSignals {
 }
 
 // childExited runs as soon as the command has exited, before run's own signal
-// forwarding stops: a Ctrl-C queued until now was the command's.
+// forwarding stops, and notes whether a Ctrl-C ended the run.
 func (s *oneShotSignals) childExited() {
 	if s == nil {
 		return
 	}
 	select {
 	case <-s.intr:
+		s.interrupted = true
 	default:
 	}
 }
@@ -269,12 +273,16 @@ func (s *oneShotSignals) serveUntilStopped(srv *serve.Server, interactive bool, 
 		return
 	default:
 	}
+	if s.interrupted {
+		s.closeServe(srv, stderr)
+		return
+	}
 	if !interactive {
 		fmt.Fprintln(stderr, "loghorn: no terminal to stop serve from, so it stops with the run; the run is stored. Start 'loghorn serve' to browse it.")
 		s.closeServe(srv, stderr)
 		return
 	}
-	fmt.Fprintf(stderr, "loghorn: the run is done; serving %s until Ctrl-C\n", srv.Session().WebURL())
+	fmt.Fprintf(stderr, "loghorn: the command exited; still serving %s so you can browse the run. Ctrl-C to stop.\n", srv.Session().WebURL())
 	select {
 	case <-s.term:
 	case <-s.intr:

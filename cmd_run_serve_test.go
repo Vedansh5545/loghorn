@@ -48,7 +48,7 @@ func TestRunServeOneShot(t *testing.T) {
 		`echo '{"labels":{"schema":"app"},"message":"one-shot"}'; exit 3`)
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
 	cmd.Stdin = ttyStdin(t) // waiting for Ctrl-C needs a terminal
-	out := newWatchWriter("until Ctrl-C")
+	out := newWatchWriter("Ctrl-C to stop")
 	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -162,4 +162,30 @@ func TestRunServePipeSignalStops(t *testing.T) {
 	e.waitLog(t, "piped")
 	cmd.Process.Signal(syscall.SIGINT)
 	e.waitExit(t, cmd, errw)
+}
+
+// One Ctrl-C ends both the command and the one-shot serve: the serve was up
+// (and recording) while the command ran.
+func TestRunServeOneCtrlCStopsAll(t *testing.T) {
+	e := newServeEnv(t)
+	e.userPorts(t, freePort(t), freePort(t))
+	cmd := e.cmd(t, context.Background(), "run", "-serve", "-shutdown-grace", "300ms", "--", "sh", "-c", "echo started; sleep 30")
+	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
+	cmd.Stdin = ttyStdin(t)
+	errw := newWatchWriter("recording to serve")
+	cmd.Stderr = errw
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	<-errw.seen
+	e.waitLog(t, "started")
+	if _, err := sock.Probe(e.socket); err != nil {
+		t.Fatalf("serve isn't up while the command runs: %v", err)
+	}
+	cmd.Process.Signal(syscall.SIGINT) // Ctrl-C (the shell child ignores it here; the grace kills it)
+	e.waitExit(t, cmd, errw)
+	if strings.Contains(errw.String(), "Ctrl-C to stop") {
+		t.Fatalf("run kept serving after Ctrl-C: %q", errw.String())
+	}
 }

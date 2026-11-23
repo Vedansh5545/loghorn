@@ -156,7 +156,9 @@ choice, set in `[run] serve-down` (below) or per run with `-serve-down`:
 
 **One shot, without a standing serve** — `run -serve` starts a `serve` inside `run`
 for that run when none is running (same data folder, socket and ports), records into
-it directly, and keeps the web view up after the command exits until `Ctrl-C`:
+it directly, and serves the web view while the command runs. One `Ctrl-C` stops the
+command and `serve` together; a command that exits on its own leaves the web view up
+for browsing until `Ctrl-C`:
 
 ```sh
 loghorn run -serve -- npm test

@@ -396,7 +396,9 @@ files, then deletes the folder. A folder still locked belongs to a running
 **[user]** `run -serve` starts `serve` inside `run` when no serve answers on the
 socket: the same data folder, socket and user-level ports as `loghorn serve`, so
 it records straight into the store, receives OTLP from any app on 4318 while it
-runs, and keeps the web view up after the command exits until SIGINT or SIGTERM.
+runs, and serves the web view while the command runs. **[user]** One Ctrl-C
+ends both: a Ctrl-C during the command stops serve once the command has exited.
+A command that exits on its own leaves the view up until SIGINT or SIGTERM.
 The exit status stays the command's. With a serve already running, `-serve`
 adds nothing. If the in-process serve can't start, `run` prints why ("can't
 start serve: …") and follows `serve-down`. This is not auto-start: it happens
