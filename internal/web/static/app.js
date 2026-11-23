@@ -1421,6 +1421,28 @@ function cellCopyText(td) {
   return c.textContent;
 }
 
+// fetchExport asks the server for the shown query in an export format and
+// returns the text. It sends what runQuery sends (offset and limit included),
+// so the copy is the table on screen, not a fresh page of it.
+async function fetchExport(format) {
+  const resp = await fetch("/api/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({}, listQuery(), { format })),
+  });
+  if (!resp.ok) {
+    let msg = resp.status + " " + resp.statusText;
+    try {
+      const d = await resp.json();
+      if (d && d.error) msg = d.error;
+    } catch {
+      // keep the status line
+    }
+    throw new Error(msg);
+  }
+  return resp.text();
+}
+
 // shownTable is the results table as shown, for copying: the header labels
 // and each row's cells; opened record details are skipped.
 function shownTable() {
@@ -3504,7 +3526,7 @@ function wireFavorites() {
     if (e.key === "Escape") closeFavorites();
   });
   $("fav-save").addEventListener("click", saveFavorite);
-  $("table-copy").append(copyTableBar(shownTable));
+  $("table-copy").append(copyTableBar(shownTable, "", { formats: ["md", "csv", "tsv", "json", "jsonl", "yaml", "toon"], fetchText: fetchExport }));
   $("fav-save-menu").addEventListener("click", saveFavorite);
 }
 

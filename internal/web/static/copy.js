@@ -106,32 +106,157 @@ export function copyButton(text, { title = "copy SQL", cls = "" } = {}) {
   return b;
 }
 
-// copyTableBar is a row of "Copy as Markdown" and "Copy as CSV" buttons and
-// a status line. table() returns {headers, rows} at click time.
-export function copyTableBar(table, cls = "") {
+// toTSV serializes headers and rows as tab-separated text: a tab, newline,
+// carriage return or backslash in a cell is written as \t, \n, \r or \\.
+export function toTSV(headers, rows) {
+  const field = (v) =>
+    (v === null || v === undefined ? "" : String(v))
+      .replace(/\\/g, "\\\\")
+      .replace(/\t/g, "\\t")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r");
+  return [headers, ...rows].map((r) => r.map(field).join("\t")).join("\n") + "\n";
+}
+
+export const COPY_FORMATS = {
+  md: "Markdown",
+  csv: "CSV",
+  tsv: "TSV",
+  json: "JSON",
+  jsonl: "JSONL",
+  yaml: "YAML",
+  toon: "TOON",
+};
+const LOCAL_FORMATS = { md: toMarkdown, csv: toCSV, tsv: toTSV };
+const FORMAT_KEY = "loghorn.copyFormat";
+
+function storedFormat(formats) {
+  try {
+    const f = localStorage.getItem(FORMAT_KEY);
+    if (f && formats.includes(f)) return f;
+  } catch {
+    // no storage: use the default
+  }
+  return formats.includes("md") ? "md" : formats[0];
+}
+
+function storeFormat(f) {
+  try {
+    localStorage.setItem(FORMAT_KEY, f);
+  } catch {
+    // the choice lasts until reload
+  }
+}
+
+// copyTableBar is a split button: "Copy as <format>" copies in the remembered
+// format and a ▾ opens the list of formats; picking one copies and becomes the
+// new choice (kept per browser in localStorage). formats lists the ids shown
+// (default Markdown, CSV, TSV). With fetchText(format) → Promise<string> the
+// text comes from the server; without it source() returns {headers, rows} at
+// click time and the bar formats that table itself. The status line shows
+// "Copied N rows" (client-side) or "Copied"; a failure shows "Copy failed: …".
+export function copyTableBar(source, cls = "", { formats = ["md", "csv", "tsv"], fetchText } = {}) {
   const bar = document.createElement("span");
   bar.className = "copy-bar" + (cls ? " " + cls : "");
+  let fmt = storedFormat(formats);
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "copy-main";
+  const caret = document.createElement("button");
+  caret.type = "button";
+  caret.className = "copy-caret";
+  caret.textContent = "▾";
+  caret.title = "Choose the copy format";
+  caret.setAttribute("aria-label", "Choose the copy format");
+  caret.setAttribute("aria-haspopup", "listbox");
+  caret.setAttribute("aria-expanded", "false");
+  const group = document.createElement("span");
+  group.className = "copy-split";
+  group.append(main, caret);
+  const list = document.createElement("ul");
+  list.className = "copy-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
   const status = document.createElement("span");
   status.className = "copy-status muted";
   status.setAttribute("role", "status");
   let timer = 0;
-  for (const [label, fmt] of [["Copy as Markdown", toMarkdown], ["Copy as CSV", toCSV]]) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = label;
-    b.addEventListener("click", async () => {
-      clearTimeout(timer);
-      const t = table();
-      try {
-        await copyText(fmt(t.headers, t.rows));
-        status.textContent = "Copied " + t.rows.length.toLocaleString() + " row" + (t.rows.length === 1 ? "" : "s");
-      } catch (err) {
-        status.textContent = "Copy failed: " + (err && err.message ? err.message : err);
+
+  const label = () => {
+    main.textContent = "Copy as " + COPY_FORMATS[fmt];
+    for (const li of list.children) li.setAttribute("aria-selected", String(li.dataset.format === fmt));
+  };
+  const show = (msg) => {
+    clearTimeout(timer);
+    status.textContent = msg;
+    timer = setTimeout(() => (status.textContent = ""), 2500);
+  };
+  const close = () => {
+    list.hidden = true;
+    caret.setAttribute("aria-expanded", "false");
+  };
+  const copy = async () => {
+    const f = fmt;
+    try {
+      if (fetchText) {
+        if (typeof ClipboardItem !== "undefined" && navigator.clipboard && navigator.clipboard.write) {
+          // Hand the clipboard a promise so the click's permission outlives the fetch.
+          const blob = fetchText(f).then((t) => new Blob([t], { type: "text/plain" }));
+          blob.catch(() => {}); // reported below; no unhandled rejection
+          await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+        } else {
+          await copyText(await fetchText(f));
+        }
+        show("Copied");
+      } else {
+        const t = source();
+        await copyText(LOCAL_FORMATS[f](t.headers, t.rows));
+        show("Copied " + t.rows.length.toLocaleString() + " row" + (t.rows.length === 1 ? "" : "s"));
       }
-      timer = setTimeout(() => (status.textContent = ""), 2500);
+    } catch (err) {
+      show("Copy failed: " + (err && err.message ? err.message : err));
+    }
+  };
+  for (const id of formats) {
+    const li = document.createElement("li");
+    li.setAttribute("role", "option");
+    li.tabIndex = -1;
+    li.dataset.format = id;
+    li.textContent = COPY_FORMATS[id];
+    // A press must not blur the page's inputs: a redraw would swallow the click.
+    li.addEventListener("mousedown", (e) => e.preventDefault());
+    const pick = () => {
+      fmt = id;
+      storeFormat(id);
+      label();
+      close();
+      copy();
+    };
+    li.addEventListener("click", pick);
+    li.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        pick();
+      }
     });
-    bar.append(b);
+    list.append(li);
   }
-  bar.append(status);
+  main.addEventListener("click", () => {
+    close();
+    copy();
+  });
+  caret.addEventListener("mousedown", (e) => e.preventDefault());
+  caret.addEventListener("click", (e) => {
+    e.stopPropagation();
+    list.hidden = !list.hidden;
+    caret.setAttribute("aria-expanded", String(!list.hidden));
+  });
+  list.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", close);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+  label();
+  bar.append(group, list, status);
   return bar;
 }

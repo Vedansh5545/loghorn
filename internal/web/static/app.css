@@ -463,6 +463,14 @@ body.splitting { cursor: row-resize; user-select: none; }
 
 /* ---- copy buttons ---- */
 .copy-bar { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.copy-bar { position: relative; }
+.copy-split { display: inline-flex; }
+.copy-split .copy-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.copy-split .copy-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; padding-left: 6px; padding-right: 6px; }
+.copy-list { position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 20; margin: 0; padding: 4px; list-style: none; min-width: 120px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18); }
+.copy-list li { padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.copy-list li:hover, .copy-list li:focus-visible { background: var(--row-hover); outline: none; }
+.copy-list li[aria-selected="true"] { font-weight: 600; color: var(--accent); }
 .copy-status { font-size: 12px; }
 .copy-status:empty { display: none; }
 .copy-btn { display: inline-flex; align-items: center; padding: 2px 3px; border-color: transparent; background: transparent; color: var(--muted); line-height: 1; vertical-align: middle; }
