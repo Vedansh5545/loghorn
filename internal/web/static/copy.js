@@ -191,10 +191,18 @@ export function copyTableBar(source, cls = "", { formats = ["md", "csv", "tsv"],
     status.textContent = msg;
     timer = setTimeout(() => (status.textContent = ""), 2500);
   };
-  const close = () => {
+  // The document listeners exist only while the list is open, so a bar that
+  // is redrawn away (the trace view does) leaves nothing behind.
+  const onDocClick = () => close();
+  const onDocKey = (e) => {
+    if (e.key === "Escape") close();
+  };
+  function close() {
     list.hidden = true;
     caret.setAttribute("aria-expanded", "false");
-  };
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onDocKey);
+  }
   const copy = async () => {
     const f = fmt;
     try {
@@ -248,14 +256,13 @@ export function copyTableBar(source, cls = "", { formats = ["md", "csv", "tsv"],
   caret.addEventListener("mousedown", (e) => e.preventDefault());
   caret.addEventListener("click", (e) => {
     e.stopPropagation();
-    list.hidden = !list.hidden;
-    caret.setAttribute("aria-expanded", String(!list.hidden));
+    if (!list.hidden) return close();
+    list.hidden = false;
+    caret.setAttribute("aria-expanded", "true");
+    document.addEventListener("click", onDocClick);
+    document.addEventListener("keydown", onDocKey);
   });
   list.addEventListener("click", (e) => e.stopPropagation());
-  document.addEventListener("click", close);
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") close();
-  });
   label();
   bar.append(group, list, status);
   return bar;

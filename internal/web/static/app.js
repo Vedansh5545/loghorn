@@ -1422,13 +1422,20 @@ function cellCopyText(td) {
 }
 
 // fetchExport asks the server for the shown query in an export format and
-// returns the text. It sends what runQuery sends (offset and limit included),
-// so the copy is the table on screen, not a fresh page of it.
+// returns the text. It sends what runQuery sends (limit included) and, for a
+// Samples batch past the first, that batch's offset and columns as loadBatch
+// does, so the copy is the table on screen, not the first page of it.
+function batchPart() {
+  const base = lastResult;
+  if (!base || (base.view && base.view !== "samples") || groupedList() || !base.offset) return {};
+  return { columns: base.columns.map((c) => c.path), offset: base.offset };
+}
+
 async function fetchExport(format) {
   const resp = await fetch("/api/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(Object.assign({}, listQuery(), { format })),
+    body: JSON.stringify(Object.assign({}, listQuery(), { format }, batchPart())),
   });
   if (!resp.ok) {
     let msg = resp.status + " " + resp.statusText;
