@@ -224,15 +224,3 @@ func usageError(env cliEnv, format string, a ...any) int {
 	fmt.Fprintf(env.stderr, "loghorn: "+format+"\n", a...)
 	return 2
 }
-
-func notBuilt(name string) func([]string, cliEnv) int {
-	return func(_ []string, env cliEnv) int {
-		fmt.Fprintf(env.stderr, "loghorn: %s is not built yet\n", name)
-		return 2
-	}
-}
-
-var (
-	cmdStatus = notBuilt("status")
-	cmdUI     = notBuilt("ui")
-)

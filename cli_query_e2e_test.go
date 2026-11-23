@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,5 +143,34 @@ func TestCLIQueryE2E(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("server did not exit on SIGINT")
+	}
+}
+
+// A host-less URL goes to serve through its socket: records a run sent to
+// serve come back as the query's rows.
+func TestQueryHostlessThroughServe(t *testing.T) {
+	e := newServeEnv(t)
+	e.startServe(t)
+	f, err := os.Open("testdata/web/app.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if r := e.run(t, f, nil, "run"); r.code != 0 {
+		t.Fatalf("run: exit %d %s", r.code, r.stderr)
+	}
+	// Records a run sends carry its service; "*" asks for every service, as
+	// the page's All does.
+	q := "/?q=" + url.QueryEscape(`{"stream":"app","service":"*","range":{"from":"all"}}`)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r := e.run(t, nil, nil, "query", q)
+		if r.code == 0 && len(strings.Split(strings.TrimRight(r.stdout, "\n"), "\n")) == 4 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("query: exit %d stdout %q stderr %q; want a header and 3 rows", r.code, r.stdout, r.stderr)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
