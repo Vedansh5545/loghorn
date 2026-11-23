@@ -146,6 +146,19 @@ choice, set in `[run] serve-down` (below) or per run with `-serve-down`:
 `run` says so on stderr every time, and `loghorn status` reports the runs waiting in
 `incoming/`.
 
+**One shot, without a standing serve** — `run -serve` starts a `serve` inside `run`
+for that run when none is running (same data folder, socket and ports), records into
+it directly, and keeps the web view up after the command exits until `Ctrl-C`:
+
+```sh
+loghorn run -serve -- npm test
+```
+
+While it runs, apps sending OTLP to it are recorded too. The exit status is still the
+command's. With a `serve` already running, `-serve` does nothing extra; if one can't
+start (a port in use, say), `run` says why and follows `serve-down`. While the one-shot
+`serve` holds the data folder, a `serve` started by a login service waits its turn.
+
 **Open a finished log** — `open` shows a file, stdin or a GitHub Actions job in a
 temporary web view of its own (its URL goes to stderr; `Ctrl-C` ends it), or with
 `-filter` prints its failures. It records nothing:
@@ -395,7 +408,7 @@ loghorn query '/?q=…'                            # no host: the running serve,
 | Command | Flags |
 |---|---|
 | `serve` | `-data`, `-socket`, `-web-port`, `-otlp-http-port`, `-log FILE` |
-| `run` | `-filter`, `-service`, `-serve-down`, `-notify`, `-notify-max-age`, `-notify-reset`, `-notify-sound`, `-shutdown-grace` |
+| `run` | `-filter`, `-serve`, `-service`, `-serve-down`, `-notify`, `-notify-max-age`, `-notify-reset`, `-notify-sound`, `-shutdown-grace` |
 | `open` | `-filter`, `-view`, `-web-port`, `-gh-job`, `-gh-run` |
 | `query` | `-o`, `-format`, `-limit`, `-to-sql` |
 | `ui` | `-print` |

@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -22,8 +25,10 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/otlp"
 	"github.com/jimbeveridge/loghorn/internal/recorder"
 	"github.com/jimbeveridge/loghorn/internal/runner"
+	"github.com/jimbeveridge/loghorn/internal/serve"
 	"github.com/jimbeveridge/loghorn/internal/shipper"
 	"github.com/jimbeveridge/loghorn/internal/sock"
+	"github.com/jimbeveridge/loghorn/internal/svcconf"
 	"github.com/jimbeveridge/loghorn/internal/wrap"
 )
 
@@ -35,6 +40,11 @@ with its status, and record its output with loghorn serve; or record piped
 input, copying it to stdout. The command's OpenTelemetry SDK is pointed at
 serve too. Flags go before the command: everything from the command on is the
 command's.
+
+With -serve and no serve running, run starts one inside itself for this run,
+on the usual data folder, socket and ports, and keeps serving the web view
+after the command exits, until Ctrl-C or SIGTERM. Its exit status is still
+the command's.
 `
 
 // runFlags registers run's local flags on fs into o.
@@ -65,6 +75,7 @@ func cmdRun(args []string, env cliEnv) int {
 	var o opts
 	runFlags(fs, &o)
 	service := fs.String("service", "", "service name for the recorded output (default the command's OTEL_SERVICE_NAME, else <repo>-<command>)")
+	oneShot := fs.Bool("serve", false, "with no serve running, start one inside run for this run and keep serving the web view until Ctrl-C")
 	serveDownFlag := fs.String("serve-down", "", "when serve isn't running: record (to the data folder, for serve to adopt), skip (record nothing) or fail (don't run the command); default [run] serve-down, else record")
 	pos, code, ok := parseCmd(fs, args, false)
 	if !ok {
@@ -88,7 +99,17 @@ func cmdRun(args []string, env cliEnv) int {
 	// Decide where records go before anything starts.
 	path := sock.DefaultPath()
 	var target runTarget
-	if sess, err := sock.Probe(path); err == nil {
+	var srv *serve.Server
+	sess, err := sock.Probe(path)
+	if err != nil && *oneShot && errors.Is(err, sock.ErrNotRunning) {
+		var serr error
+		if srv, serr = startOneShot(env.stderr); serr == nil {
+			sess, err = srv.Session(), nil
+		} else {
+			fmt.Fprintln(env.stderr, "loghorn: can't start serve: "+serr.Error())
+		}
+	}
+	if err == nil {
 		target = connectServe(sess, svc, runID, cfg.Input, env.stderr)
 	} else {
 		var code int
@@ -106,23 +127,67 @@ func cmdRun(args []string, env cliEnv) int {
 	if target.attach != nil {
 		target.attach(rec)
 	}
+	var status int
 	if len(pos) > 0 {
-		return runChild(o, cfg, rec, target, env)
+		status = runChild(o, cfg, rec, target, env)
+	} else {
+		err := wrap.Pipe(env.stdin, wrap.Options{
+			Recorder:  rec,
+			Frame:     configuredFrame(cfg),
+			StripANSI: true,
+			Filter:    o.filter,
+			Stdout:    env.stdout,
+			Stderr:    env.stderr,
+		})
+		target.finish()
+		if err != nil {
+			fmt.Fprintln(env.stderr, "loghorn: input error:", err)
+			status = 1
+		}
 	}
-	err := wrap.Pipe(env.stdin, wrap.Options{
-		Recorder:  rec,
-		Frame:     configuredFrame(cfg),
-		StripANSI: true,
-		Filter:    o.filter,
-		Stdout:    env.stdout,
-		Stderr:    env.stderr,
-	})
-	target.finish()
+	if srv != nil {
+		serveUntilStopped(srv, env.stderr)
+	}
+	return status
+}
+
+// startOneShot starts serve inside run, as 'loghorn serve' would with no
+// flags: the user-level config's ports, the default data folder and socket.
+// Its error is worded for the person (see startError).
+func startOneShot(log io.Writer) (*serve.Server, error) {
+	cfg, cfgPath, err := config.LoadUser()
 	if err != nil {
-		fmt.Fprintln(env.stderr, "loghorn: input error:", err)
-		return 1
+		return nil, err
 	}
-	return 0
+	dataDir, err := datadir.Dir()
+	if err != nil {
+		return nil, err
+	}
+	base, err := svcconf.BaseFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	web, otlpPort := cfg.Serve.Resolved()
+	srv, err := serve.Start(serve.Options{
+		DataDir: dataDir, Socket: sock.DefaultPath(), WebPort: web, OTLPPort: otlpPort,
+		Config: cfg, ConfigBase: base, Version: version(), Log: log,
+	})
+	if err != nil {
+		return nil, errors.New(startError(err, cfgPath))
+	}
+	return srv, nil
+}
+
+// serveUntilStopped keeps a one-shot serve up after its run, so the run can
+// be browsed, until SIGINT or SIGTERM, then closes it.
+func serveUntilStopped(srv *serve.Server, stderr io.Writer) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(stderr, "loghorn: the run is done; serving %s until Ctrl-C\n", srv.Session().WebURL())
+	<-ctx.Done()
+	if err := srv.Close(); err != nil {
+		fmt.Fprintln(stderr, "loghorn: closing serve:", err)
+	}
 }
 
 // runChild runs the command with the target's environment and records its

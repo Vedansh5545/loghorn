@@ -391,6 +391,18 @@ files, then deletes the folder. A folder still locked belongs to a running
 `run` and is left for later. If the data folder can't be found or created,
 `record` degrades to `skip` with a warning.
 
+## One-shot `run -serve`
+
+**[user]** `run -serve` starts `serve` inside `run` when no serve answers on the
+socket: the same data folder, socket and user-level ports as `loghorn serve`, so
+it records straight into the store, receives OTLP from any app on 4318 while it
+runs, and keeps the web view up after the command exits until SIGINT or SIGTERM.
+The exit status stays the command's. With a serve already running, `-serve`
+adds nothing. If the in-process serve can't start, `run` prints why ("can't
+start serve: …") and follows `serve-down`. This is not auto-start: it happens
+only when asked for, on that run. While it holds the data folder's lock, a
+supervised serve fails its start and is retried until the one-shot run ends.
+
 ## `loghorn ui`
 
 Asks the socket for `serve`'s web URL (`/api/session`) and opens it in the

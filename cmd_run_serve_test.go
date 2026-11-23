@@ -1,0 +1,102 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/jimbeveridge/loghorn/internal/sock"
+)
+
+// freePort returns a loopback port that was free a moment ago.
+func freePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// userPorts writes this environment's user config with the given [serve]
+// ports, so a serve started by run -serve stays off 4380 and 4318.
+func (e serveEnv) userPorts(t *testing.T, web, otlp int) {
+	t.Helper()
+	p := filepath.Join(e.home, ".config", "loghorn", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[serve]\nweb-port = " + strconv.Itoa(web) + "\notlp-http-port = " + strconv.Itoa(otlp) + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunServeOneShot(t *testing.T) {
+	e := newServeEnv(t)
+	e.userPorts(t, freePort(t), freePort(t))
+	cmd := e.cmd(t, context.Background(), "run", "-serve", "--", "sh", "-c",
+		`echo '{"labels":{"schema":"app"},"message":"one-shot"}'; exit 3`)
+	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
+	out := newWatchWriter("until Ctrl-C")
+	cmd.Stderr = out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	select {
+	case <-out.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no serving line; stderr %q", out.String())
+	}
+	if _, err := sock.Probe(e.socket); err != nil {
+		t.Fatalf("the one-shot serve doesn't answer: %v", err)
+	}
+	e.waitLog(t, `"message":"one-shot"`)
+
+	cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run -serve did not stop on SIGTERM")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 3 {
+		t.Fatalf("exit %d; want the command's 3; stderr %q", code, out.String())
+	}
+	if _, err := os.Lstat(e.socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket left behind: %v", err)
+	}
+}
+
+func TestRunServeUsesRunningServe(t *testing.T) {
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, nil, nil, "run", "-serve", "--", "echo", "hi")
+	if r.code != 0 || !strings.Contains(r.stderr, "recording to serve as") || strings.Contains(r.stderr, "until Ctrl-C") {
+		t.Fatalf("code %d stderr %q", r.code, r.stderr)
+	}
+}
+
+func TestRunServeStartFailureFallsBack(t *testing.T) {
+	e := newServeEnv(t)
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	e.userPorts(t, freePort(t), busy.Addr().(*net.TCPAddr).Port)
+	r := e.run(t, nil, []string{"XDG_CONFIG_HOME="}, "run", "-serve", "-serve-down", "skip", "--", "echo", "hi")
+	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "can't start serve") || !strings.Contains(r.stderr, "is in use") {
+		t.Fatalf("code %d stdout %q stderr %q", r.code, r.stdout, r.stderr)
+	}
+}
