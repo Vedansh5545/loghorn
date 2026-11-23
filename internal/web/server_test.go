@@ -1127,8 +1127,11 @@ func TestQueryFormatSQL(t *testing.T) {
 		}
 	}
 	resp, body = post(`{"stream":"app","range":{"from":"all"},"view":"graph","format":"sql"}`)
-	wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
-	if !strings.Contains(body, "samples") {
-		t.Errorf("graph sql body = %s", body)
+	if resp.StatusCode != 200 || !strings.Contains(body, "time_bucket(") && !strings.Contains(body, "date_trunc('day'") {
+		t.Errorf("graph sql = %d %s", resp.StatusCode, body)
+	}
+	resp, body = post(`{"stream":"app","range":{"from":"all"},"view":"table","groupBy":["method"],"format":"sql"}`)
+	if resp.StatusCode != 200 || !strings.Contains(body, `GROUP BY "method"`) {
+		t.Errorf("table sql = %d %s", resp.StatusCode, body)
 	}
 }

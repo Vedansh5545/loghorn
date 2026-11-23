@@ -3,6 +3,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -40,23 +41,38 @@ const thisRunNote = `-- this-run: a wrapped command's own output lines carry no 
 -- later runs are stored this also matches their untagged lines.
 `
 
-// ErrSQLView is returned by ToSQL for a view it cannot translate yet.
-var ErrSQLView = errors.New("format sql supports only the samples view")
+// percentileNote explains the pNN expression.
+const percentileNote = `-- pNN is loghorn's nearest-rank percentile: the value at rank ceil(p * n)
+-- of the sorted non-NULL values. quantile_cont would interpolate between
+-- values, and quantile_disc ranks differently, so neither matches.
+`
+
+// errorRateNote spells out the severity set of error_rate.
+const errorRateNote = `-- error_rate is the fraction of rows whose severity, trimmed of white space
+-- and upper-cased, is ERROR, CRITICAL, ALERT, EMERGENCY or FATAL.
+`
+
+// errorSeverityRE matches what isErrorSeverity accepts once upper-cased:
+// the set, trimmed of Unicode white space (\t-\r, U+0085 and \p{Z} are
+// exactly unicode.IsSpace).
+const errorSeverityRE = `'[\t-\r\x{85}\p{Z}]*(ERROR|CRITICAL|ALERT|EMERGENCY|FATAL)[\t-\r\x{85}\p{Z}]*'`
 
 // modelColumns are the table model's own columns; a field path equal to one
 // of them (DuckDB identifiers are case-insensitive) has no column.
 var modelColumns = []string{"seq", "time", "service", "raw"}
 
+// sqlZone names the time zone Run counts 6h and 1d buckets in (time.Local)
+// as an IANA name DuckDB knows. Tests replace it.
+var sqlZone = localZoneName
+
 // ToSQL translates q into a DuckDB statement over the table model in
 // SQLHeader that selects the same rows Run does. r is the result of running
 // q; it supplies what exists only after a run (the samples column list when
-// q names none). Anything that cannot be expressed exactly is an error.
+// q names none, the graph and heatmap bucket, the heatmap bands). Anything
+// that cannot be expressed exactly is an error.
 func ToSQL(q Query, s schema.Schema, r *Result) (string, error) {
 	if err := q.Validate(s); err != nil {
 		return "", err
-	}
-	if q.view() != "samples" {
-		return "", fmt.Errorf("view %s: %w", q.view(), ErrSQLView)
 	}
 	var b sqlBuilder
 	from, err := b.source(q, s)
@@ -67,7 +83,32 @@ func ToSQL(q Query, s schema.Schema, r *Result) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var body string
+	switch q.view() {
+	case "table":
+		body, err = b.tableSQL(q, s, from, where)
+	case "graph":
+		body, err = b.graphSQL(q, s, r, from, where)
+	case "heatmap":
+		body, err = b.heatmapSQL(q, s, r, from, where)
+	default:
+		body, err = samplesSQL(q, s, r, from, where)
+	}
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	out.WriteString(SQLHeader)
+	for _, n := range b.notes {
+		out.WriteString(n)
+	}
+	out.WriteString(body)
+	return out.String(), nil
+}
 
+// samplesSQL selects the sorted, limited rows of the samples view.
+func samplesSQL(q Query, s schema.Schema, r *Result, from string, where []string) (string, error) {
+	var err error
 	paths := q.Columns
 	if r != nil {
 		paths = make([]string, len(r.Columns))
@@ -97,10 +138,6 @@ func ToSQL(q Query, s schema.Schema, r *Result) (string, error) {
 	}
 
 	var out strings.Builder
-	out.WriteString(SQLHeader)
-	for _, n := range b.notes {
-		out.WriteString(n)
-	}
 	out.WriteString(selectList(cols))
 	out.WriteString("FROM " + from + "\n")
 	out.WriteString(whereClause(where))
@@ -116,6 +153,424 @@ func ToSQL(q Query, s schema.Schema, r *Result) (string, error) {
 // sqlBuilder collects the comment lines a translation adds.
 type sqlBuilder struct {
 	notes []string
+}
+
+// note adds comment lines once.
+func (b *sqlBuilder) note(n string) {
+	for _, x := range b.notes {
+		if x == n {
+			return
+		}
+	}
+	b.notes = append(b.notes, n)
+}
+
+// sqlGroup is one group-by column: its identifier, and the text Go ranks
+// ties on and names series by (groupKey's label).
+type sqlGroup struct {
+	id, text string
+}
+
+// groupCols translates the group-by paths. groupKey labels a value with its
+// Go text, which DuckDB writes the same way only for strings, ints and
+// bools; other types are an error, since the tie order and series names
+// would differ.
+func groupCols(paths []string, s schema.Schema) ([]sqlGroup, error) {
+	out := make([]sqlGroup, len(paths))
+	for i, p := range paths {
+		id, err := fieldIdent(p)
+		if err != nil {
+			return nil, err
+		}
+		switch t := fieldType(s, p); t {
+		case schema.TString:
+			out[i] = sqlGroup{id: id, text: id}
+		case schema.TInt, schema.TBool:
+			out[i] = sqlGroup{id: id, text: "CAST(" + id + " AS VARCHAR)"}
+		default:
+			return nil, fmt.Errorf("sql: group-by field %q is %s: loghorn ranks ties and names series by the value's text, which DuckDB writes differently for that type", p, t)
+		}
+	}
+	return out, nil
+}
+
+// aggInput is the column aggregate a reads and its type: none for count;
+// for error_rate the severity column, or "" when the schema has no string
+// severity (isErrorSeverity then never matches).
+func aggInput(a Aggregate, s schema.Schema) (string, schema.Type, error) {
+	switch a.Op {
+	case "count":
+		return "", "", nil
+	case "error_rate":
+		if f, ok := s.Field("severity"); !ok || (f.Type != "" && f.Type != schema.TString) {
+			return "", schema.TString, nil
+		}
+		id, err := fieldIdent("severity")
+		return id, schema.TString, err
+	}
+	id, err := fieldIdent(a.Field)
+	return id, fieldType(s, a.Field), err
+}
+
+// aggSQL is aggregate a over column id of type t, as metricValue computes
+// it: avg, a float or duration sum and error_rate rounded to 15 significant
+// digits (round15SQL), pNN by nearest rank.
+func (b *sqlBuilder) aggSQL(a Aggregate, id string, t schema.Type) string {
+	switch a.Op {
+	case "count":
+		return "count(*)"
+	case "error_rate":
+		b.note(errorRateNote)
+		match := "false"
+		if id != "" {
+			match = "regexp_full_match(upper(" + id + "), " + errorSeverityRE + ")"
+		}
+		return round15SQL("CAST(count(*) FILTER (WHERE " + match + ") AS DOUBLE) / nullif(count(*), 0)")
+	case "sum":
+		if t == schema.TInt {
+			return "CAST(sum(" + id + ") AS BIGINT)"
+		}
+		return round15SQL("sum(" + id + ")")
+	case "avg":
+		return round15SQL("avg(" + id + ")")
+	case "min", "max":
+		return a.Op + "(" + id + ")"
+	}
+	// p50, p90, p95, p99 (Validate checked the operator).
+	b.note(percentileNote)
+	p, _ := strconv.ParseFloat(a.Op[1:], 64)
+	frac := strconv.FormatFloat(p/100, 'g', -1, 64)
+	return "list_sort(list(" + id + ") FILTER (WHERE " + id + " IS NOT NULL))" +
+		"[CAST(ceil(CAST(" + frac + " AS DOUBLE) * count(" + id + ")) AS BIGINT)]"
+}
+
+// round15SQL rounds x to 15 significant digits as Round15 does: printf
+// rounds the decimal digits exactly, as strconv does.
+func round15SQL(x string) string {
+	return "CAST(printf('%.14e', " + x + ") AS DOUBLE)"
+}
+
+// rankOrder is the ORDER BY list of rankGroups: the order metric (count
+// descending by default) with no value last, then count descending, then
+// the group text ascending (an empty value first, as its \x01 key sorts).
+func (b *sqlBuilder) rankOrder(o *Order, s schema.Schema, keys []sqlGroup) (string, error) {
+	by := Order{Op: "count"}
+	if o != nil {
+		by = *o
+	}
+	a := Aggregate{Op: by.Op, Field: by.Field}
+	id, t, err := aggInput(a, s)
+	if err != nil {
+		return "", err
+	}
+	dir := " DESC"
+	if by.Asc {
+		dir = " ASC"
+	}
+	parts := []string{b.aggSQL(a, id, t) + dir + " NULLS LAST"}
+	if by.Op != "count" {
+		parts = append(parts, "count(*) DESC")
+	}
+	for _, k := range keys {
+		parts = append(parts, k.text+" NULLS FIRST")
+	}
+	return strings.Join(parts, ", "), nil
+}
+
+// tableSQL groups and ranks as runTable does.
+func (b *sqlBuilder) tableSQL(q Query, s schema.Schema, from string, where []string) (string, error) {
+	keys, err := groupCols(q.GroupBy, s)
+	if err != nil {
+		return "", err
+	}
+	var cols, ids []string
+	for _, k := range keys {
+		cols = append(cols, k.id)
+		ids = append(ids, k.id)
+	}
+	cols = append(cols, `count(*) AS "count"`)
+	for _, a := range q.Aggregates {
+		id, t, err := aggInput(a, s)
+		if err != nil {
+			return "", err
+		}
+		name, err := quoteIdent(metricColumn(a, s).Path)
+		if err != nil {
+			return "", err
+		}
+		cols = append(cols, b.aggSQL(a, id, t)+" AS "+name)
+	}
+	var out strings.Builder
+	out.WriteString(selectList(cols))
+	out.WriteString("FROM " + from + "\n")
+	out.WriteString(whereClause(where))
+	if len(keys) == 0 {
+		// One row over every match, as runTable's single group.
+		return strings.TrimSuffix(out.String(), "\n") + ";\n", nil
+	}
+	order, err := b.rankOrder(q.Order, s, keys)
+	if err != nil {
+		return "", err
+	}
+	limit := q.Top
+	if limit <= 0 {
+		limit = q.Limit
+	}
+	if limit <= 0 {
+		limit = DefaultTop
+	}
+	limit = min(limit, MaxLimit)
+	out.WriteString("GROUP BY " + strings.Join(ids, ", ") + "\n")
+	out.WriteString("ORDER BY " + order + "\n")
+	out.WriteString("LIMIT " + strconv.Itoa(limit) + ";\n")
+	return out.String(), nil
+}
+
+// graphNote explains the graph's long output.
+const graphNote = `-- Graph, long form: one row per bucket and series that has rows (bucket,
+-- series, value). The CLI's wide form pivots it, one column per series; a
+-- bucket a series has no row in counts 0. Series are ranked over the whole
+-- range; those past the top fold into other.
+`
+
+// graphSQL buckets and ranks as runGraph does, with the bucket r resolved.
+func (b *sqlBuilder) graphSQL(q Query, s schema.Schema, r *Result, from string, where []string) (string, error) {
+	if r == nil || r.Graph == nil {
+		return "", errors.New("sql: a graph needs its run result")
+	}
+	bucket, err := b.bucketExpr(r.Graph.Bucket, r.Graph.Starts, `m."time"`)
+	if err != nil {
+		return "", err
+	}
+	keys, err := groupCols(q.GroupBy, s)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range q.GroupBy {
+		if strings.EqualFold(p, "series") || strings.EqualFold(p, "series_rank") {
+			return "", fmt.Errorf("sql: group-by field %q takes the name of the graph's own column", p)
+		}
+	}
+	plot := Aggregate{Op: "count"}
+	if q.Plot != nil {
+		plot = *q.Plot
+	}
+	pid, pt, err := aggInput(plot, s)
+	if err != nil {
+		return "", err
+	}
+	b.note(graphNote)
+
+	var out strings.Builder
+	out.WriteString("WITH matched AS (\n")
+	out.WriteString(indent("SELECT *\nFROM " + from + "\n" + whereClause(append(where, `"time" IS NOT NULL`))))
+	out.WriteString("),\n")
+	tagged := []string{bucket + " AS bucket"}
+	join := ""
+	if len(keys) == 0 {
+		tagged = append(tagged, "0 AS series_no", "'all' AS series")
+	} else {
+		top := q.Top
+		if top <= 0 {
+			top = DefaultTop
+		}
+		top = min(top, MaxGraphTop)
+		order, err := b.rankOrder(q.Order, s, keys)
+		if err != nil {
+			return "", err
+		}
+		var ids, labels, on []string
+		for _, k := range keys {
+			ids = append(ids, k.id)
+			labels = append(labels, "coalesce("+k.text+", '"+emptyLabel+"')")
+			on = append(on, "m."+k.id+" IS NOT DISTINCT FROM r."+k.id)
+		}
+		label := labels[0]
+		if len(labels) > 1 {
+			label = "concat_ws(' · ', " + strings.Join(labels, ", ") + ")"
+		}
+		rcols := append(append([]string{}, ids...),
+			"row_number() OVER (ORDER BY "+order+") AS series_rank",
+			label+" AS series")
+		out.WriteString("ranked AS (\n")
+		out.WriteString(indent(selectList(rcols) + "FROM matched\nGROUP BY " + strings.Join(ids, ", ") + "\n"))
+		out.WriteString("),\n")
+		n := strconv.Itoa(top)
+		tagged = append(tagged,
+			"least(r.series_rank, "+strconv.Itoa(top+1)+") AS series_no",
+			"CASE WHEN r.series_rank <= "+n+" THEN r.series ELSE 'other' END AS series")
+		join = "JOIN ranked r ON " + strings.Join(on, " AND ") + "\n"
+	}
+	vid := ""
+	if pid != "" {
+		tagged = append(tagged, "m."+pid+" AS v")
+		vid = "v"
+	}
+	out.WriteString("tagged AS (\n")
+	out.WriteString(indent(selectList(tagged) + "FROM matched m\n" + join))
+	out.WriteString(")\n")
+	out.WriteString("SELECT bucket, series, " + b.aggSQL(plot, vid, pt) + " AS value\n")
+	out.WriteString("FROM tagged\n")
+	out.WriteString("GROUP BY bucket, series_no, series\n")
+	out.WriteString("ORDER BY bucket, series_no;\n")
+	return out.String(), nil
+}
+
+// heatmapSQL counts spans by bucket and band as runHeatmap does, with the
+// bucket and band edges r resolved.
+func (b *sqlBuilder) heatmapSQL(q Query, s schema.Schema, r *Result, from string, where []string) (string, error) {
+	if r == nil || r.Heatmap == nil || len(r.Heatmap.Bands) == 0 {
+		return "", errors.New("sql: a heatmap needs its run result")
+	}
+	switch fieldType(s, durationField.Path) {
+	case schema.TInt, schema.TFloat:
+	default:
+		return "", fmt.Errorf("sql: a heatmap needs %s typed int or float", durationField.Path)
+	}
+	bucket, err := b.bucketExpr(r.Heatmap.Bucket, r.Heatmap.Starts, `"time"`)
+	if err != nil {
+		return "", err
+	}
+	d, _ := fieldIdent(durationField.Path)
+	hs := r.Heatmap.Bands
+	rows := make([]string, len(hs))
+	whens := make([]string, len(hs))
+	for i, band := range hs {
+		lo := "CAST(NULL AS DOUBLE)"
+		if i > 0 {
+			if lo, err = doubleLit(band.Lo); err != nil {
+				return "", err
+			}
+		}
+		hi, err := doubleLit(band.Hi)
+		if err != nil {
+			return "", err
+		}
+		rows[i] = "(" + strconv.Itoa(i) + ", " + lo + ", " + hi + ")"
+		whens[i] = "WHEN " + d + " < " + hi + " THEN " + strconv.Itoa(i)
+	}
+	b.note(`-- Heatmap: span count per bucket and duration band (ms, lo inclusive, hi
+-- exclusive). The lowest band has no lower bound; a duration at or past the
+-- top edge is skipped, as are spans with no time or duration.
+`)
+	conds := append(where, `"time" IS NOT NULL`, d+" IS NOT NULL")
+	var out strings.Builder
+	out.WriteString("WITH bands(band, lo, hi) AS (\n  VALUES\n    ")
+	out.WriteString(strings.Join(rows, ",\n    "))
+	out.WriteString("\n),\ncells AS (\n")
+	out.WriteString(indent("SELECT\n  " + bucket + " AS bucket,\n  CASE\n    " +
+		strings.Join(whens, "\n    ") + "\n  END AS band\nFROM " + from + "\n" + whereClause(conds)))
+	out.WriteString(")\n")
+	out.WriteString(`SELECT bucket, band, lo, hi, count(*) AS "count"` + "\n")
+	out.WriteString("FROM cells\nJOIN bands USING (band)\n")
+	out.WriteString("GROUP BY bucket, band, lo, hi\n")
+	out.WriteString("ORDER BY bucket, band;\n")
+	return out.String(), nil
+}
+
+// bucketExpr is the start of the bucket holding time column t, as xAxis
+// and bucketIndex place it. Sizes up to 1h truncate the absolute time, as
+// time_bucket does (both align to UTC midnight). 6h and 1d count from local
+// midnight in time.Local, the last bucket of a day running to the next
+// midnight. starts are the run's bucket starts.
+func (b *sqlBuilder) bucketExpr(name string, starts []time.Time, t string) (string, error) {
+	size, ok := bucketSizes[name]
+	if !ok {
+		return "", fmt.Errorf("sql: bucket %q is not resolved", name)
+	}
+	if size <= time.Hour {
+		iv, err := sqlInterval(size)
+		if err != nil {
+			return "", err
+		}
+		return "time_bucket(" + iv + ", " + t + ")", nil
+	}
+	// The run's first bucket starts where the data does: data that starts in
+	// the last hour of a 25-hour day (a daylight-saving change) gets a first
+	// bucket 24h after midnight, and the buckets after it are shifted.
+	for _, st := range starts {
+		lt := st.In(time.Local)
+		mid := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, time.Local)
+		if st.Sub(mid) >= 24*time.Hour {
+			return "", fmt.Errorf("sql: the %s bucket starting %s is in the last hour of a 25-hour day, which SQL cannot place; pick another bucket or range", name, st.Format(time.RFC3339))
+		}
+	}
+	zone, err := sqlZone()
+	if err != nil {
+		return "", fmt.Errorf("sql: %s buckets count from local midnight: %w", name, err)
+	}
+	z, err := quoteString(zone)
+	if err != nil {
+		return "", err
+	}
+	b.note("-- " + name + " buckets start at local midnight in " + zone + " (the server's time zone),\n" +
+		"-- then every " + name + "; the last bucket of a day runs to the next midnight.\n")
+	mid := "timezone(" + z + ", date_trunc('day', timezone(" + z + ", " + t + ")))"
+	if size == 24*time.Hour {
+		return mid, nil
+	}
+	us := strconv.FormatInt(size.Microseconds(), 10)
+	last := strconv.FormatInt(int64(24*time.Hour/size)-1, 10)
+	return mid + " + to_microseconds(least((epoch_us(" + t + ") - epoch_us(" + mid + ")) // " + us + ", " + last + ") * " + us + ")", nil
+}
+
+// localZoneName is the IANA name of time.Local, found the way Go loads it:
+// from TZ, else the /etc/localtime link.
+func localZoneName() (string, error) {
+	if tz, ok := os.LookupEnv("TZ"); ok {
+		tz = strings.TrimPrefix(tz, ":")
+		switch {
+		case tz == "":
+			return "UTC", nil
+		case strings.HasPrefix(tz, "/"):
+			return zoneFromPath(tz)
+		}
+		if _, err := time.LoadLocation(tz); err == nil {
+			return tz, nil
+		}
+		return "UTC", nil // Go falls back to UTC for an unknown TZ
+	}
+	p, err := os.Readlink("/etc/localtime")
+	if err != nil {
+		return "", fmt.Errorf("cannot name the local time zone: %w", err)
+	}
+	return zoneFromPath(p)
+}
+
+// zoneFromPath is the zone name in a zoneinfo file path.
+func zoneFromPath(p string) (string, error) {
+	i := strings.LastIndex(p, "zoneinfo/")
+	if i < 0 {
+		return "", fmt.Errorf("cannot name the local time zone from %s", p)
+	}
+	name := p[i+len("zoneinfo/"):]
+	if _, err := time.LoadLocation(name); err != nil {
+		return "", fmt.Errorf("cannot name the local time zone: %w", err)
+	}
+	return name, nil
+}
+
+// doubleLit is a DOUBLE literal that DuckDB parses to f exactly (a plain
+// decimal literal would be a DECIMAL, converted with rounding).
+func doubleLit(f float64) (string, error) {
+	s, err := floatLit(f)
+	if err != nil {
+		return "", err
+	}
+	return "DOUBLE '" + s + "'", nil
+}
+
+// indent indents every line of s by two spaces.
+func indent(s string) string {
+	lines := strings.SplitAfter(s, "\n")
+	var out strings.Builder
+	for _, l := range lines {
+		if l != "" && l != "\n" {
+			out.WriteString("  ")
+		}
+		out.WriteString(l)
+	}
+	return out.String()
 }
 
 // source is the table of q's stream: schema logs or spans, table the stream.

@@ -1,7 +1,6 @@
 package query
 
 import (
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -370,10 +369,5 @@ func TestToSQLErrors(t *testing.T) {
 				t.Errorf("want error, got\n%s", got)
 			}
 		})
-	}
-	for _, v := range []string{"table", "graph"} {
-		if _, err := ToSQL(Query{Stream: "app", View: v}, sqlSchema, &Result{View: v}); !errors.Is(err, ErrSQLView) {
-			t.Errorf("view %s: err = %v, want ErrSQLView", v, err)
-		}
 	}
 }
