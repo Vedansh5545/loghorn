@@ -52,6 +52,13 @@ type Options struct {
 	Cwd     string
 	Port    int
 	Started time.Time
+
+	// loghorn serve's identity, also reported by /api/session: its data
+	// folder, socket, version and OTLP/HTTP port (0 for a view without one).
+	DataDir  string
+	Socket   string
+	Version  string
+	OTLPPort int
 }
 
 // schemaKey identifies a cached inferred schema.
@@ -247,6 +254,10 @@ type sessionJSON struct {
 	Cwd        string     `json:"cwd"`
 	Port       int        `json:"port"`
 	Started    time.Time  `json:"started"`
+	Version    string     `json:"version"`
+	DataDir    string     `json:"dataDir"`
+	Socket     string     `json:"socket"`
+	OTLPPort   int        `json:"otlpPort"`
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
@@ -255,6 +266,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 		Mode: in.Mode, RunStart: timePtr(in.RunStart), Earliest: timePtr(in.Earliest),
 		Latest: timePtr(in.Latest), Count: in.Count, ConfigBase: s.o.ConfigBase,
 		PID: s.o.PID, Cwd: s.o.Cwd, Port: s.o.Port, Started: s.o.Started,
+		Version: s.o.Version, DataDir: s.o.DataDir, Socket: s.o.Socket, OTLPPort: s.o.OTLPPort,
 	})
 }
 

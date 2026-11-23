@@ -235,6 +235,7 @@ func TestSessionInstanceFields(t *testing.T) {
 	srv := httptest.NewServer(New(Options{
 		Store: st, ConfigBase: t.TempDir(),
 		PID: 4321, Cwd: "/work/proj", Port: 5555, Started: started,
+		DataDir: "/data", Socket: "/tmp/x.sock", Version: "v9", OTLPPort: 4318,
 	}))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/api/session")
@@ -243,13 +244,20 @@ func TestSessionInstanceFields(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var got struct {
-		PID     int       `json:"pid"`
-		Cwd     string    `json:"cwd"`
-		Port    int       `json:"port"`
-		Started time.Time `json:"started"`
+		PID      int       `json:"pid"`
+		Cwd      string    `json:"cwd"`
+		Port     int       `json:"port"`
+		Started  time.Time `json:"started"`
+		DataDir  string    `json:"dataDir"`
+		Socket   string    `json:"socket"`
+		Version  string    `json:"version"`
+		OTLPPort int       `json:"otlpPort"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
+	}
+	if got.DataDir != "/data" || got.Socket != "/tmp/x.sock" || got.Version != "v9" || got.OTLPPort != 4318 {
+		t.Fatalf("session serve fields = %+v", got)
 	}
 	if got.PID != 4321 || got.Cwd != "/work/proj" || got.Port != 5555 || !got.Started.Equal(started) {
 		t.Fatalf("session = %+v", got)
