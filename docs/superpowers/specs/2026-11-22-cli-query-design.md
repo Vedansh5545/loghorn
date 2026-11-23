@@ -278,7 +278,7 @@ that states the table model, so an LLM editing it knows what it targets.
 Table model (the contract the DuckDB work must implement):
 
 - Schema `logs` for log records and `spans` for span records; one table per
-  stream named exactly as the stream (`logs."taa"`, `spans."http.server"`).
+  stream named exactly as the stream (`logs."app"`, `spans."http.server"`).
   `spans."*"` is every span kind (the Spans `*` stream).
 - Columns: `seq BIGINT` (store order; every sort breaks ties on it, and the
   default Samples sort is `time DESC, seq DESC`), `time TIMESTAMPTZ` (the
