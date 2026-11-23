@@ -27,6 +27,10 @@ use it when no URL is given.
   `.sql` with `-to-sql`). `-format` overrides the extension. Without `-o`, output goes to stdout.
 - `-to-sql` prints DuckDB SQL equivalent to the query instead of data.
 - Every view the URL can name works: Samples, Table, Graph, Heatmap.
+- The page's copy bars become one "Copy" button with a format droplist, and
+  the main views copy exactly what the CLI prints.
+- Computed numbers carry no binary-float noise (`23.84`, not
+  `23.839999999999996`).
 - Every `-web` instance listens on `$TMPDIR/loghorn/<pid>.sock` too;
   `-instances` lists the live ones.
 
@@ -207,6 +211,47 @@ TOON is written with `github.com/toon-format/toon-go` (v1.0.1, the TOON
 project's own Go implementation), YAML with `gopkg.in/yaml.v3` (already a
 dependency). loghorn builds the document as ordered Go values and hands it to
 the library; it does not encode TOON itself.
+
+### Computed numbers
+
+Raw values are exported as the exact text the log held. Computed values
+(`sum`, `avg`, `error_rate`, graph and table metrics, ms converted from ns)
+are rounded to 15 significant digits where `internal/query` computes them,
+then printed in the shortest form that round-trips
+(`strconv.FormatFloat(v, 'g', -1, 64)` after rounding). A float64 holds 15
+decimal digits reliably, so only arithmetic noise goes:
+`23.839999999999996` → `23.84`, `0.30000000000000004` → `0.3`. Rounding at
+the source keeps the page, the copy buttons and every export identical. The
+DuckDB equivalence test compares DOUBLEs with a relative tolerance, since
+DuckDB's own arithmetic carries the same noise.
+
+### Copy buttons in the page
+
+The three copy bars (`copyTableBar` in `copy.js`: the main table bar for
+Samples/Table/Heatmap, the aggregate view, the trace view) each have
+"Copy as Markdown" and "Copy as CSV" today, built in the browser from the
+displayed (formatted) table.
+
+- Each bar becomes one "Copy" button with a ▾ droplist of formats. The
+  button copies in the format chosen last, remembered in `localStorage`
+  (wrapped in try/catch; default Markdown when unset).
+- **Main views** (Samples, Table, Graph, Heatmap): the copy POSTs the current
+  query to `/api/query` with the chosen `format` and copies the reply, so the
+  clipboard holds exactly what `loghorn <url>` prints, `columns` section
+  included. Formats: all seven data formats. The bar shows for Graph too,
+  which has no copy today. The query sent is the one behind the rows shown
+  (same offset and limit for Samples).
+- Values copy raw (`1234.5`, not `1.2 s`). This is a visible change from
+  today's formatted copy, and the point of it.
+- **Trace and aggregate views** keep building the text in the page; the
+  server has no export for them. Their droplist offers Markdown, CSV and TSV.
+- The clipboard write must stay inside the click's user gesture while the
+  fetch is pending (Safari): use
+  `navigator.clipboard.write([new ClipboardItem({"text/plain": promise})])`
+  where supported, else fetch then `writeText`.
+- Success and failure show in the bar's existing status, as today.
+- Per CLAUDE.md, a droplist button inside a control that redraws on blur
+  must `preventDefault` on `mousedown`.
 
 Row limit: the URL's `limit` and `top` apply as in the page (`limit` 0 is
 the Samples default of 100). `-limit N` on the CLI overrides `limit` for
