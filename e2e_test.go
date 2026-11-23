@@ -293,7 +293,8 @@ func TestWrapperFilter(t *testing.T) {
 	if r.stdout != errLine+"\n" {
 		t.Errorf("stdout = %q, want only the ERROR line", r.stdout)
 	}
-	e.waitLog(t, `{"severity":"INFO","message":"i"}`, errLine)
+	// serve tags a run's JSON lines with its service and run id.
+	e.waitLog(t, `"severity":"INFO","message":"i"}`, `"severity":"ERROR","message":"e"}`, `{"service.name":`)
 }
 
 func TestPipedStdinPassesThrough(t *testing.T) {

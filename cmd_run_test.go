@@ -83,7 +83,8 @@ func TestRunRecordsToServe(t *testing.T) {
 	if !strings.Contains(r.stderr, "recording to serve as") || !strings.Contains(r.stderr, "web view at http://127.0.0.1:") {
 		t.Fatalf("stderr = %q", r.stderr)
 	}
-	e.waitLog(t, errLine+"\n", "plain\n")
+	// serve tags a run's JSON lines with its service and run id.
+	e.waitLog(t, `"labels":{"schema":"app"},"severity":"ERROR","message":"x"}`+"\n", "plain\n", `"loghorn.run.id":`)
 }
 
 func TestRunChildOTLPReachesServe(t *testing.T) {
@@ -149,7 +150,7 @@ func TestRunFilterStillLocal(t *testing.T) {
 	if r.code != 0 || r.stdout != errLine+"\n" {
 		t.Fatalf("code %d stdout %q", r.code, r.stdout)
 	}
-	e.waitLog(t, info, errLine)
+	e.waitLog(t, `"severity":"INFO","message":"i"}`, `"severity":"ERROR","message":"e"}`)
 }
 
 func TestRunServeDownStillRunsChild(t *testing.T) {
