@@ -21,8 +21,8 @@ use it when no URL is given.
 - `-url URL` does the same explicitly, and also accepts a URL with no host
   (`/?q=…`), which goes through instance discovery.
 - `-o FILE` writes to a file, with the format taken from its extension
-  (`.csv`, `.tsv`, `.md`; `.sql` with `-to-sql`). `-format csv|tsv|md`
-  overrides the extension. Without `-o`, output goes to stdout.
+  (`.csv`, `.tsv`, `.md`, `.json`, `.jsonl`, `.yaml`/`.yml`, `.toon`;
+  `.sql` with `-to-sql`). `-format` overrides the extension. Without `-o`, output goes to stdout.
 - `-to-sql` prints DuckDB SQL equivalent to the query instead of data.
 - Every view the URL can name works: Samples, Table, Graph, Heatmap.
 - Every `-web` instance listens on `$TMPDIR/loghorn/<pid>.sock` too;
@@ -50,7 +50,8 @@ use it when no URL is given.
 ## Approaches
 
 - **A. Server-side formatting (chosen).** `POST /api/query` accepts a
-  `format` of `csv`, `tsv`, `md` or `sql` and answers with that text instead
+  `format` (`csv`, `tsv`, `md`, `json`, `jsonl`, `yaml`, `toon` or `sql`)
+  and answers with that text instead
   of JSON. The CLI is a thin client that streams the body. The SQL needs the
   effective schema (inferred types plus saved settings), which only the
   server holds; curl and a later page "Download" button get the same output.
@@ -95,17 +96,33 @@ use it when no URL is given.
 
 `query.Query` gains `Format string` (`json:"format,omitempty" toml:"-"`; not
 saved with a favorite). Empty means JSON as today. Otherwise the handler runs
-the query as today and writes text with `Content-Type` `text/csv`,
-`text/tab-separated-values`, `text/markdown` or `application/sql`
-(`charset=utf-8`). `sql` does not run the query; it validates it and
-generates SQL.
+the query as today and writes text with the format's `Content-Type`
+(`text/csv`, `text/tab-separated-values`, `text/markdown`,
+`application/json`, `application/jsonl`, `application/yaml`, `text/plain`
+for TOON, `application/sql`; all `charset=utf-8`). `sql` also runs the
+query (see SQL below).
 
-Shared rules for data formats:
+The formats fall in two families:
 
-- Header row uses column paths (stable, match the SQL), not labels.
+- **Flat:** `csv`, `tsv`, `md`, `jsonl`. One row (one JSON object per line
+  for `jsonl`) per record, group or bucket, in the shapes below.
+- **Document:** `json`, `yaml`, `toon`. A `columns` section, then the data,
+  nested where the view groups it (see Document shapes).
+
+Shared rules:
+
+- Column names are the field paths (stable, match the SQL), not labels.
 - Values are raw: numbers as JSON prints them, times RFC 3339 with
-  nanoseconds in UTC, booleans `true`/`false`, null as an empty cell, JSON
-  values compact.
+  nanoseconds in UTC, booleans `true`/`false`. A field of type JSON is real
+  nested structure in `jsonl` and the document formats, compact JSON text in
+  `csv`/`tsv`/`md`.
+- Null is an empty cell in `csv`/`tsv`/`md`, `null` elsewhere (TOON: `null`).
+- `NaN` and `Infinity` are DOUBLE values (DuckDB holds them). Where the format
+  has no such number (JSON, JSONL, TOON) they are written as the strings
+  `"NaN"`, `"Infinity"`, `"-Infinity"`; YAML uses `.nan`, `.inf`, `-.inf`.
+- A value that does not fit its column's type (the Go side's "bad" value)
+  is exported as null, as the SQL table model loads it. The original text
+  stays in the record's `raw`.
 - CSV: RFC 4180 via `encoding/csv`.
 - TSV: a tab, newline, carriage return or backslash in a value is written as
   `\t`, `\n`, `\r`, `\\`.
@@ -126,6 +143,66 @@ Shapes per view:
   The series order is the result's order.
 - **Heatmap:** wide. One row per time bucket; `time`, then one column per
   duration band named `lo-hi ms` (lowest band `<hi ms`). Cells are counts.
+
+### Column descriptions (document formats)
+
+`columns` lists every column of the data, in order, each with:
+
+- `name`: the field path, or the metric name (`count`, `p95(duration_ms)`).
+- `type`: the DuckDB type of the SQL table model (`VARCHAR`, `BIGINT`,
+  `DOUBLE`, `BOOLEAN`, `TIMESTAMPTZ`, `JSON`), so what the export declares is
+  what an LLM meets in SQL. A metric's type is its SQL result type (`count`
+  is `BIGINT`, `avg` and pNN of a `BIGINT` are `DOUBLE`, `error_rate` is
+  `DOUBLE`).
+- `unit`: when known. A duration is `DOUBLE` with `unit: ms` (the SQL model
+  stores durations in ms); other units come from the field's schema unit.
+  Omitted when unknown.
+- `nullable`: true when this result has a null in the column.
+- `mismatched`: the number of values exported as null because they did not
+  fit the type; omitted when 0, so a replacement is never silent.
+- `otel_name`: the original OpenTelemetry attribute key, when the field
+  came from OTLP and loghorn's path differs from it (an attribute moved
+  under `attributes.` because it collided with a span field, or a key
+  rewritten in snake_case). Omitted otherwise. (Builder's-check call on the
+  meaning; the user did not define it.)
+
+No Python-style union types: a column declared `DOUBLE | VARCHAR` would
+describe a column that does not exist in SQL. A semantic or display kind is
+left out for now.
+
+### Document shapes
+
+Every document has `view`, `columns`, the counts (`matched`,
+`streamTotal`, `truncated`) and the resolved `from`/`to`, then the data:
+
+- **Samples:** `rows`, one object per record keyed by column name. In TOON
+  this is a tabular array.
+- **Table:** `groups`, nested by group-by level: an array per level, each
+  element holding that level's key and either the next level's `groups` or,
+  at the innermost level, `count` and the metrics. Arrays, not maps keyed by
+  value: JSON keys lose types (`200` becomes `"200"`), and an empty group
+  value has no good key. Parent levels carry no numbers; the server computes
+  no subtotals, and a parent's p95 cannot be derived from its children.
+  Parents appear in order of their first child in the result.
+- **Graph:** `bucket`, `starts` (bucket start times, once), and `series`,
+  nested by group-by level as the Table. The innermost level holds `count`
+  and `values`, an array aligned to `starts` with null for no data. The
+  `other` series is a top-level element with `other: true`. With no
+  group-by, `series` has one element with only `count` and `values`.
+- **Heatmap:** `bucket`, `bands` (each `{band, lo, hi}` in ms, `band` the
+  name used below, `lo` omitted on the lowest band), `max`, `total`,
+  `skipped`, and `buckets`: one element per time bucket with at least one
+  span, `{time, cells}`, where `cells` lists only non-empty bands as
+  `{band, count}`. Sparse because heatmaps are mostly zeros, and a band's
+  name reads better for an LLM than an index into a matrix. In TOON each
+  `cells` list is a tabular array.
+
+`jsonl` uses the flat shapes; a Heatmap in `jsonl` is one line per
+non-empty cell: `{time, band, lo, hi, count}`.
+
+TOON is written by a small encoder in loghorn for the subset these shapes
+use (nested objects, primitive arrays, tabular arrays), tested against the
+TOON specification's own examples; no dependency.
 
 Row limit: the URL's `limit` and `top` apply as in the page (`limit` 0 is
 the Samples default of 100). `-limit N` on the CLI overrides `limit` for
