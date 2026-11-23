@@ -19,7 +19,9 @@ use it when no URL is given.
   default) and exits 0. The positional form is recognised when `args[0]`
   starts with `http://127.0.0.1` or `http://localhost` (with a port or not).
 - `-url URL` does the same explicitly, and also accepts a URL with no host
-  (`/?q=…`), which goes through instance discovery.
+  (`/?q=…`), which goes through instance discovery. `-url @file` reads the
+  URL from a file and `-url @-` from stdin (surrounding whitespace trimmed),
+  for long `?q=` URLs that are awkward to quote.
 - `-o FILE` writes to a file, with the format taken from its extension
   (`.csv`, `.tsv`, `.md`, `.json`, `.jsonl`, `.yaml`/`.yml`, `.toon`;
   `.sql` with `-to-sql`). `-format` overrides the extension. Without `-o`, output goes to stdout.
@@ -34,8 +36,8 @@ use it when no URL is given.
 - No query language on the command line beyond the URL's `q` JSON.
 - The trace and aggregate views (`/api/trace`, `/api/aggregate`) are not
   exported; their crumbs in the URL are ignored with a note on stderr.
-- No SQL execution, no SQL input and no `@file` arguments in this work; their
-  agreed syntax is recorded under Future.
+- No SQL execution and no SQL input (`-sql`) in this work; the agreed
+  syntax is recorded under Future.
 - The CLI never reads `.loghorn/` itself: spans received through `-otel` are
   in the instance's memory before they are on disk.
 
@@ -317,14 +319,15 @@ Translation:
   positional URL, `-url`, `-o`, `-to-sql` and `-instances`.
 - Tests point `HOME` and `TMPDIR` at temp dirs.
 
-## Future: SQL input and `@file` (agreed syntax, not built now)
+## Future: SQL input (agreed syntax, not built now)
 
-Recorded so later work keeps the shape; nothing here is built in this round.
+Recorded so later work keeps the shape. `-sql` is not built in this round;
+`-url @file`/`@-` and the stdin rules below are.
 
 - `-sql 'SELECT …'` runs SQL against the DuckDB table model above, once the
   DuckDB engine exists. `-sql @query.sql` reads it from a file, `-sql @-`
-  from stdin (curl's convention; no SQL statement starts with `@`). The same
-  `@file` / `@-` forms apply to `-url`, for long `?q=` URLs.
+  from stdin (curl's convention; no SQL statement starts with `@`), the same
+  forms `-url` already takes.
 - Stdin must never be taken as log input in query mode. Any query flag
   (`-url`, `-sql`, `-to-sql`, `-instances`, or a positional loopback URL)
   makes the run a query before `detectInput` is consulted, so a piped stdin
