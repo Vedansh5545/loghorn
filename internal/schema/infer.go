@@ -69,38 +69,40 @@ func isUnitDuration(s string) bool {
 	return ok
 }
 
-type acc struct {
-	count int
-	kinds map[kind]bool
+// KindSet is a set of observed value kinds, one bit per kind.
+type KindSet uint16
+
+// Classify returns the one-kind set of v.
+func Classify(v any) KindSet { return 1 << classify(v) }
+
+// Tally is what inference keeps per path: how many records hold the path
+// (nulls included) and the kinds of value seen.
+type Tally struct {
+	Count int
+	Kinds KindSet
 }
 
-func (a *acc) typ() Type {
-	k := a.kinds
-	delete(k, kNone)
-	switch len(k) {
-	case 0:
-		return TString
-	case 1:
-		for only := range k {
-			switch only {
-			case kInt:
-				return TInt
-			case kFloat:
-				return TFloat
-			case kBool:
-				return TBool
-			case kJSON:
-				return TJSON
-			case kDuration:
-				return TDuration
-			case kTimestamp:
-				return TTimestamp
-			}
-		}
-	case 2:
-		if k[kInt] && k[kFloat] {
-			return TFloat
-		}
+// TallyType is the type inference gives a path with kinds k: one kind gives
+// that type, int with float gives float, anything else (or nothing but
+// nulls) gives string; timestamp and receiveTimestamp are always timestamp.
+func TallyType(path string, k KindSet) Type {
+	if path == "timestamp" || path == "receiveTimestamp" {
+		return TTimestamp
+	}
+	k &^= 1 << kNone
+	switch k {
+	case 1 << kInt:
+		return TInt
+	case 1 << kFloat, 1<<kInt | 1<<kFloat:
+		return TFloat
+	case 1 << kBool:
+		return TBool
+	case 1 << kJSON:
+		return TJSON
+	case 1 << kDuration:
+		return TDuration
+	case 1 << kTimestamp:
+		return TTimestamp
 	}
 	return TString
 }
@@ -115,7 +117,7 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 		src = source
 	}
 	key := record.StreamKey{Source: src, Name: stream}
-	accs := map[string]*acc{}
+	tallies := map[string]Tally{}
 	for i := range recs {
 		if !ok || (stream != record.AllStreams && recs[i].Key() != key) || (stream == record.AllStreams && recs[i].Key().Source != src) {
 			continue
@@ -124,29 +126,28 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 			continue
 		}
 		for path, v := range recs[i].Fields {
-			a := accs[path]
-			if a == nil {
-				a = &acc{kinds: map[kind]bool{}}
-				accs[path] = a
-			}
-			a.count++
-			a.kinds[classify(v)] = true
+			t := tallies[path]
+			t.Count++
+			t.Kinds |= Classify(v)
+			tallies[path] = t
 		}
 	}
+	return FromTallies(src, stream, tallies)
+}
 
-	s := Schema{Stream: stream, Source: src, Fields: make([]Field, 0, len(accs))}
-	for path, a := range accs {
-		t := a.typ()
-		if path == "timestamp" || path == "receiveTimestamp" {
-			t = TTimestamp
-		}
+// FromTallies builds the schema Infer gives for per-path tallies. source must
+// already be parsed (or is kept as given).
+func FromTallies(source, stream string, tallies map[string]Tally) Schema {
+	s := Schema{Stream: stream, Source: source, Fields: make([]Field, 0, len(tallies))}
+	for path, a := range tallies {
+		t := TallyType(path, a.Kinds)
 		s.Fields = append(s.Fields, Field{
-			Path: path, Type: t, Inferred: t, Count: a.count,
+			Path: path, Type: t, Inferred: t, Count: a.Count,
 			Visualizer: DefaultVisualizer(path, t),
 		})
 	}
 	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
-	s.Columns = DefaultColumns(src, s.Fields)
+	s.Columns = DefaultColumns(source, s.Fields)
 	return s
 }
 

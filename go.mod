@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ajitpratap0/GoSQLX v1.17.0
 	github.com/creack/pty v1.1.24
+	github.com/duckdb/duckdb-go/v2 v2.20001.0
 	github.com/gen2brain/beeep v0.11.2
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.23.0
