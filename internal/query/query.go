@@ -89,6 +89,10 @@ type Query struct {
 	// Cell narrows any view to one heatmap cell, after the range, filters
 	// and search. It is not saved with a favorite.
 	Cell *HeatCell `json:"cell,omitempty" toml:"-"`
+	// Format asks /api/query for an export format (csv, tsv, md, json,
+	// jsonl, yaml, toon, sql) instead of the page's JSON; "" means the
+	// page's JSON. It is not saved with a favorite.
+	Format string `json:"format,omitempty" toml:"-"`
 }
 
 // Charts are the graph styles the page can draw.

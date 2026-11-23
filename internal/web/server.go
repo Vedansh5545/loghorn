@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jimbeveridge/loghorn/internal/export"
 	"github.com/jimbeveridge/loghorn/internal/favorites"
 	"github.com/jimbeveridge/loghorn/internal/jsoncolor"
 	"github.com/jimbeveridge/loghorn/internal/query"
@@ -447,6 +448,19 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream is required")
 		return
 	}
+	var format export.Format
+	if q.Format != "" {
+		f, err := export.ParseFormat(q.Format)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if f == export.SQL {
+			writeError(w, http.StatusBadRequest, "format sql is not supported yet")
+			return
+		}
+		format = f
+	}
 	src, ok := record.ParseSource(q.Source)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown source %q", q.Source))
@@ -467,7 +481,32 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if format != "" {
+		writeExport(w, format, &res, sch, q)
+		return
+	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// writeExport answers a query in an export format: the text with the format's
+// Content-Type, and what the result left out in X-Loghorn-Note.
+func writeExport(w http.ResponseWriter, f export.Format, res *query.Result, sch schema.Schema, q query.Query) {
+	var b bytes.Buffer
+	if err := export.Write(&b, f, res, sch); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, export.ErrUnsupported) {
+			code = http.StatusBadRequest
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", f.ContentType())
+	w.Header().Set("Cache-Control", "no-store")
+	if note := export.Note(res, q); note != "" {
+		w.Header().Set("X-Loghorn-Note", note)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b.Bytes())
 }
 
 // trace answers GET /api/trace?trace=<id>&span=<id>: the tree of one trace

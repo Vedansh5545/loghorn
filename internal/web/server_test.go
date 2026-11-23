@@ -1063,3 +1063,46 @@ func TestServerHeatmapLogs(t *testing.T) {
 		t.Fatalf("log heatmap = %d, want 400", code)
 	}
 }
+
+func TestQueryFormatCSV(t *testing.T) {
+	f := newFixture(t, pino)
+	post := func(body string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, f.srv.URL+"/api/query", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := f.srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	resp, body := post(`{"stream":"db","range":{"from":"all"},"columns":["severity","message"],"format":"csv"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("csv = %d %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if !strings.HasPrefix(body, "severity,message\nWARNING,slow query\n") {
+		t.Errorf("body = %q", body)
+	}
+	if n := resp.Header.Get("X-Loghorn-Note"); n != "" {
+		t.Errorf("note = %q", n)
+	}
+	resp, body = post(`{"stream":"db","range":{"from":"all"},"limit":1,"format":"csv"}`)
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("X-Loghorn-Note"), "3") {
+		t.Errorf("limited = %d note %q", resp.StatusCode, resp.Header.Get("X-Loghorn-Note"))
+	}
+	for _, fm := range []string{"bogus", "sql"} {
+		resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"` + fm + `"}`)
+		wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
+	}
+	resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"sql"}`)
+	if !strings.Contains(body, "format sql is not supported yet") {
+		t.Errorf("sql body = %s", body)
+	}
+}
