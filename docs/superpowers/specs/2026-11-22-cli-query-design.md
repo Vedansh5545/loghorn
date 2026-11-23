@@ -34,7 +34,8 @@ use it when no URL is given.
 - No query language on the command line beyond the URL's `q` JSON.
 - The trace and aggregate views (`/api/trace`, `/api/aggregate`) are not
   exported; their crumbs in the URL are ignored with a note on stderr.
-- No SQL execution, and no SQL input, in this work.
+- No SQL execution, no SQL input and no `@file` arguments in this work; their
+  agreed syntax is recorded under Future.
 - The CLI never reads `.loghorn/` itself: spans received through `-otel` are
   in the instance's memory before they are on disk.
 
@@ -315,6 +316,21 @@ Translation:
 - An end-to-end test runs the built binary against a demo instance with the
   positional URL, `-url`, `-o`, `-to-sql` and `-instances`.
 - Tests point `HOME` and `TMPDIR` at temp dirs.
+
+## Future: SQL input and `@file` (agreed syntax, not built now)
+
+Recorded so later work keeps the shape; nothing here is built in this round.
+
+- `-sql 'SELECT …'` runs SQL against the DuckDB table model above, once the
+  DuckDB engine exists. `-sql @query.sql` reads it from a file, `-sql @-`
+  from stdin (curl's convention; no SQL statement starts with `@`). The same
+  `@file` / `@-` forms apply to `-url`, for long `?q=` URLs.
+- Stdin must never be taken as log input in query mode. Any query flag
+  (`-url`, `-sql`, `-to-sql`, `-instances`, or a positional loopback URL)
+  makes the run a query before `detectInput` is consulted, so a piped stdin
+  is never `kindPipe` there. Stdin is read only when a flag names `@-`, and
+  at most one flag may: `-url @- -sql @-` is a usage error (exit 2). Text
+  read through `@-` is never recorded to `.loghorn/`.
 
 ## Left to the builder
 
