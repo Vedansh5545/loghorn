@@ -117,12 +117,17 @@ func DayNumber(t time.Time) int {
 // (D-023). A live record's id carries its arrival day (D-011); a replay's
 // day is 0.
 func (s *Store) Add(r record.Record, received time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	day := 0
 	if s.mode == ModeLive {
 		day = DayNumber(s.now())
 	}
+	s.add(r, received, day)
+}
+
+// add is Add with the id's day given.
+func (s *Store) add(r record.Record, received time.Time, day int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seq[day]++
 	r.Seq = day<<32 + s.seq[day]
 	if r.Service == "" {

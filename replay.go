@@ -14,6 +14,7 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/ghjob"
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/recorder"
+	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/wrap"
 )
 
@@ -52,14 +53,32 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 
 	// Listen before reading, so a port in use fails before the work is done.
 	var ws *webServer
+	var st *store.Store
+	fromDays := false // the store reads the stored days itself
 	if m.web {
 		gh := kind == kindGHJob || kind == kindGHRun
 		mode, runStart := webStoreMode(kind == kindHistorical, gh, kind == kindFile, time.Now())
-		ws = startWeb(o, cfg, cwd, mode, runStart)
+		if kind == kindHistorical {
+			if dir, err := logDir(); err == nil {
+				if st, err = store.Open(store.Options{Mode: mode, Input: cfg.Input, Dir: dir}); err == nil {
+					fromDays = true
+				} else {
+					fmt.Fprintln(os.Stderr, "loghorn: DuckDB:", err)
+				}
+			}
+		}
+		if st == nil {
+			st = store.NewWithInput(mode, runStart, cfg.Input)
+		}
+		ws = startWeb(o, cwd, st)
 		defer ws.close()
 	}
 
-	rec := recorder.New(recorder.Options{Store: ws.store(), Input: cfg.Input})
+	recStore := st
+	if fromDays {
+		recStore = nil
+	}
+	rec := recorder.New(recorder.Options{Store: recStore, Input: cfg.Input})
 	var out io.Writer = io.Discard
 	if m.filter {
 		out = os.Stdout
@@ -72,9 +91,9 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 		}
 	}
 
-	if ws != nil && kind == kindHistorical {
+	if ws != nil && kind == kindHistorical && !fromDays {
 		if dir, err := logDir(); err == nil {
-			preloadSpans(ws.st, dir, cfg.Input)
+			preloadSpans(st, dir, cfg.Input)
 		}
 	}
 

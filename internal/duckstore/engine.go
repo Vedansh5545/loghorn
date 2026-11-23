@@ -63,6 +63,11 @@ type Engine struct {
 	pairFor   func(day int) (*pair, error)
 	onFail    func(err error) // a file write failed (nil: memory only)
 	vnames    *namer          // view names, stable across rebuilds
+	wmu       sync.Mutex      // held while writing or changing catalogs
+	days      *DayOptions     // nil: memory only
+	route     map[int]*pair   // day -> writable pair
+	today     *pair           // the open day (writer)
+	failed    bool            // a file write failed: the rest goes to memory
 	viewsMade map[string]bool
 	warned    map[string]bool // writer-side warnings already given
 
@@ -218,6 +223,7 @@ func (e *Engine) writer() {
 		}
 		e.mu.Unlock()
 
+		e.wmu.Lock()
 		var recs []record.Record
 		for _, it := range batch {
 			if it.fill == nil {
@@ -233,6 +239,7 @@ func (e *Engine) writer() {
 		if len(recs) > 0 {
 			e.write(recs)
 		}
+		e.wmu.Unlock()
 
 		e.mu.Lock()
 		e.committed += uint64(n)
@@ -244,7 +251,12 @@ func (e *Engine) writer() {
 // Close writes what is queued, stops the writer and closes DuckDB. before
 // runs in the writer's place after the last batch (nil: nothing), so day
 // files can be marked closed cleanly.
-func (e *Engine) Close() error { return e.close(nil) }
+func (e *Engine) Close() error {
+	if e.days != nil {
+		return e.close(e.closeDays)
+	}
+	return e.close(nil)
+}
 
 func (e *Engine) close(before func() error) error {
 	e.mu.Lock()

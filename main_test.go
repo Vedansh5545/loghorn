@@ -179,7 +179,7 @@ func TestSpanSinkAddsWhenFileFails(t *testing.T) {
 	}
 }
 
-func TestPreloadStoredReadsLogsAndSpans(t *testing.T) {
+func TestLiveReaderStoreReadsStoredLogsAndSpans(t *testing.T) {
 	dir := t.TempDir()
 	pino, err := os.ReadFile("testdata/web/pino.log")
 	if err != nil {
@@ -187,18 +187,22 @@ func TestPreloadStoredReadsLogsAndSpans(t *testing.T) {
 	}
 	lines := spanFixture(t)
 	join := func(ls [][]byte) []byte { return append(bytes.Join(ls, []byte("\n")), '\n') }
+	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	files := map[string][]byte{
-		"loghorn-2026-11-17.log":          pino,
-		"loghorn-2026-11-17.traces.jsonl": join(lines[:4]),
-		"loghorn.traces.jsonl":            join(lines[4:]),
+		"loghorn-" + yesterday + ".log":          pino,
+		"loghorn-" + yesterday + ".traces.jsonl": join(lines[:4]),
+		"loghorn.traces.jsonl":                   join(lines[4:]),
 	}
 	for name, b := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	st := store.New(store.ModeLive, time.Now())
-	preloadStored(st, dir, config.Input{})
+	st, err := store.Open(store.Options{Mode: store.ModeLive, RunStart: time.Now(), Dir: dir, Input: config.Input{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 	got := map[store.StreamCount]bool{}
 	for _, c := range st.Streams() {
 		got[c] = true

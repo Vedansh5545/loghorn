@@ -52,6 +52,8 @@ func (e *Engine) write(batch []record.Record) {
 			continue
 		}
 		e.fail(err)
+		e.dropIfGone(g.c)
+		changed = true
 		m, merr := e.memFallback()
 		if merr != nil {
 			continue
@@ -92,6 +94,23 @@ func (e *Engine) fail(err error) {
 	}
 	if e.onFail != nil {
 		e.onFail(err)
+	}
+}
+
+// dropIfGone forgets a catalog that is no longer attached, so views stop
+// reading it.
+func (e *Engine) dropIfGone(c *catalog) {
+	var n int
+	if err := e.wc.QueryRowContext(bg, "SELECT count(*) FROM duckdb_databases() WHERE database_name = ?", c.alias).Scan(&n); err == nil && n == 0 {
+		for i, x := range e.cats {
+			if x == c {
+				e.cats = append(e.cats[:i:i], e.cats[i+1:]...)
+				break
+			}
+		}
+		if e.today != nil && (e.today.logs == c || e.today.traces == c) {
+			e.today = nil
+		}
 	}
 }
 

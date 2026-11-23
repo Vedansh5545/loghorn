@@ -33,13 +33,14 @@ import (
 // failures are reported and the child's status is returned.
 func runCommand(o opts, cfg config.Config, cwd string) int {
 	logs := openRecordingLog(o)
-	ws := startLiveWeb(o, cfg, cwd)
-	// The preload is done, so stored lines stay "default"; live records take
-	// the child's service name.
+	st := openLiveStore(o, cfg, logs)
+	ws := startLiveWeb(o, cwd, st)
+	// The stored days are open, so stored lines stay "default"; live records
+	// take the child's service name.
 	if svc := childService(os.Environ()); svc != "" {
-		ws.store().SetFallbackService(svc)
+		st.SetFallbackService(svc)
 	}
-	rec := liveRecorder(o, cfg, logs, ws.store())
+	rec := liveRecorder(o, cfg, logs, st)
 
 	// The receiver is bound before the child starts: a failure exits here,
 	// with nothing launched.
@@ -50,6 +51,7 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		if err != nil {
 			ws.close()
 			closeLog(logs)
+			closeStore(st)
 			fmt.Fprintln(os.Stderr, "loghorn: -otel:", err)
 			return 1
 		}
@@ -59,9 +61,9 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		// (after rcv.Drain) closes it. Without a log file, traces are
 		// not written, but with -web they still reach the store.
 		spans := openSpanLog(logs)
-		// The store was preloaded inside startLiveWeb above, before this
-		// receiver exists, so a span is preloaded or hooked, never both.
-		rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, ws.store(), func(err error) {
+		// The store opened the stored days above, before this receiver
+		// exists, so a span is stored or hooked, never both.
+		rcv = otlp.NewReceiver(rec.OTLP, spanSink(spans, st, func(err error) {
 			fmt.Fprintln(os.Stderr, "loghorn: span file stopped:", err)
 		}), nil)
 		rcv.Serve(ln)
@@ -79,6 +81,7 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 		}
 		ws.close()
 		closeLog(logs)
+		closeStore(st)
 		fmt.Fprintln(os.Stderr, "loghorn:", err)
 		if errors.Is(err, exec.ErrNotFound) {
 			return 127 // the shell's status for a command that can't be found
@@ -108,6 +111,7 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 	ws.close()
 	child.Close()
 	closeLog(logs)
+	closeStore(st)
 	if rcv != nil && !rec.SawOTLP() {
 		fmt.Fprintln(os.Stderr, "loghorn: -otel: no OTLP logs received; stdout was recorded instead")
 	}
@@ -118,8 +122,9 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 // important records). -web stops at end of input.
 func runPipe(o opts, cfg config.Config, cwd string) int {
 	logs := openRecordingLog(o)
-	ws := startLiveWeb(o, cfg, cwd)
-	rec := liveRecorder(o, cfg, logs, ws.store())
+	st := openLiveStore(o, cfg, logs)
+	ws := startLiveWeb(o, cwd, st)
+	rec := liveRecorder(o, cfg, logs, st)
 	err := wrap.Pipe(os.Stdin, wrap.Options{
 		Recorder:  rec,
 		Frame:     configuredFrame(cfg),
@@ -130,6 +135,7 @@ func runPipe(o opts, cfg config.Config, cwd string) int {
 	})
 	ws.close()
 	closeLog(logs)
+	closeStore(st)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loghorn: input error:", err)
 		return 1
@@ -235,16 +241,8 @@ func notifier(o opts) func(entry.Entry) {
 
 // webServer is a running -web view; the zero value (nil) is "no -web".
 type webServer struct {
-	st  *store.Store
 	srv *http.Server
 	url string
-}
-
-func (w *webServer) store() *store.Store {
-	if w == nil {
-		return nil
-	}
-	return w.st
 }
 
 func (w *webServer) close() {
@@ -253,26 +251,48 @@ func (w *webServer) close() {
 	}
 }
 
-// startLiveWeb starts -web for live input, with the stored days preloaded,
-// and prints its URL. Without -web it returns nil.
-func startLiveWeb(o opts, cfg config.Config, cwd string) *webServer {
+// openLiveStore opens the DuckDB store of a live run. The log file's lock
+// holder writes the day files, with or without -web (D-006); another run
+// with -web reads them. Without either there is no store. A failure is
+// reported; -web then falls back to a store in memory.
+func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store {
+	if logs == nil && !o.web {
+		return nil
+	}
+	dir, err := logDir()
+	if err == nil {
+		st, oerr := store.Open(store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir, Write: logs != nil})
+		if oerr == nil {
+			return st
+		}
+		err = oerr
+	}
+	fmt.Fprintln(os.Stderr, "loghorn: DuckDB:", err)
 	if !o.web {
 		return nil
 	}
-	ws := startWeb(o, cfg, cwd, store.ModeLive, time.Now())
-	fmt.Fprintf(os.Stderr, "loghorn: web view at %s\n", ws.url)
-	return ws
+	return store.NewWithInput(store.ModeLive, time.Now(), cfg.Input)
 }
 
-// preloadStored loads the stored log files, then the stored span files, into
-// st. Errors are reported and do not stop startup.
-func preloadStored(st *store.Store, dir string, in config.Input) {
-	if paths, err := logfile.HistoricalFiles(dir); err == nil {
-		if err := store.Preload(st, paths, in); err != nil {
-			fmt.Fprintln(os.Stderr, "loghorn: -web: preload:", err)
+// closeStore closes the store after the log file, so the day files record
+// the text files' final sizes.
+func closeStore(st *store.Store) {
+	if st != nil {
+		if err := st.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "loghorn: DuckDB:", err)
 		}
 	}
-	preloadSpans(st, dir, in)
+}
+
+// startLiveWeb starts -web for live input and prints its URL. Without -web
+// it returns nil.
+func startLiveWeb(o opts, cwd string, st *store.Store) *webServer {
+	if !o.web {
+		return nil
+	}
+	ws := startWeb(o, cwd, st)
+	fmt.Fprintf(os.Stderr, "loghorn: web view at %s\n", ws.url)
+	return ws
 }
 
 // preloadSpans loads the stored span files in dir into st.
@@ -284,11 +304,10 @@ func preloadSpans(st *store.Store, dir string, in config.Input) {
 	}
 }
 
-// startWeb listens and serves a store of the given mode; it does not print
-// the URL. A live store is preloaded with the stored days first. A config
-// base or listen failure exits, so it must run before any child is launched.
-// It prints the one-time notice about a repo's retired .config/loghorn.
-func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart time.Time) *webServer {
+// startWeb listens and serves st; it does not print the URL. A config base
+// or listen failure exits, so it must run before any child is launched. It
+// prints the one-time notice about a repo's retired .config/loghorn.
+func startWeb(o opts, cwd string, st *store.Store) *webServer {
 	base, err := svcconf.BaseFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loghorn: -web: config dir:", err)
@@ -296,12 +315,6 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 	}
 	if msg := repoConfigNotice(cwd, base); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
-	}
-	st := store.NewWithInput(mode, runStart, cfg.Input)
-	if mode == store.ModeLive {
-		if dir, err := logDir(); err == nil {
-			preloadStored(st, dir, cfg.Input)
-		}
 	}
 	ln, err := web.Listen(o.webPort)
 	if err != nil {
@@ -313,7 +326,7 @@ func startWeb(o opts, cfg config.Config, cwd string, mode store.Mode, runStart t
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
-	return &webServer{st: st, srv: srv, url: "http://" + ln.Addr().String() + "/"}
+	return &webServer{srv: srv, url: "http://" + ln.Addr().String() + "/"}
 }
 
 // childService returns the value of the last OTEL_SERVICE_NAME entry in env,
