@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// runHelper is the body of a child the -otel tests run: the test binary itself
+// runHelper is the body of a child the run tests start: the test binary itself
 // with LOGHORN_TEST_HELPER set. It returns the exit status.
 func runHelper(name string) int {
 	switch name {
@@ -39,12 +40,21 @@ func runHelper(name string) int {
 func otelChild() int {
 	fmt.Println(`{"severity":"INFO","message":"before","labels":{"schema":"app"}}`)
 	fmt.Println("plain before")
-	// Wait until loghorn has read the stdout lines, so the OTLP record cannot
-	// overtake them.
+	// Wait until the stdout lines are stored (by serve, or in this run's
+	// incoming folder when serve is down), so the OTLP record cannot overtake
+	// them.
+	data := os.Getenv("LOGHORN_DATA_DIR")
+	logs := []string{
+		filepath.Join(data, "loghorn.log"),
+		filepath.Join(data, "incoming", os.Getenv("LOGHORN_RUN_ID"), "loghorn.log"),
+	}
 	deadline := time.Now().Add(5 * time.Second)
+wait:
 	for time.Now().Before(deadline) {
-		if b, err := os.ReadFile("./.loghorn/loghorn.log"); err == nil && strings.Contains(string(b), "plain before") {
-			break
+		for _, p := range logs {
+			if b, err := os.ReadFile(p); err == nil && strings.Contains(string(b), "plain before") {
+				break wait
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

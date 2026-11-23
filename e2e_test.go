@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -67,7 +68,8 @@ func loghornCmd(t *testing.T, ctx context.Context, dir string, args ...string) *
 	t.Helper()
 	cmd := exec.CommandContext(ctx, buildLoghorn(t), args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir())
+	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(),
+		"LOGHORN_DATA_DIR="+t.TempDir(), "LOGHORN_SOCKET="+noSocket())
 	return cmd
 }
 
@@ -97,14 +99,10 @@ func runLoghorn(t *testing.T, dir string, stdin io.Reader, args ...string) resul
 	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
 }
 
-// readLog returns dir's .loghorn/loghorn.log.
-func readLog(t *testing.T, dir string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, ".loghorn", "loghorn.log"))
-	if err != nil {
-		t.Fatalf("reading the log file: %v", err)
-	}
-	return string(b)
+// noSocket is a socket path nothing listens on, so a test never reaches a
+// real serve on /tmp/loghorn.sock.
+func noSocket() string {
+	return fmt.Sprintf("/tmp/lh-none-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
 }
 
 // watchWriter collects writes and closes seen once they contain want.
@@ -163,18 +161,19 @@ func startUntil(t *testing.T, cmd *exec.Cmd, want string) (out *watchWriter, don
 }
 
 func TestWrapperPassThroughAndRecord(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, nil, "--", "sh", "-c", `printf 'a\033[31mred\033[0m\nplain\n'; echo err >&2; exit 3`)
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, nil, nil, "--", "sh", "-c", `printf 'a\033[31mred\033[0m\nplain\n'; echo err >&2; exit 3`)
 	if r.code != 3 {
 		t.Errorf("code = %d, want 3; stderr %q", r.code, r.stderr)
 	}
 	if want := "a\x1b[31mred\x1b[0m\nplain\n"; r.stdout != want {
 		t.Errorf("stdout = %q, want %q", r.stdout, want)
 	}
-	if !strings.Contains(r.stderr, "err") || strings.Contains(r.stderr, "loghorn:") {
-		t.Errorf("stderr = %q, want the child's err and no loghorn: line", r.stderr)
+	if !strings.Contains(r.stderr, "err\n") || strings.Count(r.stderr, "loghorn:") != 1 {
+		t.Errorf("stderr = %q, want the child's err and only the recording line", r.stderr)
 	}
-	log := readLog(t, dir)
+	log := e.waitLog(t, "ared\n", "plain\n", "err\n")
 	for _, want := range []string{"ared\n", "plain\n", "err\n"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log file missing %q:\n%q", want, log)
@@ -283,8 +282,9 @@ func TestWrapperIgnoresSIGINTToItself(t *testing.T) {
 }
 
 func TestWrapperFilter(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, nil, "run", "-filter", "--", "sh", "-c",
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, nil, nil, "run", "-filter", "--", "sh", "-c",
 		`echo "{\"severity\":\"INFO\",\"message\":\"i\"}"; echo "{\"severity\":\"ERROR\",\"message\":\"e\"}"; exit 2`)
 	if r.code != 2 {
 		t.Errorf("code = %d, want 2; stderr %q", r.code, r.stderr)
@@ -293,22 +293,17 @@ func TestWrapperFilter(t *testing.T) {
 	if r.stdout != errLine+"\n" {
 		t.Errorf("stdout = %q, want only the ERROR line", r.stdout)
 	}
-	log := readLog(t, dir)
-	if !strings.Contains(log, `{"severity":"INFO","message":"i"}`) || !strings.Contains(log, errLine) {
-		t.Errorf("log file should hold both lines:\n%s", log)
-	}
+	e.waitLog(t, `{"severity":"INFO","message":"i"}`, errLine)
 }
 
 func TestPipedStdinPassesThrough(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, strings.NewReader("one\ntwo\n"), "run")
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, strings.NewReader("one\ntwo\n"), nil, "run")
 	if r.code != 0 || r.stdout != "one\ntwo\n" {
 		t.Errorf("code %d stdout %q, want 0 and the input; stderr %q", r.code, r.stdout, r.stderr)
 	}
-	log := readLog(t, dir)
-	if !strings.Contains(log, "one\n") || !strings.Contains(log, "two\n") {
-		t.Errorf("log file should hold both lines:\n%s", log)
-	}
+	e.waitLog(t, "one\n", "two\n")
 }
 
 func TestRemovedFlagsExit2(t *testing.T) {

@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/ghjob"
-	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/store"
 )
@@ -75,46 +74,6 @@ func webStoreMode(historical, ghMode, fileInput bool, now time.Time) (store.Mode
 	return store.ModeLive, now
 }
 
-// openLogFile opens the always-on log file in .loghorn under the directory
-// loghorn was started from. A lock held by another loghorn is returned rather
-// than fatal, so loghorn can run on without a file — unless exclusive, when it
-// exits. Any other failure exits: the file is always on, so an unwritable
-// directory is a setup error.
-func openLogFile(exclusive bool) (*logfile.Writer, *logfile.LockedError) {
-	dir, err := logDir()
-	if err != nil {
-		// "log file:" marks this as the side log's problem, not the thing being
-		// launched — unlike -historical's setup errors below, which print the
-		// plain "loghorn: <err>" because -historical has no side log to blame.
-		fmt.Fprintln(os.Stderr, "loghorn: log file:", err)
-		os.Exit(1)
-	}
-	w, err := logfile.Open(dir, time.Now, time.Local)
-	var inTree *logfile.SourceTreeError
-	if errors.As(err, &inTree) {
-		fmt.Fprintln(os.Stderr, "loghorn:", err) // not a log-file fault: the wrong directory
-		os.Exit(1)
-	}
-	var locked *logfile.LockedError
-	if errors.As(err, &locked) {
-		if !exclusive {
-			return nil, locked
-		}
-		// Print the LockedError as-is: its own Error() is already the exact,
-		// unprefixed "another loghorn (pid N) is writing logs in <dir>" message.
-		fmt.Fprintln(os.Stderr, "loghorn:", err)
-		os.Exit(1)
-	}
-	if err != nil {
-		// "log file:" marks this as the side log's problem, not the thing being
-		// launched — unlike -historical's setup errors below, which print the
-		// plain "loghorn: <err>" because -historical has no side log to blame.
-		fmt.Fprintln(os.Stderr, "loghorn: log file:", err)
-		os.Exit(1)
-	}
-	return w, nil
-}
-
 // bareIDHint follows a gh failure when no repository was named, since the
 // usual cause is running outside the repository's checkout.
 const bareIDHint = "loghorn: a bare ID is looked up in this directory's GitHub repository; pass the URL to name another"
@@ -159,22 +118,6 @@ func logDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(cwd, ".loghorn"), nil
-}
-
-// recordSink returns the function that copies every record to the log file.
-// A multi-line JSON record is compacted first: the file holds one record per
-// line, and -historical replay depends on that. The writer returns only its
-// first failure and ignores records after it, so onFail runs at most once.
-// Without a log file the sink does nothing.
-func recordSink(w *logfile.Writer, onFail func(error)) func(rec []byte) {
-	if w == nil {
-		return func([]byte) {}
-	}
-	return func(rec []byte) {
-		if err := w.Write(ingest.CompactRecord(rec)); err != nil {
-			onFail(err)
-		}
-	}
 }
 
 // openHistoricalFiles resolves -historical's stored files and opens every one

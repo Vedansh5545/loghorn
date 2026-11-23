@@ -182,4 +182,3 @@ func loadRepoConfig(env cliEnv) (cfg config.Config, path, cwd string, code int, 
 	}
 	return cfg, path, cwd, 0, true
 }
-
