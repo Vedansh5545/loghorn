@@ -42,6 +42,15 @@ OS service (launchd LaunchAgent, systemd `--user` unit, Windows logon task).
   service (a later `loghorn service install`) or by hand in a terminal.
 - **[user]** The service requirements below (from the session working on
   `loghorn service`) are part of this design.
+- **[user]** Web port default 4380; OTLP keeps 4318 (HTTP) and 4317 (gRPC).
+  Every port can be overridden by a `serve` flag, and clients follow the
+  override (see Ports and discovery).
+- **[user]** When `serve` isn't running, `run` records anyway, writing into
+  the data folder itself (see When `serve` isn't running).
+- **[user]** `loghorn status` shows the environment variables an OTEL client
+  needs to send to `serve`.
+- **[user]** Phase 1 of this spec runs before the CLI query plan, whose last
+  tasks are amended to use `query` and `status`.
 - **[proposed]** Scheduled pulls are configuration that `serve` executes;
   `loghorn source` only edits it. "Cron" is not a mode.
 
@@ -72,7 +81,7 @@ OS service (launchd LaunchAgent, systemd `--user` unit, Windows logon task).
 | `loghorn open [flags] <log>` | 1: until Ctrl-C; 2: one shot | 1 | Open a finished log: a file, `-` (stdin), or a GitHub Actions run or job. |
 | `loghorn serve [flags]` | until SIGTERM/SIGINT | 1 (web only), 2 (store) | The store: OTLP receiver, web explorer and API, expiry, scheduled pulls. |
 | `loghorn query [flags] <url\|@file\|@->` | one shot | 1 | Print a web view's data (the CLI query design). |
-| `loghorn status` | one shot | 1 | Live instances (phase 1) or `serve` health and sources (phase 2). |
+| `loghorn status [-env]` | one shot | 1 | Live instances (phase 1); `serve` health, ports, sources and the OTEL client environment (phase 2). |
 | `loghorn config` | one shot | 1 | Print the config file in effect and the settings it resolves to. |
 | `loghorn source add\|list\|pause\|resume\|rm` | one shot | 3 | Edit scheduled pulls; `serve` runs them. |
 | `loghorn help [command]` | one shot | 1 | Same as `-h`. |
@@ -168,7 +177,7 @@ Every current flag, in phase 1 (subcommands over today's engine) and phase 2
 | `-notify`, `-notify-max-age`, `-notify-reset`, `-notify-sound` | `run` | `run` (alerts from `serve` are a separate design, decision 37) |
 | `-shutdown-grace` | `run` | `run` |
 | `-exclusive` | `run` | removed (no per-directory log file); a spill file, if built, has its own lock |
-| `-otel` | `run -otel` | removed; `run` always points the child's `OTEL_*` variables at `serve` |
+| `-otel` | `run -otel` | removed; `run` always points the child's `OTEL_*` variables at `serve`, or at its own receiver when `serve` is down |
 | `loghorn -web\|-filter < file` | `loghorn open file` or `open - < file` | same; imports the file as a run |
 | `-historical` | `open -historical` | removed; the store holds everything (`query`, the web page) |
 | `-gh-job ID\|URL` | `open URL` or `open -gh-job ID` | same; imports the job as a run |
@@ -213,7 +222,7 @@ Notes:
 top-level `-url`, `-o`, `-format`, `-to-sql` and `-instances`. Two orders
 work:
 
-- **A (recommended):** run phase 1 of this spec first, then amend CLI query
+- **A (chosen):** run phase 1 of this spec first, then amend CLI query
   Tasks 6–7 to add a `query` command and `status` instead of top-level
   flags. No flags ship and then move.
 - **B:** run the CLI query plan as written; phase 1 then moves its flags
@@ -236,12 +245,9 @@ Requirements from the `loghorn service` work. Each is a property of
    lines, i.e. `run` and `open`, which do have a start directory.
 2. **Fixed, configurable ports** that `run`, `query`, `status` and apps all
    know: OTLP/HTTP 4318, OTLP/gRPC 4317 when the gRPC receiver lands
-   (`2026-11-19-otlp-grpc-design.md`), and a fixed web port. Set in the
-   user-level `config.toml` under `[serve]` (`otlp-http-port`,
-   `otlp-grpc-port`, `web-port`) and overridable by `serve` flags; clients
-   read the same keys. Today both listeners use port 0
-   (`internal/otlp/receiver.go:34`, `web.Listen`). The per-user unix socket
-   from the CLI query design stays as the CLI's preferred route.
+   (`2026-11-19-otlp-grpc-design.md`), and web 4380. Today both listeners
+   use port 0 (`internal/otlp/receiver.go:34`, `web.Listen`). See Ports and
+   discovery for the overrides.
 3. **Foreground until SIGTERM or SIGINT**, then stop accepting, drain
    in-flight requests, flush the engine (DuckDB checkpoint, pending Parquet
    writes), release the lock and exit 0. `serve` never forks itself into the
@@ -272,6 +278,72 @@ build stays within reach. Today `GOOS=windows go build ./...` fails only on
 `syscall.Flock` (`internal/logfile/lock.go`) and `SIGWINCH`
 (`internal/wrap/wrap.go`).
 
+### Ports and discovery (phase 2)
+
+Each port is set, highest precedence first, by:
+
+1. a `serve` flag: `-otlp-http-port`, `-otlp-grpc-port`, `-web-port`;
+2. the user-level `config.toml`, `[serve]` keys `otlp-http-port`,
+   `otlp-grpc-port`, `web-port`;
+3. the defaults 4318, 4317, 4380.
+
+A port in use is a startup failure (requirement 4) whose message names the
+flag and the config key, e.g. for a user already running an OTel Collector:
+`loghorn serve: 127.0.0.1:4318 is in use; pick another OTLP port with -otlp-http-port or [serve] otlp-http-port in <config path>`.
+
+Clients don't guess ports. `serve` listens on a unix socket at a fixed path
+in its data folder, `<data>/serve.sock`, and `/api/session` on it reports
+the ports actually bound. `run`, `query`, `status` and `open` connect there
+first, so a flag override reaches them with no extra setting; they fall back
+to the configured web port only where unix sockets are unavailable. The
+socket lives in the data folder rather than `$TMPDIR/loghorn` (the CLI query
+design's location) because a launchd job may not see the terminal's
+`$TMPDIR`, and the two would then look in different places. The CLI query
+design's per-instance sockets stay for phase 1's several `-web` instances.
+
+The data folder is found the same way by every command: `serve -data DIR`
+for `serve` itself, else `$LOGHORN_DATA_DIR`, else the per-OS default. A
+`serve` started with `-data` elsewhere needs `LOGHORN_DATA_DIR` set for
+clients to find it; `status` says so when it finds no socket but the config
+names a different folder.
+
+### `loghorn status`
+
+Prints, in order:
+
+- whether `serve` is running: pid, start time, data folder, version;
+- the ports it bound (web URL, OTLP/HTTP and OTLP/gRPC endpoints);
+- sources and their freshness (phase 3, decision 14);
+- **the environment an OTEL client needs**, ready to paste:
+
+```
+# OpenTelemetry clients: send logs and traces to loghorn
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_TRACES_EXPORTER=otlp
+export OTEL_METRICS_EXPORTER=none
+# and per app: export OTEL_SERVICE_NAME=<your service>
+```
+
+The endpoint uses the port `serve` actually bound. `OTEL_METRICS_EXPORTER=none`
+is there because `serve` discards metrics today; it goes away when metrics
+are stored. `run` sets its child's variables itself (`otlp.ChildEnv`, plus
+`LOGHORN_RUN_ID` and `loghorn.run.id`), so these are for apps started
+without `run`.
+
+`status -env` prints only the `export` lines, so
+`eval "$(loghorn status -env)"` works in a shell or a repo's dev script.
+When `serve` isn't running, `status` still prints the environment from the
+configured ports (so a repo can be set up before the service is), after the
+"isn't running" line, and exits 1; `status -env` prints the lines and exits
+0, since the variables don't depend on `serve` being up.
+
+In phase 1, `status` lists the live `-web` instances (the CLI query design's
+`-instances` table) and prints no environment: the only OTLP receiver is
+`run -otel`'s, on a random port, and `run` already gives its child the
+variables.
+
 ### When `serve` isn't running (phase 2)
 
 No auto-start; clients say what to do.
@@ -279,11 +351,27 @@ No auto-start; clients say what to do.
 - `query`, `status`, `open`: exit 1 with
   `loghorn: loghorn serve isn't running on 127.0.0.1:<port>; start it with 'loghorn serve' or install it with 'loghorn service install'`.
   (`status` prints the same line and exits 1, so scripts can test it.)
-- `run`: never blocks or fails the child (decision 9). It prints the same
-  warning once, adds that spans and logs the child sends over OTLP itself
-  are lost while `serve` is down, keeps passing output through, and
-  records the child's output to a spill file if that option is built
-  (open question 2).
+- `run`: never blocks or fails the child (decision 9), and records anyway
+  as long as it can find the data folder. With no socket answering, it:
+  1. writes the child's records to a segment of its own,
+     `<data>/incoming/<run id>/`, in the store's segment format, and takes
+     only that segment's lock — never the store's lock, so `serve` can start
+     (or be restarted by its supervisor) while a long-lived `run`, such as
+     a dev server, is still going, and several such `run`s can record at
+     once;
+  2. receives the child's own OTLP on an ephemeral loopback port and points
+     the child's `OTEL_*` variables there, as `-otel` does today, storing
+     what arrives in the same segment;
+  3. prints one stderr line: `loghorn: serve isn't running; recording this
+     run to <data>/incoming/<run id> (apps sending OTLP to 4318 on their
+     own aren't recorded until serve starts)`.
+
+  `serve` adopts closed segments into the store at startup and on a timer,
+  then deletes them; an open segment (its lock still held) is left for
+  later. `run` keeps writing to its segment until the child exits even if
+  `serve` comes up meanwhile: switching mid-run would split it. When the
+  data folder can't be found or created, `run` warns and passes output
+  through without recording.
 
 ## Testing
 
@@ -306,17 +394,18 @@ Phase 1:
 Phase 2 (in the store's plan): startup failures for a busy port, a held
 lock and a bad config each exit non-zero before anything else starts;
 SIGTERM flushes and exits 0; `serve` started with cwd `/` and `HOME` set to
-a temp dir uses the per-user data folder and no repo config.
+a temp dir uses the per-user data folder and no repo config. Port flags
+override config, and `status` and `status -env` report the bound ports, with
+`serve` up and down. With `serve` down, two concurrent `run`s each write
+their own incoming segment, `serve` starts while they hold their locks,
+adopts each segment once its run ends, and a busy-port message names the
+flag and config key.
 
 ## Open questions
 
-1. **Web port default.** OTLP keeps the standard 4317/4318. The web port
-   needs a fixed default that doesn't collide with common dev servers;
-   proposal: 4380.
-2. **Spill file for `run` when `serve` is down** (decision 9's option):
-   build it in phase 2, or warn and drop?
-3. **Order against the CLI query plan:** A or B above.
-4. **A user who already runs an OTel Collector on 4318:** `serve` fails
-   fast (requirement 4) and the message names the `[serve] otlp-http-port`
-   setting. Is that enough, or should `loghorn status` detect the
-   collector?
+1. **Segment format for `run`'s incoming writes.** It must be something
+   `serve` can adopt cheaply; the store's own Parquet segment layout
+   (architecture notes, storage) is the obvious choice, but that layout is
+   specified in the store's design, not here.
+2. **Shells other than sh for `status -env`** (fish, PowerShell): add a
+   `-shell` choice when someone needs it.
