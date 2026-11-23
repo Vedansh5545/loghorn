@@ -99,3 +99,11 @@ git root (`.git` may be a file in a worktree), and outside git must not walk
 above its start directory, or it picks up the user-level `~/.config/loghorn`.
 Test it with no `.git` and with `HOME` as an ancestor of the start directory
 (see `schema.FindConfigDir`).
+
+## DuckDB from tests and tools
+
+Unset `AI_AGENT` in the environment of any `duckdb` process loghorn runs:
+DuckDB's agent mode changes the `-json` output (see
+`internal/query/tosql_duckdb_test.go`). A DuckDB decimal literal such as
+`0.95` is a DECIMAL; cast it to DOUBLE wherever the SQL must match Go's
+float64 math.

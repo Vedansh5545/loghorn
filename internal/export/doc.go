@@ -421,6 +421,10 @@ func appendJSON(b []byte, v any) []byte {
 	return append(b, "null"...)
 }
 
+// yamlNode builds the YAML tree with explicit tags: a string tagged !!str stays
+// a string even when it reads as a number, bool or null ("200", "true",
+// "null"), and a whole float is tagged !!int, since yaml.v3 otherwise prints
+// "!!float 3".
 func yamlNode(v any) *yaml.Node {
 	scalar := func(tag, val string) *yaml.Node {
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: val}
@@ -472,7 +476,10 @@ func yamlNode(v any) *yaml.Node {
 }
 
 // toonValue converts a document value for toon-go: object becomes its ordered
-// toon.Object, NaN and ±Inf the strings JSON uses.
+// toon.Object, NaN and ±Inf the strings JSON uses. toon-go keeps key order
+// only through toon.Object/toon.Field (it sorts Go maps), and turns a
+// json.Number into a float64 with no size check, so an integer beyond 2^53 is
+// passed as its digits (TOON then quotes it) rather than silently rounded.
 func toonValue(v any) any {
 	switch x := v.(type) {
 	case float64:

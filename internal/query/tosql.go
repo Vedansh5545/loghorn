@@ -73,7 +73,8 @@ var sqlZone = localZoneName
 // SQLHeader that selects the same rows Run does. r is the result of running
 // q; it supplies what exists only after a run (the samples column list when
 // q names none, the graph and heatmap bucket, the heatmap bands). Anything
-// that cannot be expressed exactly is an error.
+// that cannot be expressed exactly is an error. The layout is written here by
+// hand, not by internal/sqlfmt, which drops quotes around names.
 func ToSQL(q Query, s schema.Schema, r *Result) (string, error) {
 	if err := q.Validate(s); err != nil {
 		return "", err
@@ -232,6 +233,7 @@ func (b *sqlBuilder) aggSQL(a Aggregate, id string, t schema.Type) string {
 		return round15SQL("CAST(count(*) FILTER (WHERE " + match + ") AS DOUBLE) / nullif(count(*), 0)")
 	case "sum":
 		if t == schema.TInt {
+			// DuckDB's sum(BIGINT) is HUGEINT, which -json prints as a string.
 			return "CAST(sum(" + id + ") AS BIGINT)"
 		}
 		return round15SQL("sum(" + id + ")")
