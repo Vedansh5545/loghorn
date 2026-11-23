@@ -108,7 +108,8 @@ func cmdRun(args []string, env cliEnv) int {
 	switch {
 	case err == nil || !*oneShot:
 	case agent != "":
-		fmt.Fprintf(env.stderr, "loghorn: -serve ignored: started by an AI agent (%s is set), which would leave serve running; set %s=1 to allow it\n", agent, allowAgentVar)
+		fmt.Fprint(env.stderr, agentServeMessage("loghorn: ignoring -serve", agent,
+			"Recording this run the usual way instead (to a running serve, or per serve-down)."))
 	case errors.Is(err, sock.ErrNotRunning):
 		var serr error
 		if srv, serr = startOneShot(env.stderr); serr == nil {
@@ -327,6 +328,8 @@ func runChild(o opts, cfg config.Config, rec *recorder.Recorder, target runTarge
 		Grace:     o.grace,
 		Signals:   sigs,
 		Terminal:  terminal,
+		Countdown: countdownTo(env.stderr),
+		Name:      filepath.Base(o.args[0]),
 	})
 	exited()
 	stop()
@@ -445,6 +448,15 @@ func connectIncoming(dataDir string, m incoming.Meta, stderr io.Writer) (runTarg
 			logs.Close()
 		},
 	}, nil
+}
+
+// countdownTo returns stderr for wrap's shutdown countdown when it is a
+// terminal, where a line can be rewritten in place; nil otherwise.
+func countdownTo(stderr io.Writer) io.Writer {
+	if f, ok := stderr.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return f
+	}
+	return nil
 }
 
 // notRunningMessage is every client's word for a serve that doesn't answer.

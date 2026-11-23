@@ -89,8 +89,11 @@ loghorn -- npm run dev          # the same
 unchanged — through a pty when stdout is a terminal, so colours, progress bars and
 prompts work as they do without loghorn — and the keyboard stays the command's.
 `Ctrl-C` goes straight to the command; `SIGTERM` and `SIGHUP` sent to loghorn are
-forwarded to it, and a command still running `-shutdown-grace` after a `SIGTERM` is
-killed. loghorn exits with the command's status (127 when it can't be found). Flags go
+forwarded to it. A command still running `-shutdown-grace` (5s) after a `Ctrl-C` or
+`SIGTERM` is killed; from half a second on, a terminal shows a countdown
+(`waiting for npm to exit; killing it in 3s`), and a second `Ctrl-C` kills it at
+once. (An interactive command that uses `Ctrl-C` itself, such as a database shell,
+is killed this way too.) loghorn exits with the command's status (127 when it can't be found). Flags go
 before the command; everything from the command on is the command's.
 
 Meanwhile every record, with escape sequences removed, goes to `serve`, under a

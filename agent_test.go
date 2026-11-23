@@ -38,7 +38,7 @@ func TestServeRefusesAgent(t *testing.T) {
 	cmd := e.cmd(t, ctx, "serve", "-web-port", "0", "-otlp-http-port", "0")
 	cmd.Env = append(cmd.Env, "CLAUDECODE=1")
 	out, _ := cmd.CombinedOutput()
-	if cmd.ProcessState.ExitCode() != 2 || !strings.Contains(string(out), "CLAUDECODE") || !strings.Contains(string(out), "LOGHORN_ALLOW_AGENT") {
+	if cmd.ProcessState.ExitCode() != 2 || !strings.Contains(string(out), "CLAUDECODE") || !strings.Contains(string(out), "LOGHORN_ALLOW_AGENT") || !strings.Contains(string(out), "left running after the agent") {
 		t.Fatalf("exit %d; output %s", cmd.ProcessState.ExitCode(), out)
 	}
 	if _, err := os.Lstat(e.socket); err == nil {
@@ -70,7 +70,7 @@ func TestRunServeUnderAgentIsIgnored(t *testing.T) {
 	e := newServeEnv(t)
 	e.userPorts(t, freePort(t), freePort(t))
 	r := e.run(t, nil, []string{"XDG_CONFIG_HOME=", "CLAUDECODE=1"}, "run", "-serve", "--", "echo", "hi")
-	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "-serve ignored") || !strings.Contains(r.stderr, "CLAUDECODE") {
+	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "ignoring -serve") || !strings.Contains(r.stderr, "is meant to run all the time") || !strings.Contains(r.stderr, "CLAUDECODE") {
 		t.Fatalf("code %d stdout %q stderr %q", r.code, r.stdout, r.stderr)
 	}
 	if len(e.incomingDirs(t)) != 1 {

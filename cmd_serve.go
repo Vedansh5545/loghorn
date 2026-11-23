@@ -43,7 +43,8 @@ func cmdServe(args []string, env cliEnv) int {
 		return usageError(env, "serve takes no arguments; got %q", pos)
 	}
 	if v := runningUnderAgent(); v != "" {
-		fmt.Fprintf(env.stderr, "loghorn serve: refusing to start from an AI agent (%s is set): serve holds the data folder and ports until stopped. Start it yourself in a terminal or as a login service, or set %s=1.\n", v, allowAgentVar)
+		fmt.Fprint(env.stderr, agentServeMessage("loghorn serve: not starting", v,
+			"Start it yourself in a terminal ('loghorn serve') or install it as a login service."))
 		return 2
 	}
 

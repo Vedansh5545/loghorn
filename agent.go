@@ -1,6 +1,11 @@
 package main
 
-import "os"
+import (
+	"fmt"
+	"os"
+
+	"github.com/jimbeveridge/loghorn/internal/config"
+)
 
 // agentVars mark a process started by an AI coding agent: Claude Code sets
 // CLAUDECODE, Codex sets CODEX_SANDBOX (and CODEX_SANDBOX_NETWORK_DISABLED) on
@@ -29,3 +34,15 @@ func agentEnv(getenv func(string) string) string {
 }
 
 func runningUnderAgent() string { return agentEnv(os.Getenv) }
+
+// agentServeMessage explains why serve isn't started from an agent's shell:
+// what was seen, why that matters, what happens instead, and the override.
+func agentServeMessage(head, v, instead string) string {
+	return fmt.Sprintf(`%s: this looks like an AI coding agent's shell (%s is set).
+loghorn serve is meant to run all the time, started by you or a login service. One
+started from an agent's shell is left running after the agent's task, holding the
+data folder, the socket and ports %d/%d, so a later serve can't start and runs may go
+to the wrong place. %s
+To start it from here anyway, set %s=1.
+`, head, v, config.DefaultWebPort, config.DefaultOTLPHTTPPort, instead, allowAgentVar)
+}
