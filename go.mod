@@ -7,6 +7,7 @@ require (
 	github.com/ajitpratap0/GoSQLX v1.17.0
 	github.com/creack/pty v1.1.24
 	github.com/gen2brain/beeep v0.11.2
+	github.com/toon-format/toon-go v1.0.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.23.0
 	go.opentelemetry.io/otel/log v1.47.0

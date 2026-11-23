@@ -73,6 +73,8 @@ func Write(w io.Writer, f Format, res *query.Result, s schema.Schema) error {
 	switch f {
 	case CSV, TSV, MD, JSONL:
 		return writeFlat(w, f, res)
+	case JSON, YAML, TOON:
+		return writeDoc(w, f, res, s)
 	}
 	return fmt.Errorf("%w: %s", ErrUnsupported, f)
 }

@@ -74,6 +74,9 @@ func cellValue(c query.Cell, typ schema.Type) value {
 	if c.Bad || c.V == nil {
 		return nil
 	}
+	if f, ok := c.V.(float64); ok && typ == schema.TDuration {
+		return durationMs(f)
+	}
 	switch v := c.V.(type) {
 	case string:
 		switch typ {
@@ -107,6 +110,19 @@ func isJSONNumber(s string) bool {
 }
 
 func timeText(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+// durationMs converts a duration cell, which the query and page hold in
+// seconds, to the milliseconds the SQL table model and column descriptions
+// declare, rounded like every computed number.
+func durationMs(sec float64) float64 { return query.Round15(sec * 1000) }
+
+// metricNum is a graph value of a metric of type typ as exported.
+func metricNum(v float64, typ schema.Type) float64 {
+	if typ == schema.TDuration {
+		return durationMs(v)
+	}
+	return v
+}
 
 // graphTable is the wide graph: time, then one column per series. With no
 // group-by the single series is named by the plot metric.
@@ -146,7 +162,7 @@ func graphTable(g *query.Graph) table {
 		for _, s := range g.Series {
 			var v value
 			if i < len(s.Values) && s.Values[i] != nil {
-				v = *s.Values[i]
+				v = metricNum(*s.Values[i], g.Metric.Type)
 			}
 			row = append(row, v)
 		}
