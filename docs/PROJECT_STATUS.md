@@ -12,29 +12,34 @@ run and passed.
 |---|---|---|---|
 | Repo review and improvement plan | 2026-11-18 | Code reading plus three reproductions; repo not built | chat only |
 | Storage approach chosen (layout B) and first decisions recorded | 2026-11-23 | User answers in chat | `docs/DECISIONS.md` D-001…D-008 |
-| Scope chosen: one design for storage and SQL queries | 2026-11-23 | User answer in chat | `docs/DECISIONS.md` D-010 |
+| Scope chosen: one design for storage and SQL queries | 2026-11-23 | User answer in chat | D-010 |
+| Design approved | 2026-11-23 | User approval in chat | `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`, D-011 |
+| Local build environment (Go 1.26.1 + DuckDB 2.0.1) | 2026-11-23 | `go build ./...`, `go vet ./...` and `go test ./...` (25 packages) pass on upstream code | D-013 |
+| Implementation plan | 2026-11-23 | Self-review against the spec | `docs/superpowers/plans/2026-11-23-duckdb-storage.md` |
 
 ## In progress
 
 | Work | Started | State |
 |---|---|---|
-| Design for DuckDB storage and SQL queries (Superpowers brainstorming) | 2026-11-23 | Draft written: `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`. Builder check done (8 questions: 7 settled as Claude's calls in the doc). Waiting on user: "Known differences" |
+| Plan tasks 1–6 (native execution, D-012) | 2026-11-23 | Task 1 next |
 
 ## Planned (in order)
 
-1. ~~Write the design doc~~ (drafted 2026-11-23, see In progress).
-2. Builder check of the design, then one round of the user's questions.
-3. User approves the design. Nothing is built before this.
-4. Implementation plan at `docs/superpowers/plans/2026-11-23-duckdb-storage.md`.
-5. Execute the plan with tests first, review each task, verify.
+1. Task 1: driver and schema tallies.
+2. Task 2: `internal/duckstore` engine (memory catalogs).
+3. Task 3: SQL query execution with parity tests.
+4. Task 4: store façade and web wiring.
+5. Task 5: day files, modes, rebuild, rollover, failure.
+6. Task 6: speed check, docs, whole-branch review.
 
 ## Blocked
 
 | Item | Blocks | Needs |
 |---|---|---|
-| DuckDB can't be installed in the cloud session (package installs off) | Running or testing any DuckDB code there | Package installs allowed, or work on a local machine |
-| The cloud session can't push to `jimbeveridge/loghorn` | Sharing commits through GitHub | Push access, or the user applies the patch |
-| The cloud session has Go 1.24.7; `go.mod` needs 1.26.1 | Building and testing loghorn there | Go 1.26 toolchain download or a local machine |
+| The cloud session can't push to `jimbeveridge/loghorn` | Sharing commits through GitHub | Push access, or the user applies the patches |
+| `go.sum` can't be completed offline | Merging | `go mod tidy` on a normal machine (D-013) |
+
+Resolved: "DuckDB can't be installed" and "Go 1.24.7 only" (both by D-013).
 
 ## Failed
 
@@ -42,5 +47,4 @@ None.
 
 ## Next actions
 
-1. User answers the "Known differences" question.
-2. User reviews the builder check's questions, then approves the design.
+1. Execute the plan, task by task.

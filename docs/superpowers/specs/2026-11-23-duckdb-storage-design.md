@@ -1,7 +1,7 @@
 # DuckDB storage and SQL queries for the web view — design
 
 Date: 2026-11-23
-Status: draft, awaiting approval
+Status: approved 2026-11-23 (D-011); refined by D-014..D-020
 Decisions: `docs/DECISIONS.md` D-001 to D-010 (this document is where they
 become final)
 

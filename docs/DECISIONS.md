@@ -140,6 +140,122 @@ or has not yet answered.
 - **Consequences:** A larger design and plan. Nothing can be checked end
   to end until both halves are built.
 
+## D-011 Design approved, with its known differences accepted
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** user approved Claude's calls; Claude chose the known-differences option under the user's "take aggressive decisions"
+- **Decision:** `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`
+  is approved, including its "Claude's calls" list. The four "Known
+  differences" from today's answers are accepted. No text copy of each
+  field is stored.
+- **Why:** The differences are rare (type overrides needing original
+  text; present-but-null fields in per-interval default columns), already
+  happen today (rebuilt days), or are invisible (last digit of sums). A text
+  copy would roughly double storage and slow writes.
+- **Alternatives:** Store a text copy of every field (exact parity).
+- **Consequences:** D-001 to D-008 and D-010 move from provisional to
+  accepted, as refined by the design doc. In particular, D-003's displayed
+  kind lives in a `_stream` column, not `stream`.
+
+## D-012 Native execution, one final review
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** user ("complete the whole thing by your own")
+- **Decision:** Claude implements every plan task in this session, tests
+  first, then one fresh reviewer checks the whole branch.
+- **Alternatives:** A fresh agent per task, plus a reviewer per task (more
+  thorough, slower).
+
+## D-013 Local build setup for this session (not committed)
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude
+- **Decision:** The cloud session can't reach the Go module proxy, Go
+  downloads, or GitHub releases. So it builds Go 1.26.1 from its GitHub
+  source, points Go at module copies cloned from GitHub mirrors through a
+  `go.work` outside the repo, and links DuckDB 2.0.1's shared library
+  (from npm `@duckdb/node-bindings-linux-x64@2.0.1-r.1`) with the driver's
+  `duckdb_use_lib` build tag.
+- **Consequences:** The committed `go.mod` requires the DuckDB driver, but
+  `go.sum` can't be completed here. **Before merging, run `go mod tidy` on a
+  normal machine** and run the tests without the build tag.
+
+## D-014 Durations stored as DOUBLE seconds
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (refines the design's duration row)
+- **Decision:** A duration column is `DOUBLE` holding
+  `schema.Convert(v, duration).Num`, in seconds.
+- **Why:** The design kept durations as text because "the saved unit can
+  change". Reading `schema.Convert` showed the unit is display-only for
+  durations: a number is taken as is and a string is parsed by
+  `ParseDuration`, whatever the unit. So the converted number never changes,
+  and filters and percentiles avoid parsing text on every query.
+- **Alternatives:** VARCHAR as received, parsed at query time (slower, same
+  answers).
+- **Consequences:** The text as received stays in `_raw`.
+
+## D-015 Requests wait briefly for queued writes
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude
+- **Decision:** A read request waits up to 250 ms for records added before
+  it to be committed, then answers with what is committed.
+- **Why:** Today a record is visible the moment it is added. Without the
+  wait, a page refresh or a test could miss records still in the queue.
+  Writers never wait on readers, so the child and the receiver are not
+  slowed.
+- **Alternatives:** Answer from committed data only (stale by one batch).
+
+## D-016 `query.Run` and `schema.Infer` stay as the test oracle
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (defers part of the design's "delete after parity")
+- **Decision:** The web no longer calls `query.Run` or `schema.Infer`, but
+  both stay in the code, used by the parity tests.
+- **Why:** The parity tests are the proof that SQL answers match. Deleting
+  the oracle would leave future SQL changes unchecked. Deleting it is a
+  one-commit follow-up once the author agrees.
+
+## D-017 Trace columns shared; JSON stored as text
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (refines `all_records`)
+- **Decision:** Every table gets shared columns `_trace_id`, `_span_id`,
+  `_parent_span_id` (normalized with `record.TraceRef` and
+  `NormalizeSpanID`) and `_name` (a span's name). `all_records` carries them
+  instead of raw `trace_id`/`span_id`/`parent_span_id`/`severity`/`message`.
+  JSON fields are `VARCHAR`, not DuckDB `JSON`.
+- **Why:** Logs carry trace references under `trace`/`spanId` too, and
+  `trace.Build` matches normalized ids. Shared normalized columns make
+  trace and aggregate lookups one indexed-style WHERE. `VARCHAR` keeps the
+  JSON text exactly as today's cells show it.
+
+## D-018 Days in doubt are rebuilt at startup, synchronously
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (simplifies the design's background rebuild)
+- **Decision:** At startup the lock holder rebuilds each retained day whose
+  pair is missing or in doubt, before records flow, into a temporary file
+  then renamed. Other processes load such days from text into memory.
+  "In doubt" = not closed cleanly, marked dirty, or the day's text files
+  have a different total size from the one recorded at the last clean
+  close.
+- **Why:** One code path, no switching a day from memory to file
+  mid-session. The cost is paid once per day in doubt and is no more than
+  today's preload, which every `-web` run pays. Sizes are a sturdier
+  fingerprint than modification times.
+- **Consequences:** A first run after upgrading pauses while it builds up to
+  four days; loghorn prints a line while it does.
+
+## D-019 Where the code lives
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (builder's choice in the design)
+- **Decision:** New package `internal/duckstore` owns DuckDB. `internal/store`
+  stays the façade its callers use. SQL execution lives in
+  `internal/query/sqlrun.go`, next to the helpers whose answers it must
+  match.
+
+## D-020 Untimed leading records appear at end of input
+
+- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude
+- **Decision:** A record with no time and no earlier record waits until a
+  timed record arrives (and takes its time, as today) or the input ends.
+- **Why:** A stored `_time` never changes after it is written. Today such
+  records show with no time until backfilled; live runs never have them.
+
 ---
 
 ## Open questions
