@@ -169,9 +169,11 @@ func TestOtelEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(otlpLines[0]), &rec); err != nil {
 		t.Fatalf("OTLP line: %v", err)
 	}
-	labels, _ := rec["labels"].(map[string]any)
-	if labels["schema"] != "test.event" {
-		t.Errorf("labels = %v", rec["labels"])
+	if _, ok := rec["labels"]; ok {
+		t.Errorf("labels written: %v", rec["labels"])
+	}
+	if rec["event.name"] != "test.event" {
+		t.Errorf("event.name = %v", rec["event.name"])
 	}
 	for k, want := range map[string]any{
 		"message": "hello otel", "severity": "ERROR", "service.name": "e2e",

@@ -94,7 +94,9 @@ endpoint and run id to stderr. Received records are appended to `.loghorn/loghor
 as JSON lines (and shown in `-web`, and counted by `-notify`); they are not printed by
 `-filter`, which shows the command's own output. Each record's stream is its
 `event.name`, else its instrumentation scope name, else `otel`, so `-web` lists it
-under that name. The body, attributes, `service.name`, `trace_id`, `span_id` and the
+under that name; the stream is worked out when the line is read, from those standard
+fields, and no stream label is stored. The body, attributes, `event.name`,
+`otel.scope.name`, `service.name`, `trace_id`, `span_id` and the
 run id are stored as fields, and `loghorn.source` is `otlp`.
 
 Spans the command exports are stored one JSON object per line in
