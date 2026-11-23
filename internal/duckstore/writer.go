@@ -1,0 +1,415 @@
+package duckstore
+
+import (
+	"database/sql/driver"
+	"fmt"
+	"sort"
+	"strings"
+
+	duckdb "github.com/duckdb/duckdb-go/v2"
+
+	"github.com/jimbeveridge/loghorn/internal/adapter"
+	"github.com/jimbeveridge/loghorn/internal/record"
+	"github.com/jimbeveridge/loghorn/internal/schema"
+)
+
+// write stores one batch, grouped by day pair and signal. A file catalog
+// that fails sends the rest of the session to memory (onFail).
+func (e *Engine) write(batch []record.Record) {
+	type group struct {
+		c    *catalog
+		recs []record.Record
+	}
+	var groups []*group
+	byCat := map[*catalog]*group{}
+	for _, r := range batch {
+		p, err := e.pairFor(dayOf(r.Seq))
+		if err != nil || p == nil {
+			e.fail(err)
+			if p, err = e.memFallback(); err != nil {
+				continue
+			}
+		}
+		c := p.cat(r.Key().Source)
+		g := byCat[c]
+		if g == nil {
+			g = &group{c: c}
+			byCat[c] = g
+			groups = append(groups, g)
+		}
+		g.recs = append(g.recs, r)
+	}
+	changed := false
+	for _, g := range groups {
+		ch, err := e.writeCatalog(g.c, g.recs)
+		changed = changed || ch
+		if err == nil {
+			continue
+		}
+		if g.c.day < 0 { // memory itself failed: nothing left to try
+			e.warnOnce("loghorn: DuckDB write failed: " + err.Error())
+			continue
+		}
+		e.fail(err)
+		m, merr := e.memFallback()
+		if merr != nil {
+			continue
+		}
+		ch, err = e.writeCatalog(m.cat(g.c.source), g.recs)
+		changed = changed || ch
+		if err != nil {
+			e.warnOnce("loghorn: DuckDB write failed: " + err.Error())
+		}
+	}
+	if changed {
+		if err := e.rebuildViews(); err != nil {
+			e.warnOnce("loghorn: DuckDB views: " + err.Error())
+		}
+	}
+	e.version.Add(1)
+}
+
+func (e *Engine) warnOnce(msg string) {
+	key := msg
+	if i := strings.IndexByte(key, '\n'); i >= 0 {
+		key = key[:i]
+	}
+	if len(key) > 60 {
+		key = key[:60]
+	}
+	if e.warned[key] {
+		return
+	}
+	e.warned[key] = true
+	e.warn(msg)
+}
+
+// fail reports a file write failure once and lets the day owner mark it.
+func (e *Engine) fail(err error) {
+	if err == nil {
+		return
+	}
+	if e.onFail != nil {
+		e.onFail(err)
+	}
+}
+
+// memFallback returns the in-memory pair, creating it on first use, and
+// routes every later record there.
+func (e *Engine) memFallback() (*pair, error) {
+	if e.mem == nil {
+		m, err := e.memPair()
+		if err != nil {
+			e.warnOnce("loghorn: DuckDB: " + err.Error())
+			return nil, err
+		}
+		e.mem = m
+	}
+	m := e.mem
+	e.pairFor = func(int) (*pair, error) { return m, nil }
+	return m, nil
+}
+
+// tableKey is the table a record goes to: its stream for a log, its span
+// type for a span (D-003).
+func tableKey(r record.Record) string {
+	if r.Key().Source == record.SourceOtel {
+		if s, _ := r.Fields["span.type"].(string); s != "" {
+			return s
+		}
+		return record.StreamSpan
+	}
+	return r.Stream
+}
+
+// writeCatalog appends recs to c, creating tables and columns and changing
+// column types first. It reports whether the schema changed.
+func (e *Engine) writeCatalog(c *catalog, recs []record.Record) (changed bool, err error) {
+	type group struct {
+		t     *table
+		recs  []record.Record
+		paths map[string]bool
+	}
+	var groups []*group
+	byTable := map[*table]*group{}
+	for _, r := range recs {
+		t, created, err := e.ensureTable(c, r.Service, tableKey(r))
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || created
+		g := byTable[t]
+		if g == nil {
+			g = &group{t: t, paths: map[string]bool{}}
+			byTable[t] = g
+			groups = append(groups, g)
+		}
+		g.recs = append(g.recs, r)
+		for path, v := range r.Fields {
+			k := schema.Classify(v)
+			t.kinds[path] |= k
+			g.paths[path] = true
+			fk := fkey{r.Service, t.key, r.Stream, path}
+			tl := c.tallies[fk]
+			if tl == nil {
+				tl = &schema.Tally{}
+				c.tallies[fk] = tl
+			}
+			tl.Count++
+			tl.Kinds |= k
+			c.changed[fk] = true
+		}
+	}
+	for _, g := range groups {
+		paths := make([]string, 0, len(g.paths))
+		for p := range g.paths {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			want := schema.TallyType(p, g.t.kinds[p])
+			col := g.t.byPath[p]
+			switch {
+			case col == nil:
+				if err := e.addColumn(c, g.t, p, want); err != nil {
+					return changed, err
+				}
+				changed = true
+			case col.typ != want:
+				if err := e.retype(c, g.t, col, want); err != nil {
+					return changed, err
+				}
+				changed = true
+			}
+		}
+		if err := e.appendRows(c, g.t, g.recs); err != nil {
+			return changed, err
+		}
+	}
+	return changed, e.saveTallies(c)
+}
+
+func (e *Engine) ensureTable(c *catalog, service, key string) (*table, bool, error) {
+	if t := c.tables[tkey{service, key}]; t != nil {
+		return t, false, nil
+	}
+	sch := c.schemas.name(service)
+	tn := c.tnames[sch]
+	if tn == nil {
+		tn = newNamer()
+		c.tnames[sch] = tn
+	}
+	t := &table{service: service, key: key, schema: sch, name: tn.name(key),
+		byPath: map[string]*column{}, names: newNamer(columnReserved()...), kinds: map[string]schema.KindSet{}}
+	cols := make([]string, len(sharedCols))
+	for i, sc := range sharedCols {
+		cols[i] = ident(sc.name) + " " + sc.typ
+	}
+	if err := e.exec("CREATE SCHEMA IF NOT EXISTS " + ident(c.alias) + "." + ident(sch)); err != nil {
+		return nil, false, err
+	}
+	if err := e.exec("CREATE TABLE " + t.ref(c.alias) + " (" + strings.Join(cols, ", ") + ")"); err != nil {
+		return nil, false, err
+	}
+	if err := e.exec("INSERT INTO "+c.meta("_tables")+" VALUES (?, ?, ?, ?)", service, key, t.schema, t.name); err != nil {
+		return nil, false, err
+	}
+	c.addTable(t)
+	return t, true, nil
+}
+
+func (e *Engine) addColumn(c *catalog, t *table, path string, typ schema.Type) error {
+	col := &column{path: path, name: t.names.name(path), typ: typ}
+	if err := e.exec("ALTER TABLE " + t.ref(c.alias) + " ADD COLUMN " + ident(col.name) + " " + sqlType(typ)); err != nil {
+		return err
+	}
+	if err := e.exec("INSERT INTO "+c.meta("_columns")+" VALUES (?, ?, ?, ?, ?)", t.schema, t.name, path, col.name, string(typ)); err != nil {
+		return err
+	}
+	t.cols = append(t.cols, col)
+	t.byPath[path] = col
+	return nil
+}
+
+// retype changes a column's type. A change to string rewrites every stored
+// value from its record's _raw, so the column holds the text as received
+// (as schema.Convert gives it); other changes (int to float, or a column of
+// nulls getting its first values) are exact casts.
+func (e *Engine) retype(c *catalog, t *table, col *column, typ schema.Type) error {
+	ref, cn := t.ref(c.alias), ident(col.name)
+	var rewrite []rewriteRow
+	if typ == schema.TString {
+		var err error
+		if rewrite, err = e.rewriteValues(ref, col, typ); err != nil {
+			return err
+		}
+	}
+	if err := e.exec("ALTER TABLE " + ref + " ALTER " + cn + " SET DATA TYPE " + sqlType(typ) + " USING TRY_CAST(" + cn + " AS " + sqlType(typ) + ")"); err != nil {
+		return err
+	}
+	if len(rewrite) > 0 {
+		if err := e.exec("CREATE OR REPLACE TEMP TABLE lh_rewrite (id BIGINT, v VARCHAR)"); err != nil {
+			return err
+		}
+		err := e.wc.Raw(func(dc any) error {
+			a, err := duckdb.NewAppender(dc.(driver.Conn), "temp", "main", "lh_rewrite")
+			if err != nil {
+				return err
+			}
+			for _, r := range rewrite {
+				if err := a.AppendRow(r.id, r.v); err != nil {
+					a.Close()
+					return err
+				}
+			}
+			return a.Close()
+		})
+		if err != nil {
+			return err
+		}
+		if err := e.exec("UPDATE " + ref + " SET " + cn + " = w.v, _bad = list_filter(_bad, lambda b: b <> " + lit(col.path) + ") FROM temp.main.lh_rewrite w WHERE " + ref + "._id = w.id"); err != nil {
+			return err
+		}
+		if err := e.exec("DROP TABLE temp.main.lh_rewrite"); err != nil {
+			return err
+		}
+	}
+	col.typ = typ
+	return e.exec("UPDATE "+c.meta("_columns")+" SET type = ? WHERE schema_name = ? AND table_name = ? AND path = ?", string(typ), t.schema, t.name, col.path)
+}
+
+type rewriteRow struct {
+	id int64
+	v  any
+}
+
+func (e *Engine) rewriteValues(ref string, col *column, typ schema.Type) ([]rewriteRow, error) {
+	rows, err := e.wc.QueryContext(bg, "SELECT _id, _source, _raw FROM "+ref+" WHERE "+ident(col.name)+" IS NOT NULL OR coalesce(list_contains(_bad, "+lit(col.path)+"), false)")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rewriteRow
+	f := schema.Field{Path: col.path, Type: typ}
+	for rows.Next() {
+		var id int64
+		var src, raw string
+		if err := rows.Scan(&id, &src, &raw); err != nil {
+			return nil, err
+		}
+		r, ok := e.rebuild(src, []byte(raw))
+		if !ok {
+			continue
+		}
+		out = append(out, rewriteRow{id, value(schema.Convert(r.Fields[col.path], f), typ)})
+	}
+	return out, rows.Err()
+}
+
+// rebuild turns a stored _raw back into its record's fields, the same way
+// the record was first built.
+func (e *Engine) rebuild(source string, raw []byte) (record.Record, bool) {
+	if source == record.SourceOtel {
+		return record.NormalizeSpan(raw)
+	}
+	return record.Normalize(adapter.New(e.in).ParseLine(raw), e.in)
+}
+
+// value is what the appender stores for a converted value.
+func value(v schema.Value, t schema.Type) any {
+	if v.Empty || v.Bad {
+		return nil
+	}
+	switch norm(t) {
+	case schema.TInt:
+		return v.Int
+	case schema.TFloat, schema.TDuration:
+		return v.Num
+	case schema.TBool:
+		return v.Bool
+	case schema.TTimestamp:
+		return v.Time.UTC()
+	}
+	return v.Str
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func (e *Engine) appendRows(c *catalog, t *table, recs []record.Record) error {
+	return e.wc.Raw(func(dc any) error {
+		a, err := duckdb.NewAppender(dc.(driver.Conn), c.alias, t.schema, t.name)
+		if err != nil {
+			return err
+		}
+		row := make([]driver.Value, len(sharedCols)+len(t.cols))
+		for _, r := range recs {
+			var tm any
+			if !r.Time.IsZero() {
+				tm = r.Time.UTC()
+			}
+			tid, sid := record.TraceRef(r.Fields)
+			var parent, name any
+			if r.Key().Source == record.SourceOtel {
+				p, _ := r.Fields["parent_span_id"].(string)
+				parent = nullStr(record.NormalizeSpanID(p))
+				n, _ := r.Fields["name"].(string)
+				name = nullStr(n)
+			}
+			var bad []string
+			for i, col := range t.cols {
+				v := schema.Convert(r.Fields[col.path], schema.Field{Path: col.path, Type: col.typ})
+				if v.Bad {
+					bad = append(bad, col.path)
+				}
+				row[len(sharedCols)+i] = value(v, col.typ)
+			}
+			var badv any
+			if bad != nil {
+				badv = bad
+			}
+			copy(row, []driver.Value{int64(r.Seq), tm, r.TimeInherited, r.Key().Source, r.Service, r.Stream,
+				nullStr(tid), nullStr(sid), parent, name, badv, string(r.Raw)})
+			if err := a.AppendRow(row...); err != nil {
+				a.Close()
+				return fmt.Errorf("append to %s: %w", t.ref(c.alias), err)
+			}
+		}
+		return a.Close()
+	})
+}
+
+// saveTallies writes the changed tallies to _fields.
+func (e *Engine) saveTallies(c *catalog) error {
+	if len(c.changed) == 0 {
+		return nil
+	}
+	keys := make([]fkey, 0, len(c.changed))
+	for k := range c.changed {
+		keys = append(keys, k)
+	}
+	for len(keys) > 0 {
+		n := min(len(keys), 500)
+		var sb strings.Builder
+		args := make([]any, 0, n*6)
+		sb.WriteString("INSERT OR REPLACE INTO " + c.meta("_fields") + " VALUES ")
+		for i, k := range keys[:n] {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?, ?)")
+			tl := c.tallies[k]
+			args = append(args, k.service, k.tkey, k.kind, k.path, int64(tl.Count), int32(tl.Kinds))
+		}
+		if err := e.exec(sb.String(), args...); err != nil {
+			return err
+		}
+		keys = keys[n:]
+	}
+	clear(c.changed)
+	return nil
+}
