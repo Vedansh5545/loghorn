@@ -244,10 +244,17 @@ directory.
 `run` keeps everything it does locally today (pass-through, pty, signals,
 exit status, `-filter`, `-notify*`) and parses each line with the existing
 adapters. Instead of appending to `.loghorn/loghorn.log`, it sends the
-records to `serve` as OTLP logs (decision 9: timestamp, severity, the raw
-line as body, parsed fields as attributes, `service.name` and
-`loghorn.run.id` as resource attributes), batched, over OTLP/HTTP to the
-port `serve` reports. The child's `OTEL_*` variables point at `serve`'s
+records to `serve` as OTLP logs, batched, over OTLP/HTTP to the port
+`serve` reports. Each log record's body is the framed line exactly as
+`run` would have written it to the log file; the resource carries
+`service.name`, `loghorn.run.id` and `loghorn.input` (the run's
+`[input]` settings as JSON), and the scope is named `loghorn.run`. `serve`
+recognises that scope and records the body through a recorder with the
+run's input settings and service, so a run's stored records are the same
+as today's. Any other OTLP endpoint sees ordinary log records with the
+line as body. (This narrows decision 9, which also proposed parsed fields
+as attributes: `serve` would only parse the body again, and the run's
+repo settings must decide that parse.) The child's `OTEL_*` variables point at `serve`'s
 OTLP port (`otlp.ChildEnv`, unchanged). `run` prints `serve`'s web URL to
 stderr once, at start.
 
@@ -451,12 +458,14 @@ since the variables don't depend on `serve` being up.
 
 ### Interaction with the CLI query plan
 
-`docs/superpowers/plans/2026-11-23-cli-query.md` (not yet executed) adds
-top-level `-url`, `-o`, `-format`, `-to-sql` and `-instances`, and
-per-instance sockets under `$TMPDIR/loghorn`. Phase 1 runs first; then that
-plan is amended so Task 5 serves the API on `serve`'s socket (no
-per-instance sockets or discovery) and Tasks 6–7 add a `query` command
-instead of top-level flags. `-instances` is dropped: `status` covers it.
+`docs/superpowers/plans/2026-11-23-cli-query.md` was executed before this
+spec's plan. It added top-level `-url`, `-o`, `-format`, `-limit`,
+`-to-sql` and `-instances`, the positional URL, and per-instance sockets
+under `$TMPDIR/loghorn` (`web.SocketDir`, `internal/instances`). Phase 1
+moves them: the flags go under `query` (`-url X` becomes the positional),
+`-instances` is dropped in favour of `status`, and the per-instance
+sockets and discovery are replaced by `serve`'s one socket. `open`'s
+temporary view gets no socket; `query` reaches it by its full URL.
 
 ## Testing
 
