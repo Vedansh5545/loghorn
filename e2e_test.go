@@ -240,7 +240,7 @@ func TestWrapperSIGTERMEscalates(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := loghornCmd(t, ctx, dir, "-shutdown-grace", "200ms", "--", "sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done")
+	cmd := loghornCmd(t, ctx, dir, "run", "-shutdown-grace", "200ms", "--", "sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done")
 	_, done := startUntil(t, cmd, "ready")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestWrapperIgnoresSIGINTToItself(t *testing.T) {
 
 func TestWrapperFilter(t *testing.T) {
 	dir := t.TempDir()
-	r := runLoghorn(t, dir, nil, "-filter", "--", "sh", "-c",
+	r := runLoghorn(t, dir, nil, "run", "-filter", "--", "sh", "-c",
 		`echo "{\"severity\":\"INFO\",\"message\":\"i\"}"; echo "{\"severity\":\"ERROR\",\"message\":\"e\"}"; exit 2`)
 	if r.code != 2 {
 		t.Errorf("code = %d, want 2; stderr %q", r.code, r.stderr)
@@ -301,50 +301,13 @@ func TestWrapperFilter(t *testing.T) {
 
 func TestPipedStdinPassesThrough(t *testing.T) {
 	dir := t.TempDir()
-	r := runLoghorn(t, dir, strings.NewReader("one\ntwo\n"))
+	r := runLoghorn(t, dir, strings.NewReader("one\ntwo\n"), "run")
 	if r.code != 0 || r.stdout != "one\ntwo\n" {
 		t.Errorf("code %d stdout %q, want 0 and the input; stderr %q", r.code, r.stdout, r.stderr)
 	}
 	log := readLog(t, dir)
 	if !strings.Contains(log, "one\n") || !strings.Contains(log, "two\n") {
 		t.Errorf("log file should hold both lines:\n%s", log)
-	}
-}
-
-func TestReplaysNeedWebOrFilter(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(t.TempDir(), "in.log")
-	if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	devNull := func() *os.File {
-		d, err := os.Open(os.DevNull)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { d.Close() })
-		return d
-	}
-
-	for _, tc := range []struct {
-		name  string
-		stdin io.Reader
-		args  []string
-		want  string
-	}{
-		{"file", f, nil, "loghorn: reading a file (loghorn < file) needs -web or -filter"},
-		{"historical", devNull(), []string{"-historical"}, "loghorn: -historical needs -web or -filter"},
-		{"nothing", devNull(), nil, "loghorn: nothing to read: give a command after --, pipe input into loghorn, or pass -web to browse the stored logs"},
-	} {
-		r := runLoghorn(t, dir, tc.stdin, tc.args...)
-		if r.code != 2 || !strings.Contains(r.stderr, tc.want) {
-			t.Errorf("%s: code %d stderr %q, want 2 and %q", tc.name, r.code, r.stderr, tc.want)
-		}
 	}
 }
 
@@ -362,24 +325,12 @@ func TestFileWithFilter(t *testing.T) {
 	if err := os.WriteFile(p, []byte(errLine+"\n"+`{"severity":"INFO","message":"i"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	r := runLoghorn(t, dir, f, "-filter")
+	r := runLoghorn(t, dir, nil, "open", p, "-filter")
 	if r.code != 0 || r.stdout != errLine+"\n" {
 		t.Errorf("code %d stdout %q, want 0 and the ERROR line; stderr %q", r.code, r.stdout, r.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".loghorn")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("reading a file created .loghorn (stat err %v)", err)
-	}
-}
-
-func TestWebWithFilterAllowed(t *testing.T) {
-	r := runLoghorn(t, t.TempDir(), nil, "-web", "-filter", "--", "sh", "-c", "echo hi")
-	if r.code != 0 || !strings.Contains(r.stderr, "web view at http://127.0.0.1:") {
-		t.Errorf("code %d stderr %q", r.code, r.stderr)
 	}
 }
 
@@ -402,5 +353,14 @@ func TestDisplayWarns(t *testing.T) {
 	r := runLoghorn(t, dir, nil, "--", "true")
 	if r.code != 0 || !strings.Contains(r.stderr, "[display] is ignored") {
 		t.Errorf("code %d stderr %q", r.code, r.stderr)
+	}
+}
+
+func TestOpenNeedsOneSource(t *testing.T) {
+	for _, args := range [][]string{{"open"}, {"open", "a.log", "-gh-job", "5"}, {"open", "a.log", "b.log"}} {
+		r := runLoghorn(t, t.TempDir(), nil, args...)
+		if r.code != 2 || !strings.Contains(r.stderr, "loghorn: open") {
+			t.Errorf("%q: code %d stderr %q", args, r.code, r.stderr)
+		}
 	}
 }

@@ -35,6 +35,30 @@ go build -o loghorn .
 
 ## Running it
 
+<!-- loghorn help -->
+```
+loghorn — capture, store and query the logs and traces of local apps
+
+Usage: loghorn <command> [flags] [args]
+
+Store
+  serve            run the store: receive OTLP, serve the web explorer
+
+Capture
+  run -- <cmd>     run a command, passing its output through, and record it
+  open <log>       open a finished log: a file, or a GitHub Actions run or job
+
+Read
+  ui               open the web explorer in your browser
+  query <url>      print a web view's data as TSV, CSV, Markdown, JSON, ...
+  status           show serve's state and the OTEL environment for apps
+  config           show the config file in effect
+
+Shortcuts: 'loghorn -- <cmd>' is 'loghorn run'; 'loghorn <url>' is 'loghorn query'.
+Run 'loghorn help <command>' for its flags.
+```
+<!-- /loghorn help -->
+
 **Wrap the producer:**
 
 ```sh

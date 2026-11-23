@@ -23,99 +23,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/ghjob"
 	"github.com/jimbeveridge/loghorn/internal/ingest"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/store"
-	"github.com/jimbeveridge/loghorn/internal/web"
 )
 
-func usage() {
-	fmt.Fprint(flag.CommandLine.Output(), `loghorn — wrap a command, record its logs, surface the failures.
+func main() { os.Exit(dispatch(os.Args[1:], stdEnv())) }
 
-Usage:
-  loghorn [flags] -- <command> [args...]   run the command and record its output
-  <command> | loghorn [flags]              record a pipe
-  loghorn -web                             browse the stored logs
-  loghorn -web|-filter < file              replay a file
-  loghorn -web|-filter -historical         replay the stored logs
-  loghorn -web|-filter -gh-job <id|url>    replay a GitHub Actions job
-  loghorn -web|-filter -gh-run <id|url>    replay one job of a GitHub Actions run
-  loghorn http://127.0.0.1:PORT/?q=…       print a -web view's data (TSV)
-  loghorn -url URL|/?q=…|@file|@- [-o FILE] [-format F] [-limit N] [-to-sql]
-  loghorn -instances                       list the running -web instances
-
-With a command after --, loghorn is a transparent wrapper: the command's
-stdout and stderr reach the terminal unchanged (through a pty when stdout is a
-terminal, so colours and prompts keep working), Ctrl-C reaches the command
-directly, SIGTERM and SIGHUP are forwarded to it (SIGTERM is followed by
-SIGKILL after -shutdown-grace), and loghorn exits with the command's status:
-127 when it can't be found. Piped input is copied to stdout the same way.
-
-Every record is also appended to .loghorn/loghorn.log in the directory loghorn
-starts in, with escape sequences removed, so each project gets its own logs and
-its own lock. Each finished day is kept as loghorn-YYYY-MM-DD.log, and days
-before the last three are deleted. loghorn never creates or writes .loghorn
-inside its own source tree.
-
--filter prints only the important records (errors and worse) to stdout instead
-of everything. It works with every input, and with -web.
-
-Replays read a finished log and never write .loghorn, so they need -web or
--filter to show anything: a file on stdin (loghorn < file); -historical, the
-stored days oldest first, then today; -gh-job, one GitHub Actions job by job
-ID or URL; and -gh-run, a run by run ID or URL, which shows its first failed
-job (or its first job) and lists the others on stderr. The GitHub flags fetch
-through the gh CLI, so gh must be installed and logged in; with a bare ID the
-repository is the one the current directory's git remote points at. Replay
-flags refuse a command or piped stdin, so from cron or CI pass </dev/null.
-
--otel (with a command) also starts an OTLP/HTTP receiver on 127.0.0.1 and
-points the command's OpenTelemetry SDK at it through OTEL_* environment
-variables; the log records it receives are stored with the command's output,
-and spans in .loghorn/loghorn.traces.jsonl (kept and rotated like loghorn.log).
-
--web serves a query view on 127.0.0.1 (loopback only; -web-port picks the
-port, default a free one) and prints its URL to stderr. It also listens on a
-per-user unix socket, $TMPDIR/loghorn/<pid>.sock (else $XDG_RUNTIME_DIR/loghorn,
-else /tmp/loghorn-<uid>), which the query mode below uses to find it. It lists the streams
-of structured records, with typed filters, a time range, search and sort,
-saved schemas and favorite queries (under .config/loghorn in the repo). With
-a command it serves until the command exits, with a pipe until end of input;
-with a replay, or alone (the stored logs), until Ctrl-C.
-
-A query asks a running -web instance for the view a page URL names (copy it
-from the address bar) and prints it: TSV by default, or -format csv, tsv,
-md, json, jsonl, yaml, toon or sql; -o FILE writes a file whose extension
-picks the format; -to-sql prints DuckDB SQL instead of data; -limit N
-overrides the URL's row limit (samples) or top (table, graph). -url /?q=…
-(no host) goes through the socket of the single running instance, and
--url @file or @- reads a long URL from a file or stdin. Only 127.0.0.1 and
-localhost are queried. A query never reads stdin otherwise, never records
-anything and can't be combined with a command, -web, -otel or a replay.
-
-Settings come from .config/loghorn/config.toml, found by walking up from the
-directory loghorn starts in; the nearest one wins outright, and if there is
-none, $XDG_CONFIG_HOME/loghorn/config.toml or ~/.config/loghorn/config.toml
-applies. It selects how input is framed (format) and how LogEntry fields and
-severities are read (field-naming, severity). Run with -config to see which
-file is in effect.
-
-Examples:
-  loghorn -- npm run dev
-  loghorn -filter -- go test ./...
-  kubectl logs -f pod | loghorn -web
-  loghorn -web
-  loghorn -filter -historical </dev/null
-  loghorn -web -gh-run https://github.com/owner/repo/actions/runs/43954926722
-
-Flags:
-`)
-	flag.PrintDefaults()
-}
-
-// opts holds every parsed flag value plus the arguments after them.
+// opts carries the flag values of run, open and query to the code paths they
+// share.
 type opts struct {
 	filter       bool
 	notify       bool
@@ -142,106 +59,6 @@ type opts struct {
 	instances bool
 
 	args []string
-}
-
-func parseFlags() opts {
-	var o opts
-	flag.BoolVar(&o.filter, "filter", false, "print only important records to stdout instead of everything")
-	flag.BoolVar(&o.notify, "notify", false, "fire a desktop notification when fresh errors occur")
-	flag.DurationVar(&o.notifyMaxAge, "notify-max-age", time.Second, "skip notifications for errors older than this (by their log timestamp)")
-	flag.DurationVar(&o.notifyReset, "notify-reset", 15*time.Second, "end an error burst after this quiet gap, so the next error notifies again")
-	flag.BoolVar(&o.notifySound, "notify-sound", true, "play the system alert sound with notifications (with -notify)")
-	flag.DurationVar(&o.grace, "shutdown-grace", 5*time.Second, "after forwarding SIGTERM to the command, SIGKILL it this much later")
-	flag.BoolVar(&o.exclusive, "exclusive", false, "exit if another loghorn is already writing the log file, instead of running without one")
-	flag.BoolVar(&o.historical, "historical", false, "replay the stored log files (oldest day first, then today); needs -web or -filter")
-	flag.StringVar(&o.ghRun, "gh-run", "", "replay the first failed job of a GitHub Actions run, by run ID or run URL (needs gh, and -web or -filter)")
-	flag.StringVar(&o.ghJob, "gh-job", "", "replay a GitHub Actions job's log, by job ID or job URL (needs gh, and -web or -filter)")
-	flag.BoolVar(&o.config, "config", false, "print the config file in effect and the settings it resolves to, then exit")
-	flag.BoolVar(&o.otel, "otel", false, "receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs -- <command>)")
-	flag.BoolVar(&o.web, "web", false, "serve the web query view on 127.0.0.1 and print its URL to stderr")
-	flag.IntVar(&o.webPort, "web-port", 0, "port for -web (0 picks a free one)")
-	flag.StringVar(&o.url, "url", "", "query a -web instance: its page URL (http://127.0.0.1:PORT/?q=…), /?q=… for the single running one, @file or @- (stdin)")
-	flag.StringVar(&o.out, "o", "", "write the query's output to this file; its extension picks the format")
-	flag.StringVar(&o.format, "format", "", "query output format: csv, tsv, md, json, jsonl, yaml, toon or sql (default tsv, or -o's extension)")
-	flag.IntVar(&o.limit, "limit", 0, "query rows: overrides the URL's limit (samples) or top (table, graph)")
-	flag.BoolVar(&o.toSQL, "to-sql", false, "print the DuckDB SQL of the URL's query instead of its data")
-	flag.BoolVar(&o.instances, "instances", false, "list the running -web instances (pid, port, start time, cwd)")
-	flag.Usage = usage
-	flag.Parse()
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "limit" {
-			o.limitSet = true
-		}
-	})
-	o.args = flag.Args()
-	return o
-}
-
-// main validates everything that can fail with os.Exit before runCommand
-// launches a child; after that it only exits with the child's status.
-func main() {
-	if err := removedFlagError(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "loghorn:", err)
-		os.Exit(2)
-	}
-	o := parseFlags()
-	// A query is decided before detectInput looks at stdin: it never records
-	// stdin, never launches a command, and exits here.
-	if queryRequested(o) {
-		os.Exit(runQuery(o, queryEnv{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, socketDir: web.SocketDir}))
-	}
-
-	if n := countSet(o.historical, o.ghJob != "", o.ghRun != ""); n > 1 {
-		fmt.Fprintln(os.Stderr, "loghorn: use only one of -historical, -gh-job and -gh-run")
-		os.Exit(2)
-	}
-	m := mode{kind: detectInput(o.args, os.Stdin, o.historical, o.ghJob, o.ghRun), web: o.web, filter: o.filter, otel: o.otel}
-	// -config reads nothing, so it is exempt from the input check.
-	if !o.config {
-		if err := m.check(); err != nil {
-			fmt.Fprintln(os.Stderr, "loghorn:", err)
-			os.Exit(2)
-		}
-	}
-
-	// One os.Getwd serves both the config file and the web view's start
-	// directory. logDir makes its own call for the log file's directory; the
-	// two agree only because nothing in this program calls os.Chdir. A cwd
-	// that can't be resolved here (deleted out from under the process) is not
-	// fatal: config discovery has nowhere to walk from, so the built-in
-	// defaults apply. A run that needs the log file still fails in logDir.
-	// A bad config FILE is a usage error, reported before anything is
-	// launched or written.
-	cwd, cwdErr := os.Getwd()
-	cfg, cfgPath := config.Default(), ""
-	if cwdErr != nil {
-		fmt.Fprintln(os.Stderr, "loghorn: can't resolve the working directory, using default settings:", cwdErr)
-	} else {
-		var err error
-		cfg, cfgPath, err = config.Load(cwd)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "loghorn:", err)
-			os.Exit(2)
-		}
-	}
-	if o.config {
-		if cfgPath == "" {
-			fmt.Println("no config file found; using defaults")
-		} else {
-			fmt.Println(cfgPath)
-		}
-		fmt.Print(cfg.String())
-		return
-	}
-
-	switch m.kind {
-	case kindCommand:
-		os.Exit(runCommand(o, cfg, cwd))
-	case kindPipe:
-		os.Exit(runPipe(o, cfg, cwd))
-	default:
-		os.Exit(runReplay(m, o, cfg, cwd))
-	}
 }
 
 // webStoreMode picks the web store's mode and run start. Only a live run has a
@@ -296,17 +113,6 @@ func openLogFile(exclusive bool) (*logfile.Writer, *logfile.LockedError) {
 		os.Exit(1)
 	}
 	return w, nil
-}
-
-// countSet counts the true values.
-func countSet(bs ...bool) int {
-	n := 0
-	for _, b := range bs {
-		if b {
-			n++
-		}
-	}
-	return n
 }
 
 // bareIDHint follows a gh failure when no repository was named, since the

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/jimbeveridge/loghorn/internal/ghjob"
 )
@@ -66,44 +64,6 @@ type mode struct {
 	web, filter, otel bool
 }
 
-// check rejects a combination with nothing to show. A replay never writes the
-// log file, so without -web or -filter it would read its input for nothing.
-func (m mode) check() error {
-	shown := m.web || m.filter
-	if m.otel {
-		switch m.kind {
-		case kindCommand:
-		case kindNone:
-			return errors.New("-otel needs a command after --")
-		default:
-			return fmt.Errorf("-otel needs a command after --; it can't be used with %s", m.kind.describe())
-		}
-	}
-	switch m.kind {
-	case kindNone:
-		if !m.web {
-			return errors.New("nothing to read: give a command after --, pipe input into loghorn, or pass -web to browse the stored logs")
-		}
-	case kindFile:
-		if !shown {
-			return errors.New("reading a file (loghorn < file) needs -web or -filter")
-		}
-	case kindHistorical:
-		if !shown {
-			return errors.New("-historical needs -web or -filter")
-		}
-	case kindGHJob:
-		if !shown {
-			return errors.New("-gh-job needs -web or -filter")
-		}
-	case kindGHRun:
-		if !shown {
-			return errors.New("-gh-run needs -web or -filter")
-		}
-	}
-	return nil
-}
-
 // detectInput decides the input. A replay flag wins (refuseOtherInput later
 // rejects it alongside a command or stdin), then a command, then stdin: a
 // regular file is a replay, anything else that is not a character device (a
@@ -130,33 +90,6 @@ func detectInput(args []string, stdin *os.File, historical bool, ghJob, ghRun st
 		return kindPipe
 	}
 	return kindNone
-}
-
-// removedFlags are flags of the removed terminal UI. flag.Parse would only
-// call them unknown; this names why.
-var removedFlags = []string{"scrollback", "theme"}
-
-// removedFlagError reports a removed flag among args, which are scanned up to
-// the first "--" so a command's own flags are left alone.
-func removedFlagError(args []string) error {
-	for _, a := range args {
-		if a == "--" {
-			return nil
-		}
-		name, ok := strings.CutPrefix(a, "--")
-		if !ok {
-			if name, ok = strings.CutPrefix(a, "-"); !ok {
-				continue
-			}
-		}
-		name, _, _ = strings.Cut(name, "=")
-		for _, r := range removedFlags {
-			if name == r {
-				return fmt.Errorf("-%s was removed along with the terminal UI", r)
-			}
-		}
-	}
-	return nil
 }
 
 // describeJobs tells which of a run's jobs -gh-run is showing, and lists the

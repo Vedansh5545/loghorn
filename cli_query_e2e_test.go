@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -51,18 +50,16 @@ func TestCLIQueryE2E(t *testing.T) {
 	env = append(env, "XDG_CONFIG_HOME="+t.TempDir(), "XDG_RUNTIME_DIR="+t.TempDir())
 	serverDir, clientDir := t.TempDir(), t.TempDir()
 
-	// The server replays a file redirected to stdin (never a pipe).
-	fixture, err := os.Open("testdata/web/app.jsonl")
+	// The server shows a file in open's view.
+	fixture, err := filepath.Abs("testdata/web/app.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fixture.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv := exec.CommandContext(ctx, buildLoghorn(t), "-web", "-web-port", "0")
+	srv := exec.CommandContext(ctx, buildLoghorn(t), "open", fixture)
 	srv.Dir = serverDir
 	srv.Env = append(os.Environ(), env...)
-	srv.Stdin = fixture
 	srvErr := newWatchWriter("web view at http://127.0.0.1:")
 	srv.Stderr = srvErr
 	if err := srv.Start(); err != nil {
@@ -86,7 +83,7 @@ func TestCLIQueryE2E(t *testing.T) {
 	q := `/?q=` + `%7B%22stream%22%3A%22app%22%2C%22range%22%3A%7B%22from%22%3A%22all%22%7D%7D`
 
 	// Positional URL, stdin /dev/null: TSV with a header and 3 rows.
-	r := cliRun(t, clientDir, env, nil, base+q)
+	r := cliRun(t, clientDir, env, nil, base+q) // the shortcut for query
 	if r.code != 0 {
 		t.Fatalf("positional: exit %d: %s", r.code, r.stderr)
 	}
@@ -105,25 +102,25 @@ func TestCLIQueryE2E(t *testing.T) {
 		t.Errorf("query mode created .loghorn in its directory (stat err %v)", err)
 	}
 
-	// -url @file.
+	// @file.
 	urlFile := filepath.Join(clientDir, "url.txt")
 	if err := os.WriteFile(urlFile, []byte(base+q+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r = cliRun(t, clientDir, env, nil, "-url", "@"+urlFile)
+	r = cliRun(t, clientDir, env, nil, "query", "@"+urlFile)
 	if r.code != 0 || r.stdout != want {
-		t.Fatalf("-url @file: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
+		t.Fatalf("@file: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 
-	// -url @- reads the URL from stdin.
-	r = cliRun(t, clientDir, env, strings.NewReader(base+q+"\n"), "-url", "@-")
+	// @- reads the URL from stdin.
+	r = cliRun(t, clientDir, env, strings.NewReader(base+q+"\n"), "query", "@-")
 	if r.code != 0 || r.stdout != want {
 		t.Fatalf("-url @-: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 
 	// -o out.yaml picks YAML by extension.
 	out := filepath.Join(clientDir, "out.yaml")
-	r = cliRun(t, clientDir, env, nil, "-o", out, base+q)
+	r = cliRun(t, clientDir, env, nil, "query", base+q, "-o", out)
 	if r.code != 0 {
 		t.Fatalf("-o: exit %d: %s", r.code, r.stderr)
 	}
@@ -133,19 +130,13 @@ func TestCLIQueryE2E(t *testing.T) {
 	}
 
 	// -to-sql prints a SELECT.
-	r = cliRun(t, clientDir, env, nil, "-to-sql", base+q)
+	r = cliRun(t, clientDir, env, nil, "query", "-to-sql", base+q)
 	if r.code != 0 || !strings.Contains(r.stdout, "SELECT") {
 		t.Fatalf("-to-sql: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 
-	// -instances lists the server's pid.
-	r = cliRun(t, clientDir, env, nil, "-instances")
-	if r.code != 0 || !strings.Contains(r.stdout, strconv.Itoa(srv.Process.Pid)) {
-		t.Fatalf("-instances: exit %d, stdout %q, stderr %q; want pid %d", r.code, r.stdout, r.stderr, srv.Process.Pid)
-	}
-
 	// A host-less URL goes through the socket of the single instance.
-	r = cliRun(t, clientDir, env, nil, "-url", q)
+	r = cliRun(t, clientDir, env, nil, "query", q)
 	if r.code != 0 || r.stdout != want {
 		t.Fatalf("host-less: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
