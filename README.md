@@ -73,6 +73,11 @@ lives*), not in the current directory, and stops cleanly on `SIGTERM` or `Ctrl-C
 fails at once, with a message naming the setting to change, when a port is taken,
 another `serve` holds the data folder, or another answers on the socket.
 
+`serve` refuses to start from an AI coding agent's shell (it sees `CLAUDECODE`,
+`AI_AGENT` or `CODEX_SANDBOX` set): an agent would leave it holding the data folder
+and ports. Start it yourself, or set `LOGHORN_ALLOW_AGENT=1`. An agent's `run` still
+records, to a running `serve` or through `serve-down`.
+
 **Wrap the producer:**
 
 ```sh
@@ -155,7 +160,9 @@ loghorn run -serve -- npm test
 ```
 
 While it runs, apps sending OTLP to it are recorded too. The exit status is still the
-command's. With a `serve` already running, `-serve` does nothing extra; if one can't
+command's. It waits for `Ctrl-C` only when stdin is a terminal; from a script or CI it
+stops with the run (the run stays stored for a later `serve`). An AI agent's `run`
+ignores `-serve`, as `serve` itself does. With a `serve` already running, `-serve` does nothing extra; if one can't
 start (a port in use, say), `run` says why and follows `serve-down`. While the one-shot
 `serve` holds the data folder, a `serve` started by a login service waits its turn.
 

@@ -42,8 +42,9 @@ command's.
 
 With -serve and no serve running, run starts one inside itself for this run,
 on the usual data folder, socket and ports, and keeps serving the web view
-after the command exits, until Ctrl-C or SIGTERM. Its exit status is still
-the command's.
+after the command exits, until Ctrl-C or SIGTERM (when stdin is a terminal;
+without one it stops with the run). Its exit status is still the command's.
+An AI coding agent's run ignores -serve unless LOGHORN_ALLOW_AGENT=1.
 `
 
 // runFlags registers run's local flags on fs into o.
@@ -100,8 +101,14 @@ func cmdRun(args []string, env cliEnv) int {
 	var target runTarget
 	var srv *serve.Server
 	sess, err := sock.Probe(path)
+	agent := ""
+	if err != nil && *oneShot {
+		agent = runningUnderAgent()
+	}
 	switch {
 	case err == nil || !*oneShot:
+	case agent != "":
+		fmt.Fprintf(env.stderr, "loghorn: -serve ignored: started by an AI agent (%s is set), which would leave serve running; set %s=1 to allow it\n", agent, allowAgentVar)
 	case errors.Is(err, sock.ErrNotRunning):
 		var serr error
 		if srv, serr = startOneShot(env.stderr); serr == nil {
@@ -161,7 +168,7 @@ func cmdRun(args []string, env cliEnv) int {
 		}
 	}
 	if srv != nil {
-		sig.serveUntilStopped(srv, env.stderr)
+		sig.serveUntilStopped(srv, term.IsTerminal(int(env.stdin.Fd())), env.stderr)
 	}
 	return status
 }
@@ -251,13 +258,20 @@ func (s *oneShotSignals) stopDuringPipe(srv *serve.Server, target runTarget, std
 
 // serveUntilStopped keeps a one-shot serve up after its run, so the run can
 // be browsed, until Ctrl-C, SIGTERM or SIGHUP, then closes it. A TERM or HUP
-// that arrived during the run closes it at once.
-func (s *oneShotSignals) serveUntilStopped(srv *serve.Server, stderr io.Writer) {
+// that arrived during the run closes it at once, and so does having no
+// terminal on stdin: nobody there could press Ctrl-C, and a script or CI job
+// would wait forever.
+func (s *oneShotSignals) serveUntilStopped(srv *serve.Server, interactive bool, stderr io.Writer) {
 	select {
 	case <-s.term:
 		s.closeServe(srv, stderr)
 		return
 	default:
+	}
+	if !interactive {
+		fmt.Fprintln(stderr, "loghorn: no terminal to stop serve from, so it stops with the run; the run is stored. Start 'loghorn serve' to browse it.")
+		s.closeServe(srv, stderr)
+		return
 	}
 	fmt.Fprintf(stderr, "loghorn: the run is done; serving %s until Ctrl-C\n", srv.Session().WebURL())
 	select {

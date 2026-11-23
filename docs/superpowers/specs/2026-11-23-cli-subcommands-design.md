@@ -403,6 +403,13 @@ start serve: …") and follows `serve-down`. This is not auto-start: it happens
 only when asked for, on that run. While it holds the data folder's lock, a
 supervised serve fails its start and is retried until the one-shot run ends.
 
+**[user]** It waits for Ctrl-C only when stdin is a terminal; otherwise it
+closes serve when the run ends, saying the run is stored. **[user]** AI coding
+agents must not start serve: `loghorn serve` exits 2 and `run -serve` is
+ignored (falling back to serve-down) when `CLAUDECODE`, `AI_AGENT`,
+`CODEX_SANDBOX` or `CODEX_SANDBOX_NETWORK_DISABLED` is set, unless
+`LOGHORN_ALLOW_AGENT` is. An agent's own runs still record.
+
 ## `loghorn ui`
 
 Asks the socket for `serve`'s web URL (`/api/session`) and opens it in the

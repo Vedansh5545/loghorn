@@ -68,7 +68,7 @@ func loghornCmd(t *testing.T, ctx context.Context, dir string, args ...string) *
 	t.Helper()
 	cmd := exec.CommandContext(ctx, buildLoghorn(t), args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(),
+	cmd.Env = append(append(os.Environ(), noAgent...), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(),
 		"LOGHORN_DATA_DIR="+t.TempDir(), "LOGHORN_SOCKET="+noSocket())
 	return cmd
 }
@@ -98,6 +98,10 @@ func runLoghorn(t *testing.T, dir string, stdin io.Reader, args ...string) resul
 	}
 	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
 }
+
+// noAgent clears the variables that mark an AI coding agent (see agentEnv):
+// the tests may run under one, and serve refuses to start from one.
+var noAgent = []string{"CLAUDECODE=", "AI_AGENT=", "CODEX_SANDBOX=", "CODEX_SANDBOX_NETWORK_DISABLED=", "LOGHORN_ALLOW_AGENT="}
 
 // noSocket is a socket path nothing listens on, so a test never reaches a
 // real serve on /tmp/loghorn.sock.

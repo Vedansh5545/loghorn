@@ -23,7 +23,9 @@ const serveUsage = `Usage: loghorn serve [flags]
 Run the store until SIGTERM or Ctrl-C: receive OTLP logs and traces from apps
 and the records 'loghorn run' sends, keep them in the data folder, and serve
 the web explorer. It stays in the foreground; start it from a terminal or
-install it as a login service. Its own log goes to stderr (or -log).
+install it as a login service. Its own log goes to stderr (or -log). It
+refuses to start from an AI coding agent's shell (CLAUDECODE, AI_AGENT or
+CODEX_SANDBOX set) unless LOGHORN_ALLOW_AGENT=1.
 `
 
 func cmdServe(args []string, env cliEnv) int {
@@ -39,6 +41,10 @@ func cmdServe(args []string, env cliEnv) int {
 	}
 	if len(pos) > 0 {
 		return usageError(env, "serve takes no arguments; got %q", pos)
+	}
+	if v := runningUnderAgent(); v != "" {
+		fmt.Fprintf(env.stderr, "loghorn serve: refusing to start from an AI agent (%s is set): serve holds the data folder and ports until stopped. Start it yourself in a terminal or as a login service, or set %s=1.\n", v, allowAgentVar)
+		return 2
 	}
 
 	cfg, cfgPath, err := config.LoadUser()

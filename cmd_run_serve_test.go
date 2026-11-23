@@ -47,6 +47,7 @@ func TestRunServeOneShot(t *testing.T) {
 	cmd := e.cmd(t, context.Background(), "run", "-serve", "--", "sh", "-c",
 		`echo '{"labels":{"schema":"app"},"message":"one-shot"}'; exit 3`)
 	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
+	cmd.Stdin = ttyStdin(t) // waiting for Ctrl-C needs a terminal
 	out := newWatchWriter("until Ctrl-C")
 	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {

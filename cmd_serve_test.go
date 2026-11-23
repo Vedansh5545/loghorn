@@ -34,10 +34,11 @@ func newServeEnv(t *testing.T) serveEnv {
 	return serveEnv{home: t.TempDir(), data: t.TempDir(), socket: filepath.Join(sdir, "s.sock")}
 }
 
-// environ is os.Environ() with this env's HOME, LOGHORN_DATA_DIR and
+// environ is os.Environ() without the AI-agent markers (the tests themselves
+// may run under one), with this env's HOME, LOGHORN_DATA_DIR and
 // LOGHORN_SOCKET appended, so they win.
 func (e serveEnv) environ() []string {
-	return append(os.Environ(), "HOME="+e.home, "LOGHORN_DATA_DIR="+e.data, "LOGHORN_SOCKET="+e.socket)
+	return append(append(os.Environ(), noAgent...), "HOME="+e.home, "LOGHORN_DATA_DIR="+e.data, "LOGHORN_SOCKET="+e.socket)
 }
 
 // cmd returns the binary's command in this environment.
