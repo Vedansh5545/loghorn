@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -99,4 +100,65 @@ func TestRunServeStartFailureFallsBack(t *testing.T) {
 	if r.code != 0 || r.stdout != "hi\n" || !strings.Contains(r.stderr, "can't start serve") || !strings.Contains(r.stderr, "is in use") {
 		t.Fatalf("code %d stdout %q stderr %q", r.code, r.stdout, r.stderr)
 	}
+}
+
+// waitExit waits up to 10 s for cmd to exit after a signal and checks that the
+// one-shot serve's socket is gone.
+func (e serveEnv) waitExit(t *testing.T, cmd *exec.Cmd, stderr *watchWriter) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("run -serve kept running after the signal; stderr %q", stderr.String())
+	}
+	if _, err := os.Lstat(e.socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket left behind: %v", err)
+	}
+}
+
+func TestRunServeTermDuringCommandStops(t *testing.T) {
+	e := newServeEnv(t)
+	e.userPorts(t, freePort(t), freePort(t))
+	cmd := e.cmd(t, context.Background(), "run", "-serve", "--", "sh", "-c", "echo started; sleep 30")
+	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
+	errw := newWatchWriter("recording to serve")
+	cmd.Stderr = errw
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	<-errw.seen
+	e.waitLog(t, "started")
+	cmd.Process.Signal(syscall.SIGTERM) // forwarded to the command; run must not linger
+	e.waitExit(t, cmd, errw)
+	if strings.Contains(errw.String(), "until Ctrl-C") {
+		t.Fatalf("run kept serving after SIGTERM: %q", errw.String())
+	}
+}
+
+func TestRunServePipeSignalStops(t *testing.T) {
+	e := newServeEnv(t)
+	e.userPorts(t, freePort(t), freePort(t))
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pw.Close()
+	cmd := e.cmd(t, context.Background(), "run", "-serve")
+	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME=")
+	cmd.Stdin = pr
+	errw := newWatchWriter("recording to serve")
+	cmd.Stderr = errw
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pr.Close()
+	defer cmd.Process.Kill()
+	<-errw.seen
+	pw.WriteString("piped\n")
+	e.waitLog(t, "piped")
+	cmd.Process.Signal(syscall.SIGINT)
+	e.waitExit(t, cmd, errw)
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -101,13 +100,20 @@ func cmdRun(args []string, env cliEnv) int {
 	var target runTarget
 	var srv *serve.Server
 	sess, err := sock.Probe(path)
-	if err != nil && *oneShot && errors.Is(err, sock.ErrNotRunning) {
+	switch {
+	case err == nil || !*oneShot:
+	case errors.Is(err, sock.ErrNotRunning):
 		var serr error
 		if srv, serr = startOneShot(env.stderr); serr == nil {
 			sess, err = srv.Session(), nil
+		} else if again, perr := sock.Probe(path); perr == nil {
+			// Another serve started meanwhile: use it.
+			sess, err = again, nil
 		} else {
 			fmt.Fprintln(env.stderr, "loghorn: can't start serve: "+serr.Error())
 		}
+	default:
+		fmt.Fprintln(env.stderr, "loghorn: -serve ignored: something is on the socket but isn't answering")
 	}
 	if err == nil {
 		target = connectServe(sess, svc, runID, cfg.Input, env.stderr)
@@ -127,10 +133,18 @@ func cmdRun(args []string, env cliEnv) int {
 	if target.attach != nil {
 		target.attach(rec)
 	}
+	// A one-shot serve listens for its stop signals for the whole run, so
+	// none falls to the default action (which would skip srv.Close) in the
+	// gap between the command's signal handling and the post-run wait.
+	var sig *oneShotSignals
+	if srv != nil {
+		sig = newOneShotSignals()
+	}
 	var status int
 	if len(pos) > 0 {
-		status = runChild(o, cfg, rec, target, env)
+		status = runChild(o, cfg, rec, target, env, sig.childExited)
 	} else {
+		pipeDone := sig.stopDuringPipe(srv, target, env.stderr)
 		err := wrap.Pipe(env.stdin, wrap.Options{
 			Recorder:  rec,
 			Frame:     configuredFrame(cfg),
@@ -139,6 +153,7 @@ func cmdRun(args []string, env cliEnv) int {
 			Stdout:    env.stdout,
 			Stderr:    env.stderr,
 		})
+		pipeDone()
 		target.finish()
 		if err != nil {
 			fmt.Fprintln(env.stderr, "loghorn: input error:", err)
@@ -146,7 +161,7 @@ func cmdRun(args []string, env cliEnv) int {
 		}
 	}
 	if srv != nil {
-		serveUntilStopped(srv, env.stderr)
+		sig.serveUntilStopped(srv, env.stderr)
 	}
 	return status
 }
@@ -178,21 +193,100 @@ func startOneShot(log io.Writer) (*serve.Server, error) {
 	return srv, nil
 }
 
+// oneShotSignals holds a one-shot serve's stop signals. term (SIGTERM,
+// SIGHUP) means stop now, even mid-run: run forwards those to the command, and
+// whoever sent them wants run gone too. intr (Ctrl-C) during the command is
+// the command's, so it is discarded when the command exits; after that it
+// ends serving. A nil *oneShotSignals does nothing.
+type oneShotSignals struct {
+	term, intr chan os.Signal
+}
+
+func newOneShotSignals() *oneShotSignals {
+	s := &oneShotSignals{term: make(chan os.Signal, 1), intr: make(chan os.Signal, 1)}
+	signal.Notify(s.term, syscall.SIGTERM, syscall.SIGHUP)
+	signal.Notify(s.intr, os.Interrupt)
+	return s
+}
+
+// childExited runs as soon as the command has exited, before run's own signal
+// forwarding stops: a Ctrl-C queued until now was the command's.
+func (s *oneShotSignals) childExited() {
+	if s == nil {
+		return
+	}
+	select {
+	case <-s.intr:
+	default:
+	}
+}
+
+// stopDuringPipe ends run when a stop signal arrives while piped input is
+// still being read: it flushes what was read, closes serve, and exits with the
+// shell's status for the signal. The returned func stops the watch.
+func (s *oneShotSignals) stopDuringPipe(srv *serve.Server, target runTarget, stderr io.Writer) func() {
+	if s == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	quit := make(chan struct{})
+	go func() {
+		defer close(quit)
+		var got os.Signal
+		select {
+		case got = <-s.term:
+		case got = <-s.intr:
+		case <-done:
+			return
+		}
+		target.finish()
+		s.closeServe(srv, stderr)
+		os.Exit(128 + signalNumber(got))
+	}()
+	return func() {
+		close(done)
+		<-quit
+	}
+}
+
 // serveUntilStopped keeps a one-shot serve up after its run, so the run can
-// be browsed, until SIGINT or SIGTERM, then closes it.
-func serveUntilStopped(srv *serve.Server, stderr io.Writer) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+// be browsed, until Ctrl-C, SIGTERM or SIGHUP, then closes it. A TERM or HUP
+// that arrived during the run closes it at once.
+func (s *oneShotSignals) serveUntilStopped(srv *serve.Server, stderr io.Writer) {
+	select {
+	case <-s.term:
+		s.closeServe(srv, stderr)
+		return
+	default:
+	}
 	fmt.Fprintf(stderr, "loghorn: the run is done; serving %s until Ctrl-C\n", srv.Session().WebURL())
-	<-ctx.Done()
+	select {
+	case <-s.term:
+	case <-s.intr:
+	}
+	s.closeServe(srv, stderr)
+}
+
+// closeServe stops listening for signals, so a second Ctrl-C during a slow
+// close kills run outright, then closes serve.
+func (s *oneShotSignals) closeServe(srv *serve.Server, stderr io.Writer) {
+	signal.Stop(s.term)
+	signal.Stop(s.intr)
 	if err := srv.Close(); err != nil {
 		fmt.Fprintln(stderr, "loghorn: closing serve:", err)
 	}
 }
 
+func signalNumber(sig os.Signal) int {
+	if n, ok := sig.(syscall.Signal); ok {
+		return int(n)
+	}
+	return 2
+}
+
 // runChild runs the command with the target's environment and records its
 // output, returning its exit status (127 when it can't be found).
-func runChild(o opts, cfg config.Config, rec *recorder.Recorder, target runTarget, env cliEnv) int {
+func runChild(o opts, cfg config.Config, rec *recorder.Recorder, target runTarget, env cliEnv, exited func()) int {
 	sigs, stop := wrap.NotifySignals()
 	usePTY := term.IsTerminal(int(os.Stdout.Fd()))
 	child, err := runner.StartChild(o.args, runner.Options{PTY: usePTY, Env: target.childEnv})
@@ -220,6 +314,7 @@ func runChild(o opts, cfg config.Config, rec *recorder.Recorder, target runTarge
 		Signals:   sigs,
 		Terminal:  terminal,
 	})
+	exited()
 	stop()
 	child.Close()
 	target.finish()
