@@ -183,6 +183,7 @@ tr.detail td { background: var(--panel); white-space: normal; padding: 8px 12px;
 .fpath { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 .flabel { color: var(--muted); }
 .muted { color: var(--muted); }
+.ml-more { margin-left: 6px; padding: 0 5px; border-radius: 8px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .badge { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px; color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .badge-saved { color: var(--sev-notice); border-color: var(--sev-notice); }
 .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
@@ -479,6 +480,7 @@ td .muted { color: var(--muted); }
 .trace-row.event-error .ev-mark, .trace-row.event-error .tr-label { color: var(--sev-error); }
 .trace-detail .ev-span { padding: 0; border: none; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
 .trace-detail .ev-attr { padding-left: 1.5em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.trace-detail .ev-pre { margin: 2px 0 6px 1.5em; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; overflow-x: auto; white-space: pre; font-size: 12px; }
 .trace-row.match .tr-label { background: var(--match-bg, rgba(255, 213, 0, 0.35)); border-radius: 2px; }
 .serial-chip { align-self: center; flex: none; margin-left: 8px; padding: 0 6px; border-radius: 8px; font-size: 11px; line-height: 16px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 #trace-critical[aria-pressed="true"] { background: var(--accent); color: #fff; }

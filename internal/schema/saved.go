@@ -22,6 +22,7 @@ var validTypes = map[Type]bool{
 var validVisualizers = map[string]bool{
 	VRaw: true, VNumber: true, VLocalTime: true, VDuration: true,
 	VSeverity: true, VSQL: true, VJSON: true, VPlain: true, VLink: true,
+	VMultiline: true,
 }
 
 // validateField checks a field's Type, Visualizer and Unit against the

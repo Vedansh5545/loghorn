@@ -617,6 +617,9 @@ func (s *server) aggregate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, op)
 }
 
+// record answers one record by ?seq=: the raw record pretty-printed and
+// coloured, each sql field formatted and coloured, and each multiline field
+// that holds more than one line (text) as it is, for the page's row detail.
 func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
 	if err != nil || seq < 1 {
@@ -651,13 +654,21 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	}
 	sql := map[string]string{}
 	tokens := map[string][]sqlcolor.Token{}
+	text := map[string]string{} // multiline fields of several lines, as they are
 	system := sqlfmt.SystemOf(rec.Fields)
 	for _, f := range sch.Fields {
-		if f.Visualizer != schema.VSQL {
-			continue
-		}
 		v, ok := rec.Fields[f.Path].(string)
 		if !ok {
+			continue
+		}
+		if f.Visualizer == schema.VMultiline {
+			// One line reads well enough in the raw record below.
+			if schema.Multiline(v) {
+				text[f.Path] = v
+			}
+			continue
+		}
+		if f.Visualizer != schema.VSQL {
 			continue
 		}
 		if out, err := sqlfmt.Format(v, system); err == nil {
@@ -672,7 +683,8 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		RawTokens []sqlcolor.Token            `json:"rawTokens,omitempty"`
 		SQL       map[string]string           `json:"sql"`
 		SQLTokens map[string][]sqlcolor.Token `json:"sqlTokens"`
-	}{raw, jsoncolor.Tokens(raw), sql, tokens})
+		Text      map[string]string           `json:"text"`
+	}{raw, jsoncolor.Tokens(raw), sql, tokens, text})
 }
 
 func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {

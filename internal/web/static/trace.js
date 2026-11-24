@@ -3,7 +3,7 @@
 // innerHTML. app.js passes its helpers to initTrace, so this module does not
 // import app.js.
 
-import { copyTableBar } from "./copy.js";
+import { copyButton, copyTableBar } from "./copy.js";
 import { makeSplit } from "./split.js";
 import { back, navState, syncNav } from "./nav.js";
 
@@ -786,6 +786,15 @@ function eventDetail(box, n) {
   box.append(d.el("p", "ph-line ev-attrs-head", "Attributes:"));
   for (const k of keys) {
     const v = n.attributes[k];
+    if (typeof v === "string" && v.includes("\n")) {
+      // A stack trace (exception.stacktrace) or other multi-line text: a
+      // block of its own that keeps the lines, with a copy button.
+      const head = d.el("p", "ph-line ev-attr", k + ":");
+      head.append(copyButton(() => v, { title: "copy text", cls: "sum-copy" }));
+      const pre = d.el("pre", "ev-pre", v);
+      box.append(head, pre);
+      continue;
+    }
     box.append(d.el("p", "ph-line ev-attr", k + ": " + (typeof v === "string" ? v : JSON.stringify(v))));
   }
 }

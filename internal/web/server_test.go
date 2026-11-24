@@ -267,6 +267,31 @@ func TestSchemaPutInvalid400(t *testing.T) {
 	f.noServices(t)
 }
 
+func TestRecordMultilineText(t *testing.T) {
+	logf := filepath.Join(t.TempDir(), "app.log")
+	lines := `{"severity":"INFO","time":"2026-11-17T17:00:01.000Z","message":"started\n","logging.googleapis.com/labels":{"schema":"app"}}
+{"severity":"ERROR","time":"2026-11-17T17:00:02.000Z","message":"panic: boom\n\ngoroutine 1 [running]:\nmain.main()","stack":"one line","logging.googleapis.com/labels":{"schema":"app"}}
+`
+	if err := os.WriteFile(logf, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t, logf)
+	var got struct {
+		Text map[string]string
+		SQL  map[string]string
+	}
+	// Inferred multiline: only values that span lines get a block.
+	f.getJSON(t, "/api/record?seq=2", &got)
+	if got.Text["message"] != "panic: boom\n\ngoroutine 1 [running]:\nmain.main()" || len(got.Text) != 1 || len(got.SQL) != 0 {
+		t.Fatalf("seq 2 text = %v sql = %v", got.Text, got.SQL)
+	}
+	got.Text = nil
+	f.getJSON(t, "/api/record?seq=1", &got)
+	if len(got.Text) != 0 {
+		t.Fatalf("seq 1 text = %v", got.Text)
+	}
+}
+
 func TestRecordSQLFormatted(t *testing.T) {
 	f := newFixture(t, pino)
 	sdir := f.svcDir("default")

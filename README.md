@@ -380,7 +380,10 @@ and the filters, one row per field / operator / value (a bad value is flagged on
 its own row and the other filters keep working). Three modes share it:
 
 - **Samples** — the matching records themselves; click a row for the full
-  record. Click a column name (in the header or under *Columns*) for its
+  record, with each SQL or multiline field (a stack trace, or any text with
+  line breaks) in its own block above it. A multiline cell shows its first
+  line and how many more there are.
+  Click a column name (in the header or under *Columns*) for its
   menu: visualizer, unit and label (saved to the stream's schema at once),
   Hide, Sort ascending/descending, *Add / Move* (put a field not shown, or
   another column, right of this one; columns hidden in this query come

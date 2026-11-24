@@ -336,6 +336,9 @@ export function visualize(cell, column) {
       // The server sends JSON cells as text; never re-parse it, because
       // JSON.parse rounds integers above 2^53.
       return truncated(asText(v), clip(80));
+    case "multiline":
+      if (!wrap) return firstLine(asText(v));
+      return truncated(asText(v), WRAP_MAX);
     case "sql":
       if (cell && Array.isArray(cell.sql)) return sqlSpan(cell.sql, asText(v), clip(120));
     // falls through: a value the server did not colour shows as raw
@@ -343,6 +346,24 @@ export function visualize(cell, column) {
     default:
       return truncated(asText(v), clip(120));
   }
+}
+
+// firstLine shows the first non-blank line of multi-line text, clipped, and a
+// badge with the number of lines after it; the row's detail holds the whole
+// text.
+function firstLine(text) {
+  const lines = text.replace(/\s+$/, "").split(/\r?\n/);
+  let i = lines.findIndex((l) => l.trim() !== "");
+  if (i < 0) i = 0;
+  const out = el("span");
+  out.append(truncated(lines[i], 120));
+  const more = lines.length - 1 - i;
+  if (more > 0) {
+    const b = el("span", "ml-more", "+" + more + (more === 1 ? " line" : " lines"));
+    b.title = "open the row to see all " + lines.length + " lines";
+    out.append(b);
+  }
+  return out;
 }
 
 // ---- URL state ----
@@ -1975,7 +1996,8 @@ function detailSection(title, body, open) {
 }
 
 // fillRecordDetail replaces container's children with record seq: its SQL
-// fields formatted and coloured, then the raw record, each in a section that
+// fields formatted and coloured, its multiline fields as they are, then the
+// raw record, each in a section that
 // opens and closes; recordOpen sets whether the raw record starts open. An
 // error shows in place.
 export async function fillRecordDetail(container, seq, { recordOpen = true } = {}) {
@@ -1992,6 +2014,12 @@ export async function fillRecordDetail(container, seq, { recordOpen = true } = {
       const sec = detailSection(path + " (SQL)", pre, true);
       const sql = String(rec.sql[path]);
       sec.querySelector("summary").append(copyButton(() => sql, { cls: "sum-copy" }));
+      container.append(sec);
+    }
+    for (const path of Object.keys(rec.text || {}).sort()) {
+      const text = String(rec.text[path]);
+      const sec = detailSection(path, preOf(text), true);
+      sec.querySelector("summary").append(copyButton(() => text, { title: "copy text", cls: "sum-copy" }));
       container.append(sec);
     }
     let raw = preOf(rec.raw);
@@ -3261,9 +3289,15 @@ function schemaFieldBody(f) {
 // ---- schema panel ----
 
 const TYPES = ["int", "float", "bool", "string", "duration", "timestamp", "json"];
-const VISUALIZERS = ["raw", "number", "plain", "link", "local-time", "duration", "severity", "sql", "json"];
+const VISUALIZERS = ["raw", "number", "plain", "link", "local-time", "duration", "severity", "sql", "json", "multiline"];
 const UNITS = ["", "s", "ms", "us", "ns"];
 const UNIT_TYPES = new Set(["timestamp", "duration"]);
+
+// isStackPath mirrors schema.isStackPath in Go.
+function isStackPath(path) {
+  const last = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  return last === "stack" || last === "stacktrace" || last === "stack_trace";
+}
 
 // defaultVisualizer mirrors schema.DefaultVisualizer in Go.
 function defaultVisualizer(path, type) {
@@ -3273,6 +3307,8 @@ function defaultVisualizer(path, type) {
   if (path === "severity") return "severity";
   if (path === "httpRequest.latency") return "duration";
   if (path === "httpRequest.requestUrl") return "link";
+  if (path === "db.query.text" || path === "db.statement") return "sql";
+  if (type === "string" && isStackPath(path)) return "multiline";
   switch (type) {
     case "int":
     case "float":

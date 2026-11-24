@@ -72,6 +72,9 @@ func isUnitDuration(s string) bool {
 type acc struct {
 	count int
 	kinds map[kind]bool
+	// lines: some string value holds a newline, so a string field shows as
+	// multiline text.
+	lines bool
 }
 
 func (a *acc) typ() Type {
@@ -131,6 +134,9 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 			}
 			a.count++
 			a.kinds[classify(v)] = true
+			if str, ok := v.(string); ok && Multiline(str) {
+				a.lines = true
+			}
 		}
 	}
 
@@ -140,9 +146,13 @@ func Infer(service, source, stream string, recs []record.Record) Schema {
 		if path == "timestamp" || path == "receiveTimestamp" {
 			t = TTimestamp
 		}
+		vis := DefaultVisualizer(path, t)
+		if vis == VRaw && t == TString && a.lines {
+			vis = VMultiline
+		}
 		s.Fields = append(s.Fields, Field{
 			Path: path, Type: t, Inferred: t, Count: a.count,
-			Visualizer: DefaultVisualizer(path, t),
+			Visualizer: vis,
 		})
 	}
 	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
@@ -228,7 +238,23 @@ func DefaultColumns(source string, fields []Field) []string {
 	return cols
 }
 
-// DefaultVisualizer picks how an unconfigured field is shown.
+// Multiline reports whether s has more than one line once trailing
+// whitespace is dropped: a message that ends in a newline is one line.
+func Multiline(s string) bool {
+	return strings.Contains(strings.TrimRight(s, " \t\r\n"), "\n")
+}
+
+// isStackPath is a path whose last segment names a stack trace: stack,
+// stacktrace or stack_trace in any case (exception.stacktrace, error.stack,
+// stackTrace).
+func isStackPath(path string) bool {
+	last := strings.ToLower(path[strings.LastIndex(path, ".")+1:])
+	return last == "stack" || last == "stacktrace" || last == "stack_trace"
+}
+
+// DefaultVisualizer picks how an unconfigured field is shown from its path
+// and type. Infer also shows a string field as multiline when one of its
+// values holds a newline; that needs the values, so it is not done here.
 func DefaultVisualizer(path string, t Type) string {
 	switch {
 	case path == "pid", path == "httpRequest.status":
@@ -245,6 +271,8 @@ func DefaultVisualizer(path string, t Type) string {
 		return VLink
 	case path == "db.query.text", path == "db.statement": // OTel's SQL text, current and older name
 		return VSQL
+	case t == TString && isStackPath(path):
+		return VMultiline
 	}
 	switch t {
 	case TInt, TFloat:
