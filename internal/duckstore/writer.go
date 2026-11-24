@@ -17,12 +17,7 @@ import (
 // write stores one batch, grouped by day pair and signal. A file catalog
 // that fails sends the rest of the session to memory (onFail).
 func (e *Engine) write(batch []record.Record) {
-	defer func() {
-		if e.schemaLocked {
-			e.schemaLocked = false
-			e.schemaMu.Unlock()
-		}
-	}()
+	defer e.unlockSchema()
 	type group struct {
 		c    *catalog
 		recs []record.Record
@@ -308,15 +303,29 @@ func (e *Engine) addColumn(c *catalog, t *table, path string, typ schema.Type) e
 	return nil
 }
 
+// lockSchema keeps queries out until write publishes the new model (a
+// type change, or catalogs detached at midnight). Writer only.
+func (e *Engine) lockSchema() {
+	if !e.schemaLocked {
+		e.schemaMu.Lock()
+		e.schemaLocked = true
+	}
+}
+
+// unlockSchema lets queries in again once the model is published.
+func (e *Engine) unlockSchema() {
+	if e.schemaLocked {
+		e.schemaLocked = false
+		e.schemaMu.Unlock()
+	}
+}
+
 // retype changes a column's type. A change to string rewrites every stored
 // value from its record's _raw, so the column holds the text as received
 // (as schema.Convert gives it); other changes (int to float, or a column of
 // nulls getting its first values) are exact casts.
 func (e *Engine) retype(c *catalog, t *table, col *column, typ schema.Type) error {
-	if !e.schemaLocked { // held until write publishes the new model
-		e.schemaMu.Lock()
-		e.schemaLocked = true
-	}
+	e.lockSchema()
 	ref, cn := t.ref(c.alias), ident(col.name)
 	var rewrite []rewriteRow
 	if typ == schema.TString {
@@ -519,6 +528,7 @@ func (e *Engine) saveTallies(c *catalog) error {
 
 // applyFill sets the time of records written without one.
 func (e *Engine) applyFill(f *fill) {
+	defer e.unlockSchema() // pairFor may roll over
 	type place struct {
 		c *catalog
 		t *table

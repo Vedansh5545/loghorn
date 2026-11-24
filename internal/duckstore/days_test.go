@@ -187,6 +187,44 @@ func TestRolloverClosesDayAndExpires(t *testing.T) {
 	}
 }
 
+// Rollover and expiry detach catalogs the views name; a read holding
+// ReadLock must never see them half done.
+func TestReadsDuringRolloverDontFail(t *testing.T) {
+	g := newDayRig(t, t.TempDir(), true, 2)
+	defer g.close()
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	g.add(day0, 1, `,"n":1`)
+	stop := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		defer close(errs)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			unlock := g.e.ReadLock()
+			var n int
+			err := g.e.DB().QueryRow("SELECT count(*) FROM all_records").Scan(&n)
+			unlock()
+			if err != nil {
+				errs <- err
+				return
+			}
+		}
+	}()
+	for d := 1; d <= 40; d++ {
+		g.add(day0+d, 1, `,"n":1`) // a midnight each, and an expiry
+	}
+	close(stop)
+	if err := <-errs; err != nil {
+		t.Errorf("a read failed during rollover: %v", firstLine(err))
+	}
+}
+
 func TestBuildDayFromLoader(t *testing.T) {
 	dir := t.TempDir()
 	g := newDayRig(t, dir, true, 3)

@@ -73,6 +73,7 @@ func (e *Engine) routeFor(day int) (*pair, error) {
 		return p, nil
 	}
 	if e.days.Write && e.today != nil && day > e.today.logs.day && !e.failed {
+		e.lockSchema() // views name catalogs detached until rebuilt
 		if err := e.rollover(day); err != nil {
 			return nil, err
 		}
@@ -249,6 +250,8 @@ func (e *Engine) rollover(day int) error {
 func (e *Engine) Expire(today int) {
 	e.wmu.Lock()
 	defer e.wmu.Unlock()
+	e.schemaMu.Lock() // views name catalogs detached until rebuilt
+	defer e.schemaMu.Unlock()
 	e.expire(today)
 	if err := e.rebuildViews(); err != nil {
 		e.warnOnce("loghorn: DuckDB views: " + err.Error())

@@ -63,6 +63,7 @@ type Store struct {
 	last     time.Time       // the previous record's time
 	pending  []record.Record // leading records written with no time yet
 	fallback string          // service of records that name none
+	liveDay  int             // the latest arrival day given out
 
 	cacheMu sync.Mutex
 	cache   map[[3]string]cached
@@ -117,12 +118,17 @@ func DayNumber(t time.Time) int {
 // (D-023). A live record's id carries its arrival day (D-011); a replay's
 // day is 0.
 func (s *Store) Add(r record.Record, received time.Time) {
-	day := 0
 	if s.mode == ModeLive {
-		day = DayNumber(s.now())
+		s.add(r, received, liveDay, false)
+		return
 	}
-	s.add(r, received, day, s.mode != ModeLive)
+	s.add(r, received, 0, true)
 }
+
+// liveDay asks add for the arrival day, read under s.mu so days reach the
+// writer in order: a day it has already closed would send the record to
+// memory only.
+const liveDay = -1
 
 // add is Add with the id's day given; wait makes it wait for room in the
 // writer's queue rather than skip (input with no text log behind it).
@@ -133,6 +139,10 @@ func (s *Store) add(r record.Record, received time.Time, day int, wait bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if day == liveDay {
+		day = max(DayNumber(s.now()), s.liveDay) // never back: the clock can step
+		s.liveDay = day
+	}
 	s.seq[day]++
 	r.Seq = day<<32 + s.seq[day]
 	if r.Service == "" {
@@ -169,12 +179,18 @@ func (s *Store) Close() error {
 	return s.e.Close()
 }
 
-func (s *Store) sync() { s.e.Sync(readWait) }
+// read waits briefly for records added before it, then keeps the writer
+// from changing catalogs (a type change, midnight) until unlock.
+func (s *Store) read() (unlock func()) {
+	s.e.Sync(readWait)
+	return s.e.ReadLock()
+}
 
 // Records returns every record written so far, oldest first (for tests and
 // tools); it waits for records already added to be written.
 func (s *Store) Records() []record.Record {
 	s.e.Sync(time.Hour)
+	defer s.e.ReadLock()()
 	recs, err := s.e.Records(context.Background(), "true")
 	if err != nil {
 		return nil
@@ -184,7 +200,7 @@ func (s *Store) Records() []record.Record {
 
 // Info returns the session summary. Earliest/Latest ignore zero times.
 func (s *Store) Info() Info {
-	s.sync()
+	defer s.read()()
 	in := Info{Mode: s.mode, RunStart: s.runStart}
 	var n int64
 	var lo, hi *time.Time
@@ -199,7 +215,7 @@ func (s *Store) Info() Info {
 
 // Streams returns per-stream counts sorted by name, then source.
 func (s *Store) Streams() []StreamCount {
-	s.sync()
+	defer s.read()()
 	out := []StreamCount{}
 	rows, err := s.e.DB().Query("SELECT _stream, _source, count(*) FROM all_records GROUP BY 1, 2")
 	if err != nil {
@@ -262,7 +278,7 @@ func (s *Store) Kinds(source, service string, from, to time.Time) (kinds, servic
 	if !ok {
 		return
 	}
-	s.sync()
+	defer s.read()()
 	cond := "_source = ?"
 	args := []any{src}
 	if !from.IsZero() {
@@ -311,7 +327,7 @@ func sortedCounts(m map[string]int) []Count {
 // stream of source) within service ("" or "*": every service), exactly as
 // schema.Infer gives it, cached until the data changes.
 func (s *Store) Schema(service, source, stream string) (schema.Schema, error) {
-	s.sync()
+	defer s.read()()
 	k := [3]string{service, source, stream}
 	v := s.e.Version()
 	s.cacheMu.Lock()
@@ -337,14 +353,13 @@ func (s *Store) Schema(service, source, stream string) (schema.Schema, error) {
 
 // Query answers q over the store with the effective schema sch.
 func (s *Store) Query(ctx context.Context, sch schema.Schema, q query.Query, now time.Time) (query.Result, error) {
-	s.sync()
-	defer s.e.ReadLock()()
+	defer s.read()()
 	return query.RunSQL(ctx, s.e, sch, q, now, s.runStart)
 }
 
 // Record returns the record with id seq.
 func (s *Store) Record(seq int) (record.Record, bool) {
-	s.sync()
+	defer s.read()()
 	recs, err := s.e.Records(context.Background(), "_id = "+strconv.Itoa(seq))
 	if err != nil || len(recs) == 0 {
 		return record.Record{}, false
@@ -358,7 +373,7 @@ func (s *Store) SpanRecords(spanID string) []record.Record {
 	if id == "" {
 		return nil
 	}
-	s.sync()
+	defer s.read()()
 	recs, _ := s.e.Records(context.Background(), "_span_id = ?", id)
 	return recs
 }
@@ -369,7 +384,7 @@ func (s *Store) TraceRecords(traceID string) []record.Record {
 	if id == "" {
 		return nil
 	}
-	s.sync()
+	defer s.read()()
 	recs, _ := s.e.Records(context.Background(), "_trace_id = ?", id)
 	return recs
 }
@@ -378,7 +393,7 @@ func (s *Store) TraceRecords(traceID string) []record.Record {
 // the spans of every trace holding a span with that name, and the spans
 // those spans name as parents.
 func (s *Store) AggregateRecords(name string) []record.Record {
-	s.sync()
+	defer s.read()()
 	recs, _ := s.e.Records(context.Background(),
 		"_source = 'otel' AND (_trace_id IN (SELECT _trace_id FROM all_records WHERE _source = 'otel' AND _name = ? AND _span_id IS NOT NULL AND _trace_id IS NOT NULL)"+
 			" OR _span_id IN (SELECT _parent_span_id FROM all_records WHERE _source = 'otel' AND _name = ? AND _parent_span_id IS NOT NULL))", name, name)

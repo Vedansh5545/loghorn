@@ -300,3 +300,32 @@ func TestRebuiltDayTimesComeFromThatDay(t *testing.T) {
 }
 
 func duckstoreDay(d int) string { return time.Unix(int64(d)*86400, 0).UTC().Format("2006-01-02") }
+
+// A record numbered for the day before one already queued (two adds racing
+// past midnight, or the clock stepping back) must still reach a day file,
+// not memory alone, where the run's end would drop it.
+func TestLateDayRecordStillReachesAFile(t *testing.T) {
+	dir := t.TempDir()
+	now := dayNow
+	s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{},
+		Now: func() time.Time { return now }, Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Add(logRecord(t, logLine(1, dayNow)), now)
+	now = dayNow.AddDate(0, 0, 1) // midnight: the writer rolls over
+	s.Add(logRecord(t, logLine(2, now)), now)
+	now = dayNow.Add(11*time.Hour + 59*time.Minute) // back before midnight
+	s.Add(logRecord(t, logLine(3, now)), now)
+	s.Close()
+
+	r, err := Open(Options{Mode: ModeHistorical, Dir: dir, Input: config.Input{},
+		Now: func() time.Time { return dayNow.AddDate(0, 0, 2) }, Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if n := total(r); n != 3 {
+		t.Errorf("records in the day files = %d, want 3", n)
+	}
+}
