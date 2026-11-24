@@ -89,6 +89,35 @@ func TestDayPairWrittenAndStampedOnClose(t *testing.T) {
 	}
 }
 
+// The write-ahead log holds the same records as the day file, so it must be
+// owner-only too, whatever the process umask or directory mode.
+func TestDayWALIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := newDayRig(t, dir, true, 3)
+	defer g.close()
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	g.add(day0, 1, `,"n":1`)
+	g.add(day0, 2, `,"n":2`)
+	wals, _ := filepath.Glob(filepath.Join(dir, "*.duckdb.wal"))
+	if len(wals) == 0 {
+		t.Fatal("no .wal file while the day is open; the test can't check its mode")
+	}
+	for _, w := range wals {
+		fi, err := os.Stat(w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %v, want 0600", filepath.Base(w), fi.Mode().Perm())
+		}
+	}
+}
+
 func TestOpenDayIsStampedUnclean(t *testing.T) {
 	g := newDayRig(t, t.TempDir(), true, 3)
 	defer g.close()

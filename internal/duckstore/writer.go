@@ -3,6 +3,7 @@ package duckstore
 import (
 	"database/sql/driver"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ func (e *Engine) write(batch []record.Record) {
 		ch, err := e.writeCatalog(g.c, g.recs)
 		changed = changed || ch
 		if err == nil {
+			ownerOnlyWAL(g.c)
 			continue
 		}
 		if g.c.day < 0 { // memory itself failed: nothing left to try
@@ -76,6 +78,19 @@ func (e *Engine) write(batch []record.Record) {
 		}
 	}
 	e.version.Add(1)
+}
+
+// ownerOnlyWAL makes a file catalog's write-ahead log 0600 like the file
+// itself. DuckDB creates the WAL at the first write after an attach or a
+// checkpoint, with the process umask, so this runs after every batch.
+func ownerOnlyWAL(c *catalog) {
+	if c.path == "" || !c.writable || c.day < 0 {
+		return
+	}
+	wal := c.path + ".wal"
+	if fi, err := os.Stat(wal); err == nil && fi.Mode().Perm() != 0o600 {
+		os.Chmod(wal, 0o600)
+	}
 }
 
 func (e *Engine) warnOnce(msg string) {
