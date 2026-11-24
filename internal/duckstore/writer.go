@@ -10,7 +10,6 @@ import (
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 
-	"github.com/jimbeveridge/loghorn/internal/adapter"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
@@ -394,7 +393,7 @@ func (e *Engine) rebuild(source string, raw []byte) (record.Record, bool) {
 	if source == record.SourceOtel {
 		return record.NormalizeSpan(raw)
 	}
-	return record.Normalize(adapter.New(e.in).ParseLine(raw), e.in)
+	return record.Normalize(e.parser.ParseLine(raw), e.in)
 }
 
 // value is what the appender stores for a converted value.

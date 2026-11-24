@@ -82,25 +82,25 @@ func conv(c string, from schema.Type, to schema.Field) string {
 		case from == schema.TFloat:
 			return "(CASE WHEN " + c + " = trunc(" + c + ") AND abs(" + c + ") < 9.2e18 THEN CAST(" + c + " AS BIGINT) END)"
 		case from == schema.TString:
-			return "(CASE WHEN regexp_full_match(trim(" + c + "), '[+-]?[0-9]+') THEN TRY_CAST(trim(" + c + ") AS BIGINT) END)"
+			return "(CASE WHEN regexp_full_match(" + trimSQL(c) + ", '[+-]?[0-9]+') THEN TRY_CAST(" + trimSQL(c) + " AS BIGINT) END)"
 		}
 	case schema.TFloat:
 		switch {
 		case from == schema.TInt:
 			return "CAST(" + c + " AS DOUBLE)"
 		case from == schema.TString:
-			return "(CASE WHEN isfinite(TRY_CAST(trim(" + c + ") AS DOUBLE)) THEN TRY_CAST(trim(" + c + ") AS DOUBLE) END)"
+			return "(CASE WHEN isfinite(TRY_CAST(" + trimSQL(c) + " AS DOUBLE)) THEN TRY_CAST(" + trimSQL(c) + " AS DOUBLE) END)"
 		}
 	case schema.TBool:
 		if from == schema.TString {
-			return "(CASE WHEN trim(" + c + ") IN ('1','t','T','TRUE','true','True') THEN true WHEN trim(" + c + ") IN ('0','f','F','FALSE','false','False') THEN false END)"
+			return "(CASE WHEN " + trimSQL(c) + " IN ('1','t','T','TRUE','true','True') THEN true WHEN " + trimSQL(c) + " IN ('0','f','F','FALSE','false','False') THEN false END)"
 		}
 	case schema.TDuration:
 		switch {
 		case num:
 			return "CAST(" + c + " AS DOUBLE)"
 		case from == schema.TString:
-			return durationSQL("trim(" + c + ")")
+			return durationSQL(trimSQL(c))
 		}
 	case schema.TTimestamp:
 		switch {
@@ -109,7 +109,7 @@ func conv(c string, from schema.Type, to schema.Field) string {
 		case from == schema.TFloat:
 			return "(CASE WHEN " + c + " = trunc(" + c + ") AND abs(" + c + ") < 9.2e18 THEN " + epochIntSQL("CAST("+c+" AS BIGINT)", to.Unit) + " ELSE " + epochFloatSQL(c, to.Unit) + " END)"
 		case from == schema.TString:
-			s := "trim(" + c + ")"
+			s := trimSQL(c)
 			return "(CASE WHEN regexp_full_match(" + s + ", " + lit(rfc3339Re) + ") THEN CAST(TRY_CAST(" + s + " AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP_NS) END)"
 		}
 	}
@@ -141,6 +141,13 @@ func convCol(c string, col column, to schema.Field) string {
 	}
 	return conv(c, col.typ, to)
 }
+
+// goSpace is what strings.TrimSpace trims (unicode.IsSpace); DuckDB's
+// one-argument trim removes only ' '.
+const goSpace = " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+
+// trimSQL is strings.TrimSpace of c.
+func trimSQL(c string) string { return "trim(" + c + ", " + lit(goSpace) + ")" }
 
 // durationSQL parses Go duration syntax or a bare number (seconds), as
 // schema.ParseDuration does.

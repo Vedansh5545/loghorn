@@ -14,6 +14,7 @@ import (
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 
+	"github.com/jimbeveridge/loghorn/internal/adapter"
 	"github.com/jimbeveridge/loghorn/internal/config"
 	"github.com/jimbeveridge/loghorn/internal/record"
 )
@@ -44,6 +45,7 @@ type Engine struct {
 	db        *sql.DB
 	wc        *sql.Conn // the writer's connection
 	in        config.Input
+	parser    *adapter.Parser // for in; stateless, so shared by rebuilds
 	warn      func(string)
 
 	mu        sync.Mutex
@@ -115,7 +117,7 @@ func open(in config.Input, warn func(string)) (*Engine, error) {
 	if warn == nil {
 		warn = func(string) {}
 	}
-	e := &Engine{connector: c, db: db, wc: wc, in: in, warn: warn, vnames: newNamer(viewReserved...), viewsMade: map[string]bool{}, skipped: map[int]bool{}, warned: map[string]bool{}}
+	e := &Engine{connector: c, db: db, wc: wc, in: in, parser: adapter.New(in), warn: warn, vnames: newNamer(viewReserved...), viewsMade: map[string]bool{}, skipped: map[int]bool{}, warned: map[string]bool{}}
 	e.cond = sync.NewCond(&e.mu)
 	e.maxQueue = MaxQueue
 	e.snap.Store(&model{})

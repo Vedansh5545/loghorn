@@ -215,6 +215,9 @@ func TestRelationConvertsLikeConvert(t *testing.T) {
 		"int": `42`, "neg": `-7`, "float": `1.5`, "intfloat": `3.0`, "str": `"12"`, "strf": `" 2.5 "`,
 		"word": `"hello"`, "bool": `true`, "strbool": `"T"`, "ts": `"2026-11-23T10:00:00.5Z"`,
 		"dur": `"1m30s"`, "json": `[1,"a"]`, "epoch": `1700000000123`,
+		// Go's TrimSpace also trims tabs, newlines and Unicode spaces.
+		"tabint": `"\t12\n"`, "tabfloat": `"\r\n2.5\t"`, "tabbool": `"\ttrue\n"`, "tabdur": `"\t1m30s\n"`,
+		"tabts": `"\n2026-11-23T10:00:00.5Z\t"`, "nbspint": `" 12　"`,
 	}
 	for svc, v := range stored {
 		g.add(logRec(t, svc, "conv", `,"f":`+v))
