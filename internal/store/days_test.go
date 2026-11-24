@@ -260,3 +260,43 @@ func TestOpenWriterKeepsGoingWhenTodayWontOpen(t *testing.T) {
 		t.Error("no warning about today's pair")
 	}
 }
+
+// Each day is rebuilt on its own (D-018 rebuilds only the days in doubt), so
+// a day's untimed records must not take a time from another day's text:
+// leading ones get their own day's first time, and a day with no time at
+// all keeps its records untimed rather than leaving them pending.
+func TestRebuiltDayTimesComeFromThatDay(t *testing.T) {
+	dir := t.TempDir()
+	untimed := `{"severity":"INFO","message":"u","labels":{"schema":"api"}}`
+	d2 := dayNow.AddDate(0, 0, -2)
+	y := dayNow.AddDate(0, 0, -1)
+	writeText(t, dir, "loghorn-2026-11-21.log", d2, untimed)
+	writeText(t, dir, "loghorn-2026-11-22.log", y, logLine(1, y))
+	writeText(t, dir, "loghorn.log", dayNow.Add(-time.Hour), untimed, logLine(4, dayNow))
+	o := openStore(t, dir, ModeLive, true)
+	defer o.s.Close()
+	if got := strings.Join(o.built(), ","); got != "2026-11-21,2026-11-22,2026-11-23" {
+		t.Fatalf("built %v", got)
+	}
+	want := map[int]time.Time{
+		DayNumber(d2):     {},
+		DayNumber(y):      y.Add(time.Minute).UTC(),
+		DayNumber(dayNow): dayNow.Add(4 * time.Minute).UTC(),
+	}
+	for _, r := range o.s.Records() {
+		if r.Fields["message"] != "u" {
+			continue
+		}
+		d := r.Seq >> 32
+		if !r.Time.Equal(want[d]) {
+			t.Errorf("untimed record of %s has time %v, want %v", duckstoreDay(d), r.Time, want[d])
+		}
+	}
+	o.s.mu.Lock()
+	defer o.s.mu.Unlock()
+	if len(o.s.pending) != 0 {
+		t.Errorf("%d records still pending after the rebuild", len(o.s.pending))
+	}
+}
+
+func duckstoreDay(d int) string { return time.Unix(int64(d)*86400, 0).UTC().Format("2006-01-02") }

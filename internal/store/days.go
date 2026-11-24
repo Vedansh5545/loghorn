@@ -123,8 +123,18 @@ func Open(o Options) (*Store, error) {
 	return s, nil
 }
 
-// load reads text files of day into s, ids carrying that day.
+// load reads text files of day into s, ids carrying that day. A day is
+// rebuilt on its own, so its untimed records take times from that day only:
+// leading ones the day's first time, and with none they stay untimed.
 func (s *Store) load(paths []string, day int, in config.Input) error {
+	s.mu.Lock()
+	s.last, s.pending = time.Time{}, nil
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.last, s.pending = time.Time{}, nil
+		s.mu.Unlock()
+	}()
 	p := adapter.New(in)
 	for _, path := range paths {
 		f, err := os.Open(path)
