@@ -106,7 +106,9 @@ func (e *Engine) ReadStamp(day int) (Stamp, bool) {
 		if i == 0 {
 			st = s
 		} else {
-			st.Clean = st.Clean && s.Clean
+			// Stamps for different text sizes come from different builds (a
+			// crash between BuildDay's renames): in doubt.
+			st.Clean = st.Clean && s.Clean && s.TextBytes == st.TextBytes
 			st.Dirty = st.Dirty || s.Dirty
 		}
 	}

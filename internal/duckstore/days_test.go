@@ -118,6 +118,35 @@ func TestDayWALIsOwnerOnly(t *testing.T) {
 	}
 }
 
+// A pair whose two files were stamped for different text (a crash between
+// BuildDay's two renames leaves a new logs file beside an old traces one)
+// is in doubt, so the next writer rebuilds it.
+func TestStampsDisagreeingOnTextAreInDoubt(t *testing.T) {
+	dir := t.TempDir()
+	g := newDayRig(t, dir, true, 3)
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	g.add(day0, 1, `,"n":1`)
+	g.text[day0] = 42
+	g.close()
+	h := newDayRig(t, dir, true, 3)
+	defer h.close()
+	traces := filepath.Join(dir, "traces-2025-11-23.duckdb")
+	for _, q := range []string{
+		"ATTACH '" + traces + "' AS t",
+		"UPDATE t._loghorn._day SET text_bytes = 41",
+		"DETACH t",
+	} {
+		if _, err := h.e.DB().Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, ok := h.e.ReadStamp(day0); ok && st.Clean {
+		t.Errorf("stamp %+v accepted, though logs says 42 bytes and traces 41", st)
+	}
+}
+
 func TestOpenDayIsStampedUnclean(t *testing.T) {
 	g := newDayRig(t, t.TempDir(), true, 3)
 	defer g.close()
