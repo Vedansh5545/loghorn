@@ -1,39 +1,90 @@
-<img src="images/logo.svg" alt="Alt text" width="300">
+<img src="images/logo.svg" alt="Loghorn" width="300">
 
 # loghorn
 
-Capture, store and query the logs and traces of the apps on your machine.
+**Production-grade observability for your local dev loop.**
 
-`loghorn serve` runs in the background and keeps everything: OpenTelemetry logs and
-traces your apps send it, and the output of every command you start with
-`loghorn run`. The command's output still reaches the terminal unchanged. The web
-explorer (`loghorn ui`) and `loghorn query` read it back, so a request that failed is
-findable in context rather than lost in ten thousand routine lines.
+Loghorn works with the logs you already write, from plain text to structured JSON, and
+grows with you into traces, latency heatmaps and request-level analysis. It runs
+entirely on your machine: no account, no API keys, no cloud bill, and your logs never
+leave localhost.
 
-A line is a **failure** if any of these holds:
+<!-- TODO screenshots: one per rung, same app, same failing request.
+| Plain logs | Structured logs | Traces |
+|---|---|---|
+| ![](images/readme-plain.png) | ![](images/readme-structured.png) | ![](images/readme-traces.png) |
+-->
 
-- its severity is `ERROR` or above
-- its HTTP status is 500 or above
-- its message matches `panic`, `fatal`, `exception` or `traceback`, case-insensitively
+## Start with the logs you have
 
-It reads GCP `LogEntry` JSON, gcloud's YAML and JSON output, and plain text, deciding
-per stream which it is.
+You don't have to change your app to get value from Loghorn, and every step up pays
+off on its own.
 
-## Install
+| Your app writes | Loghorn gives you |
+|---|---|
+| **Plain text** — whatever your server prints today | Every line kept per run and searchable after the terminal scrolls away; errors, panics and 5xx responses surfaced; `-filter` to see only failures |
+| **Structured logs** — JSON such as GCP `LogEntry`, or OpenTelemetry logs | Filter and group by any field, count and percentiles per group, charts over time, saved queries |
+| **Traces** — OpenTelemetry spans | A waterfall of every request showing where the time went, latency heatmaps where slow outliers stand out, per-operation breakdowns, and each log line attached to the request that wrote it |
+
+<!-- TODO: add glog-style lines (time, severity, file:line, text) to the first rung once supported. -->
+
+## Quick start
 
 Requires Go 1.25 or newer.
 
 ```sh
 go install github.com/jimbeveridge/loghorn@latest
+
+loghorn serve                 # once, in its own terminal: the local store
+loghorn run -- npm run dev    # your dev server, output unchanged, everything recorded
+loghorn ui                    # open the explorer in your browser
 ```
 
-Or from a checkout:
+From a checkout, `go build -o loghorn .` instead of `go install`.
 
-```sh
-go build -o loghorn .
-```
+Your command's output reaches the terminal exactly as before: colours, prompts and
+`Ctrl-C` all behave normally. If your app already sends OpenTelemetry, `run` points it
+at Loghorn automatically.
 
-## Running it
+## Add traces to your app in under an hour
+
+Traces answer the question logs can't: *where did the time go?* If you've heard that
+OpenTelemetry, the open standard for traces, is expensive or a chore to maintain, that
+reputation comes from somewhere else:
+
+- **The cost was the vendor, not the standard.** OpenTelemetry is free and open
+  source. Hosted tools bill by the gigabyte; Loghorn runs on your machine and bills
+  nothing.
+- **You don't hand-write spans anymore.** Standard libraries trace your HTTP handlers,
+  outgoing requests and database queries automatically. Add your own span only where
+  you want more detail.
+- **No collector, no agent, no account.** A few lines of setup point your app at
+  Loghorn on localhost, and a Claude skill writes them for you.
+  <!-- TODO: skill name, where to get it, supported languages. -->
+- **Nothing locks you in.** It's a vendor-neutral standard. Keep it dev-only, or send
+  the same data to any production backend later.
+
+## What you can see
+
+- **Samples** — the records themselves, newest first, with typed filters, a time range
+  and text search.
+- **Table** and **Graph** — group by any fields; count, sum, average and p50/p95/p99
+  per group, as a table or as lines over time.
+- **Heatmap** — span durations over time, so a slow minority stands out from the
+  usual; click a cell to list its spans.
+- **Trace waterfall** — one request as a tree of timed bars, with its log lines, the
+  critical path and self time.
+- **Aggregate operation view** — every trace of one endpoint merged into a single
+  tree, with p50/p95 and error counts per step.
+- **`loghorn query`** — any view's data from the command line as TSV, CSV, Markdown,
+  JSON or YAML, or the DuckDB SQL that reproduces it.
+
+## Reference
+
+loghorn reads GCP `LogEntry` JSON, gcloud's YAML and JSON output, OpenTelemetry
+logs and traces, and plain text, deciding per stream which it is.
+
+### Running it
 
 <!-- loghorn help -->
 ```
@@ -123,6 +174,12 @@ exit status is still the command's:
 loghorn run -filter -- go test ./...
 ```
 
+A line is a **failure** if any of these holds:
+
+- its severity is `ERROR` or above
+- its HTTP status is 500 or above
+- its message matches `panic`, `fatal`, `exception` or `traceback`, case-insensitively
+
 **Apps that send OpenTelemetry themselves** — point them at `serve` with the
 environment `loghorn status` prints:
 
@@ -198,7 +255,7 @@ loghorn ui -print           # just print its URL
 loghorn status              # is serve running, where, and what apps need
 ```
 
-## gcloud
+### gcloud
 
 Both shapes gcloud emits are read as-is:
 
@@ -218,7 +275,7 @@ gcloud also names `LogEntry` fields in snake_case (`json_payload`, `http_request
 and encodes severity numerically (`200` for `INFO`, `500` for `ERROR`). Both are
 accepted by default, alongside the canonical camelCase-and-string schema.
 
-## Configuration
+### Configuration
 
 Settings live in `.config/loghorn/config.toml`. Every key is optional, and every
 default is the behaviour loghorn has without a file at all, which is why the file is
@@ -257,7 +314,7 @@ directory, and whether a run may go unrecorded is your call. `[input]` is applie
 `run` and `open`, which read the file nearest the directory they start in.
 A `display` section, which configured the terminal UI of older versions, is ignored with a warning.
 
-### Where the file is found
+#### Where the file is found
 
 loghorn walks up from the directory it starts in, and **the first
 `.config/loghorn/config.toml` it finds wins outright** — nothing is merged across
@@ -279,7 +336,7 @@ loghorn config
 
 `.config/loghorn/` is hand-written and belongs in version control.
 
-## Where data lives
+### Where data lives
 
 `serve` keeps everything in a per-user data folder, whatever directory it starts in:
 `~/Library/Application Support/loghorn` on macOS, `$XDG_STATE_HOME/loghorn` (default
@@ -304,7 +361,7 @@ LOGHORN_SOCKET=/tmp/loghorn-b.sock loghorn run -- make test
 Earlier versions wrote `.loghorn/` in each project; those files are left where they
 are, and `loghorn open` reads them.
 
-## Web query view
+### Web query view
 
 `serve` serves a browser view of the stored records at `http://127.0.0.1:4380/`
 (`loghorn ui` opens it), and `open` serves the same page for one finished log. The
@@ -383,7 +440,7 @@ and self time as shares of the operation's time, and an errors badge; `slowest`
 opens the slowest trace holding that span. It aggregates the page's time range,
 at most the 1000 most recent traces. See `docs/features.md`.
 
-## Query from the command line
+### Query from the command line
 
 The web view can be queried without a browser. Copy the page URL from the address bar
 and give it to `loghorn query`; it prints the same view's data, TSV by default:
@@ -413,7 +470,7 @@ loghorn query '/?q=…'                            # no host: the running serve,
 - `query` never launches a command, never records anything and ignores stdin (except
   for `@-`), so it is safe to run from a script or an agent shell.
 
-## Commands and flags
+### Commands and flags
 
 `loghorn help <command>` lists a command's flags. Flags take one dash or two.
 
