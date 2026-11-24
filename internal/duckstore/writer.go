@@ -17,6 +17,12 @@ import (
 // write stores one batch, grouped by day pair and signal. A file catalog
 // that fails sends the rest of the session to memory (onFail).
 func (e *Engine) write(batch []record.Record) {
+	defer func() {
+		if e.schemaLocked {
+			e.schemaLocked = false
+			e.schemaMu.Unlock()
+		}
+	}()
 	type group struct {
 		c    *catalog
 		recs []record.Record
@@ -167,6 +173,9 @@ func (e *Engine) writeCatalog(c *catalog, recs []record.Record) (changed bool, e
 		g.recs = append(g.recs, r)
 		for path, v := range r.Fields {
 			k := schema.Classify(v)
+			if t.kinds[path]|k != t.kinds[path] && schema.TallyType(path, 0) == schema.TTimestamp {
+				changed = true // readers' frozen kinds decide epoch units (convCol)
+			}
 			t.kinds[path] |= k
 			g.paths[path] = true
 			fk := fkey{r.Service, t.key, r.Stream, path}
@@ -256,6 +265,10 @@ func (e *Engine) addColumn(c *catalog, t *table, path string, typ schema.Type) e
 // (as schema.Convert gives it); other changes (int to float, or a column of
 // nulls getting its first values) are exact casts.
 func (e *Engine) retype(c *catalog, t *table, col *column, typ schema.Type) error {
+	if !e.schemaLocked { // held until write publishes the new model
+		e.schemaMu.Lock()
+		e.schemaLocked = true
+	}
 	ref, cn := t.ref(c.alias), ident(col.name)
 	var rewrite []rewriteRow
 	if typ == schema.TString {

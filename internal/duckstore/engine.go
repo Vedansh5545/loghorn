@@ -53,23 +53,28 @@ type Engine struct {
 	committed uint64 // records written or given up on
 	closing   bool
 	wdone     chan struct{}
+	maxQueue  int          // MaxQueue, unless SetMaxQueue changed it
 	overflow  bool         // the queue overflowed (warned once)
 	skipped   map[int]bool // days with records skipped for DuckDB
 
 	// Writer state: touched only by the writer goroutine, or before it
 	// starts and after it stops.
-	cats      []*catalog
-	mem       *pair
-	pairFor   func(day int) (*pair, error)
-	onFail    func(err error) // a file write failed (nil: memory only)
-	vnames    *namer          // view names, stable across rebuilds
-	wmu       sync.Mutex      // held while writing or changing catalogs
-	days      *DayOptions     // nil: memory only
-	route     map[int]*pair   // day -> writable pair
-	today     *pair           // the open day (writer)
-	failed    bool            // a file write failed: the rest goes to memory
-	viewsMade map[string]bool
-	warned    map[string]bool // writer-side warnings already given
+	cats    []*catalog
+	mem     *pair
+	pairFor func(day int) (*pair, error)
+	onFail  func(err error) // a file write failed (nil: memory only)
+	vnames  *namer          // view names, stable across rebuilds
+	wmu     sync.Mutex      // held while writing or changing catalogs
+	// schemaMu keeps queries off a column whose type is changing: the
+	// writer holds it from a type change until the new model is published.
+	schemaMu     sync.RWMutex
+	schemaLocked bool
+	days         *DayOptions   // nil: memory only
+	route        map[int]*pair // day -> writable pair
+	today        *pair         // the open day (writer)
+	failed       bool          // a file write failed: the rest goes to memory
+	viewsMade    map[string]bool
+	warned       map[string]bool // writer-side warnings already given
 
 	snap    atomic.Pointer[model]
 	version atomic.Uint64
@@ -112,6 +117,7 @@ func open(in config.Input, warn func(string)) (*Engine, error) {
 	}
 	e := &Engine{connector: c, db: db, wc: wc, in: in, warn: warn, vnames: newNamer(viewReserved...), viewsMade: map[string]bool{}, skipped: map[int]bool{}, warned: map[string]bool{}}
 	e.cond = sync.NewCond(&e.mu)
+	e.maxQueue = MaxQueue
 	e.snap.Store(&model{})
 	return e, nil
 }
@@ -134,6 +140,13 @@ func (e *Engine) memPair() (*pair, error) {
 	return &pair{logs: l, traces: t}, nil
 }
 
+// ReadLock keeps column types fixed while a query built from the current
+// model runs; call the returned func when done.
+func (e *Engine) ReadLock() (unlock func()) {
+	e.schemaMu.RLock()
+	return e.schemaMu.RUnlock
+}
+
 // DB is the session's database, for read queries.
 func (e *Engine) DB() *sql.DB { return e.db }
 
@@ -145,16 +158,27 @@ func (e *Engine) QueryContext(ctx context.Context, q string, args ...any) (*sql.
 // Version changes whenever written data changes.
 func (e *Engine) Version() uint64 { return e.version.Load() }
 
-// Add queues r for writing; r.Seq is its _id. It never blocks on DuckDB.
-func (e *Engine) Add(r record.Record) {
+// Add queues r for writing; r.Seq is its _id. It never blocks on DuckDB:
+// past the queue bound the record is skipped for DuckDB (live input, whose
+// text log keeps it).
+func (e *Engine) Add(r record.Record) { e.add(r, false) }
+
+// AddWait is Add for input with no text log behind it (replays, loading
+// text): when the queue is full it waits for room instead of skipping.
+func (e *Engine) AddWait(r record.Record) { e.add(r, true) }
+
+func (e *Engine) add(r record.Record, wait bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	for wait && len(e.queue) >= e.maxQueue && !e.closing {
+		e.cond.Wait()
+	}
 	e.added++
 	if e.closing {
 		e.committed++
 		return
 	}
-	if len(e.queue) >= MaxQueue {
+	if len(e.queue) >= e.maxQueue {
 		e.committed++
 		if !e.overflow {
 			e.overflow = true
@@ -165,6 +189,13 @@ func (e *Engine) Add(r record.Record) {
 	}
 	e.queue = append(e.queue, item{r: r})
 	e.cond.Broadcast()
+}
+
+// SetMaxQueue changes the queue bound (for tests and tuning).
+func (e *Engine) SetMaxQueue(n int) {
+	e.mu.Lock()
+	e.maxQueue = n
+	e.mu.Unlock()
 }
 
 // SetTime gives recs, added earlier with no time, the time t. It is applied
@@ -221,6 +252,7 @@ func (e *Engine) writer() {
 		if len(e.queue) == 0 {
 			e.queue = nil
 		}
+		e.cond.Broadcast() // room for AddWait
 		e.mu.Unlock()
 
 		e.wmu.Lock()

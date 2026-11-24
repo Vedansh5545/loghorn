@@ -80,6 +80,7 @@ type table struct {
 type column struct {
 	path, name string
 	typ        schema.Type
+	kinds      schema.KindSet // kinds of value seen (frozen copies only)
 }
 
 func (t *table) ref(alias string) string {
@@ -202,9 +203,6 @@ func (e *Engine) loadMeta(c *catalog) error {
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
-	}
-	if !c.writable {
-		return nil
 	}
 	rows, err = e.wc.QueryContext(ctx, "SELECT service, tkey, kind, path, n, kinds FROM "+c.meta("_fields"))
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/adapter"
@@ -73,26 +74,27 @@ func Open(o Options) (*Store, error) {
 			if !valid && len(files) > 0 {
 				o.Warn(fmt.Sprintf("loghorn: building DuckDB for %s from its text logs", duckstore.DayName(d)))
 				if err := e.BuildDay(d, func() error { return s.load(files, d, o.Input) }); err != nil {
-					o.Warn("loghorn: DuckDB: " + err.Error())
-					if d != today {
-						s.load(files, d, o.Input) // read it from memory this run
-						continue
-					}
+					o.Warn("loghorn: DuckDB: " + firstLine(err))
+					s.load(files, d, o.Input) // read it from memory this run
+					continue
 				}
 				stamped = true
 			}
 			if d == today {
 				if err := e.AttachDay(d, true); err != nil {
-					e.Close()
-					return nil, err
+					// Today stays in memory this run; its text keeps growing,
+					// so the pair is rebuilt at the next start.
+					o.Warn("loghorn: DuckDB: can't open today's database (" + firstLine(err) + "); keeping today in memory")
+					s.load(files, d, o.Input)
 				}
 			} else if stamped {
 				if err := e.AttachDay(d, false); err != nil {
 					o.Warn("loghorn: DuckDB: " + err.Error())
 				}
 			}
-		case o.Mode == ModeLive && d == today:
-			s.load(files, d, o.Input) // the writer has today's pair open
+		case d == today:
+			// A writer has, or may soon want, today's pair open for writing.
+			s.load(files, d, o.Input)
 		default:
 			if valid && e.AttachDay(d, false) == nil {
 				continue
@@ -119,9 +121,9 @@ func (s *Store) load(paths []string, day int, in config.Input) error {
 		err = ingest.Stored(f, func(rec []byte) {
 			l := bytes.Clone(rec)
 			if r, ok := record.NormalizeSpan(l); ok {
-				s.add(r, time.Time{}, day)
+				s.add(r, time.Time{}, day, true)
 			} else if r, ok := record.Normalize(p.ParseLine(l), in); ok {
-				s.add(r, time.Time{}, day)
+				s.add(r, time.Time{}, day, true)
 			}
 		})
 		f.Close()
@@ -160,4 +162,12 @@ func textBytes(paths []string) int64 {
 		}
 	}
 	return n
+}
+
+func firstLine(err error) string {
+	m := err.Error()
+	if i := strings.IndexByte(m, '\n'); i >= 0 {
+		m = m[:i]
+	}
+	return m
 }

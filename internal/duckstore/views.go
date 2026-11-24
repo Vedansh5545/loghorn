@@ -76,7 +76,9 @@ func (e *Engine) rebuildViews() error {
 			parts[v] = append(parts[v], viewPart{c.alias, t})
 			fp := frozenPart{ref: t.ref(c.alias), byPath: make(map[string]column, len(t.cols))}
 			for _, col := range t.cols {
-				fp.byPath[col.path] = *col
+				fc := *col
+				fc.kinds = t.kinds[col.path]
+				fp.byPath[col.path] = fc
 			}
 			v.parts = append(v.parts, fp)
 			m.tables[c.alias] = append(m.tables[c.alias], t.ref(c.alias))
@@ -171,7 +173,7 @@ func (e *Engine) Relation(source, service, stream string, cols []schema.Field) (
 					continue
 				}
 				c := ident(col.name)
-				val := conv(c, col.typ, f)
+				val := convCol(c, col, f)
 				bad := "coalesce(list_contains(_bad, " + lit(f.Path) + "), false)"
 				if norm(col.typ) != norm(f.Type) {
 					bad = "(" + bad + " OR (" + c + " IS NOT NULL AND " + val + " IS NULL))"

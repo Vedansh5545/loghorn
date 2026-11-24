@@ -181,3 +181,48 @@ func logRecord(t *testing.T, line string) record.Record {
 	}
 	return r
 }
+
+func attached(t *testing.T, s *Store, alias string) bool {
+	t.Helper()
+	var n int
+	if err := s.e.DB().QueryRow("SELECT count(*) FROM duckdb_databases() WHERE database_name = ?", alias).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
+}
+
+// TestOpenStoredLeavesTodayToTheWriter: a stored-days reader reads today
+// from text, so it never holds today's pair while a writer may need it.
+func TestOpenStoredLeavesTodayToTheWriter(t *testing.T) {
+	dir := textDir(t)
+	openStore(t, dir, ModeLive, true).s.Close()
+	h := openStore(t, dir, ModeHistorical, false)
+	defer h.s.Close()
+	if attached(t, h.s, "l2026-11-23") {
+		t.Error("a reader attached today's pair")
+	}
+	if !attached(t, h.s, "l2026-11-22") {
+		t.Error("a reader should attach earlier days")
+	}
+	if n := total(h.s); n != 6 {
+		t.Errorf("records = %d, want 6", n)
+	}
+}
+
+// TestOpenWriterKeepsGoingWhenTodayWontOpen: if today's pair can't be
+// opened for writing, the writer warns and keeps today in memory.
+func TestOpenWriterKeepsGoingWhenTodayWontOpen(t *testing.T) {
+	dir := textDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "logs-2026-11-23.duckdb"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := openStore(t, dir, ModeLive, true)
+	defer w.s.Close()
+	w.s.Add(logRecord(t, logLine(9, dayNow)), dayNow)
+	if n := total(w.s); n != 7 {
+		t.Errorf("records = %d, want 6 stored + 1 live", n)
+	}
+	if len(w.warns) == 0 {
+		t.Error("no warning about today's pair")
+	}
+}

@@ -121,11 +121,16 @@ func (s *Store) Add(r record.Record, received time.Time) {
 	if s.mode == ModeLive {
 		day = DayNumber(s.now())
 	}
-	s.add(r, received, day)
+	s.add(r, received, day, s.mode != ModeLive)
 }
 
-// add is Add with the id's day given.
-func (s *Store) add(r record.Record, received time.Time, day int) {
+// add is Add with the id's day given; wait makes it wait for room in the
+// writer's queue rather than skip (input with no text log behind it).
+func (s *Store) add(r record.Record, received time.Time, day int, wait bool) {
+	put := s.e.Add
+	if wait {
+		put = s.e.AddWait
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seq[day]++
@@ -144,7 +149,7 @@ func (s *Store) add(r record.Record, received time.Time, day int) {
 	}
 	if r.Time.IsZero() {
 		s.pending = append(s.pending, r)
-		s.e.Add(r)
+		put(r)
 		return
 	}
 	if len(s.pending) > 0 {
@@ -152,7 +157,7 @@ func (s *Store) add(r record.Record, received time.Time, day int) {
 		s.pending = nil
 	}
 	s.last = r.Time
-	s.e.Add(r)
+	put(r)
 }
 
 // Flush waits until everything added is written.
@@ -333,6 +338,7 @@ func (s *Store) Schema(service, source, stream string) (schema.Schema, error) {
 // Query answers q over the store with the effective schema sch.
 func (s *Store) Query(ctx context.Context, sch schema.Schema, q query.Query, now time.Time) (query.Result, error) {
 	s.sync()
+	defer s.e.ReadLock()()
 	return query.RunSQL(ctx, s.e, sch, q, now, s.runStart)
 }
 

@@ -24,11 +24,12 @@ must stay available so structure can be pulled out later.
 
 - Design approved (`docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`,
   D-011), refined by D-014 to D-023.
-- Plan `docs/superpowers/plans/2026-11-23-duckdb-storage.md`: tasks 1–5
-  done and tested; task 6 (speed check, docs, whole-branch review) in
-  progress. Execution ledger (git-ignored):
-  `.superpowers/sdd/2026-11-23-duckdb-storage/progress.md`, with every
-  ruling made while building.
+- Plan `docs/superpowers/plans/2026-11-23-duckdb-storage.md`: tasks 1–6
+  done; the whole-branch review's Important findings are fixed. What is
+  left is in `docs/PROJECT_STATUS.md` (`go.sum`, deferred minors, PR).
+  Execution ledger (git-ignored, shipped beside the bundle as
+  `progress.md`): `.superpowers/sdd/2026-11-23-duckdb-storage/progress.md`,
+  with every ruling made while building.
 - `query.Run` and `schema.Infer` stay as the test oracle (D-016). The
   parity test (`internal/query/parity_test.go`) compares 1 in 10 of 8055
   queries by default; `PARITY_FULL=1` runs all (about 4 minutes).

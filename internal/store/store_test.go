@@ -290,3 +290,17 @@ func TestKindsConcurrentAdd(t *testing.T) {
 		}
 	}
 }
+
+// TestReplayNeverSkips: replays and text loads wait for the writer instead
+// of skipping records when the queue is full.
+func TestReplayNeverSkips(t *testing.T) {
+	s := New(ModeHistorical, time.Time{})
+	defer s.Close()
+	s.e.SetMaxQueue(10)
+	for i := 0; i < 2000; i++ {
+		s.Add(rec("a", t0.Add(time.Duration(i)*time.Millisecond)), time.Time{})
+	}
+	if n := s.Info().Count; n != 2000 {
+		t.Fatalf("stored %d of 2000", n)
+	}
+}

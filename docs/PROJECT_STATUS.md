@@ -26,7 +26,7 @@ run and passed.
 
 | Work | Started | State |
 |---|---|---|
-| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Fresh review next |
+| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Review done: its 4 Important findings fixed test-first; Critical = `go.sum` (needs a networked machine); 10 Minor deferred (below) |
 
 ### Speed at about 770k records (one day, 2-vCPU cloud sandbox)
 
@@ -49,10 +49,37 @@ Writing: about 25k records/s in this sandbox. A burst beyond the
 200k-record queue is skipped for DuckDB, marks the day dirty, and is
 rebuilt from text at the next start. The logs file for the day is 121 MB.
 
+### Review findings (2026-11-24)
+
+Fixed, each with a test that failed first:
+- A saved epoch unit (s/us/ns) on a numeric timestamp was ignored —
+  `TestRunSQLTimestampUnitOverride`.
+- Queries failed while a column's type changed — `TestQueriesDuringRetype`
+  (queries now take a read lock the writer holds across a type change).
+- A stored-days `-web` reader held today's file, so the next writer
+  couldn't open DuckDB — `TestOpenStoredLeavesTodayToTheWriter`,
+  `TestOpenWriterKeepsGoingWhenTodayWontOpen` (readers read today from
+  text; a writer that can't open today keeps it in memory).
+- Replays and text loads skipped records when the queue filled —
+  `TestReplayNeverSkips` (they now wait for room).
+
+Deferred (Minor), for the next session:
+1. A failed batch isn't one transaction (index rows can be orphaned).
+2. `ReadStamp` checks only the logs file's text size.
+3. The `-web` port check runs after a possibly long rebuild.
+4. Requests can fail briefly at midnight rollover/expiry.
+5. A midnight race can send one record to memory only.
+6. `.duckdb.wal` files are not chmod 0600.
+7. Each request can wait up to 2 × 250 ms when the writer is behind.
+8. `rebuild` makes a parser per row; DuckDB `trim` differs from Go's for tabs/newlines.
+9. Untimed records at the end of a rebuilt day aren't backfilled.
+10. Startup rebuild runs even without `-web` (about 44 s for 600k lines); consider background.
+
 ## Planned (in order)
 
-1. Fresh whole-branch review; fix Critical/Important findings test-first.
-2. Hand over patches; final summary.
+1. On the user's PC (Claude Code): `go mod tidy`, full tests without the
+   build tag, then the deferred minors if wanted.
+2. Open a PR for the author's review.
 
 ## Blocked
 

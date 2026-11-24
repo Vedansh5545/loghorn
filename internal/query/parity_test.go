@@ -570,3 +570,39 @@ func BenchmarkRunSQLSmall(b *testing.B) {
 		}
 	})
 }
+
+// TestRunSQLTimestampUnitOverride: a saved epoch unit on a numeric
+// timestamp field changes how its numbers are read, as in schema.Convert.
+func TestRunSQLTimestampUnitOverride(t *testing.T) {
+	in := config.Input{}
+	p := adapter.New(in)
+	var recs []record.Record
+	for i := 0; i < 6; i++ {
+		l := fmt.Sprintf(`{"timestamp":"2026-11-23T10:00:0%dZ","severity":"INFO","message":"m","labels":{"schema":"api"},"receiveTimestamp":%d}`, i, 1700000000+i*86400*10)
+		r, ok := record.Normalize(p.ParseLine([]byte(l)), in)
+		if !ok {
+			t.Fatal(l)
+		}
+		r.Seq, r.Service = i+1, "s"
+		recs = append(recs, r)
+	}
+	b := newBackend(t, recs)
+	now := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	for _, unit := range []string{"s", "us", "ns", "ms", ""} {
+		sch := schema.Effective(b.schema(t, "*", "log", "api"), []schema.Field{{Path: "receiveTimestamp", Type: schema.TTimestamp, Unit: unit}})
+		for _, q := range []query.Query{
+			{Stream: "api", Filters: []query.Filter{{Field: "receiveTimestamp", Op: ">=", Values: []string{"2023-12-01T00:00:00Z"}}}},
+			{Stream: "api", Sort: query.Sort{Field: "receiveTimestamp", Desc: true}},
+			{Stream: "api", View: "table", GroupBy: []string{"receiveTimestamp"}},
+		} {
+			want, werr := query.Run(recs, sch, q, now, time.Time{})
+			got, gerr := query.RunSQL(context.Background(), b, sch, q, now, time.Time{})
+			if werr != nil || gerr != nil {
+				t.Fatalf("unit %q: %v / %v", unit, werr, gerr)
+			}
+			if d := compareJSON(mustAny(got), mustAny(want), "$"); d != "" {
+				t.Errorf("unit %q query %s:\n%s", unit, mustJSON(q), d)
+			}
+		}
+	}
+}
