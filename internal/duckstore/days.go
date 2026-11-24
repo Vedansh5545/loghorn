@@ -212,6 +212,14 @@ func (e *Engine) closeDay(p *pair, reattach bool) error {
 	return err
 }
 
+// MarkDirty makes day's pair close dirty, so the next writer rebuilds it
+// from text, as after a skipped write.
+func (e *Engine) MarkDirty(day int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skipped[day] = true
+}
+
 func (e *Engine) skippedDay(day int) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

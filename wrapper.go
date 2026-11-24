@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -33,8 +34,9 @@ import (
 // failures are reported and the child's status is returned.
 func runCommand(o opts, cfg config.Config, cwd string) int {
 	logs := openRecordingLog(o)
+	wl := listenLiveWeb(o, cwd)
 	st := openLiveStore(o, cfg, logs)
-	ws := startLiveWeb(o, cwd, st)
+	ws := wl.serveLive(st)
 	// The stored days are open, so stored lines stay "default"; live records
 	// take the child's service name.
 	if svc := childService(os.Environ()); svc != "" {
@@ -122,8 +124,9 @@ func runCommand(o opts, cfg config.Config, cwd string) int {
 // important records). -web stops at end of input.
 func runPipe(o opts, cfg config.Config, cwd string) int {
 	logs := openRecordingLog(o)
+	wl := listenLiveWeb(o, cwd)
 	st := openLiveStore(o, cfg, logs)
-	ws := startLiveWeb(o, cwd, st)
+	ws := wl.serveLive(st)
 	rec := liveRecorder(o, cfg, logs, st)
 	err := wrap.Pipe(os.Stdin, wrap.Options{
 		Recorder:  rec,
@@ -261,7 +264,7 @@ func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store
 	}
 	dir, err := logDir()
 	if err == nil {
-		st, oerr := store.Open(store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir, Write: logs != nil})
+		st, oerr := store.Open(liveStoreOptions(o, cfg, dir, logs != nil))
 		if oerr == nil {
 			return st
 		}
@@ -274,6 +277,14 @@ func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store
 	return store.NewWithInput(store.ModeLive, time.Now(), cfg.Input)
 }
 
+// liveStoreOptions opens dir for a live run. write is true for the lock
+// holder. Without -web nothing reads the day files this run, so rebuilding
+// them from text is left to the next -web writer (D-024).
+func liveStoreOptions(o opts, cfg config.Config, dir string, write bool) store.Options {
+	return store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir,
+		Write: write, DeferBuild: write && !o.web}
+}
+
 // closeStore closes the store after the log file, so the day files record
 // the text files' final sizes.
 func closeStore(st *store.Store) {
@@ -284,13 +295,21 @@ func closeStore(st *store.Store) {
 	}
 }
 
-// startLiveWeb starts -web for live input and prints its URL. Without -web
-// it returns nil.
-func startLiveWeb(o opts, cwd string, st *store.Store) *webServer {
+// listenLiveWeb binds -web for live input (see listenWeb). Without -web it
+// returns nil.
+func listenLiveWeb(o opts, cwd string) *webListener {
 	if !o.web {
 		return nil
 	}
-	ws := startWeb(o, cwd, st)
+	return listenWeb(o, cwd)
+}
+
+// serveLive serves st on l and prints the URL. A nil l (no -web) gives nil.
+func (l *webListener) serveLive(st *store.Store) *webServer {
+	if l == nil {
+		return nil
+	}
+	ws := l.serve(st)
 	fmt.Fprintf(os.Stderr, "loghorn: web view at %s\n", ws.url)
 	return ws
 }
@@ -304,10 +323,17 @@ func preloadSpans(st *store.Store, dir string, in config.Input) {
 	}
 }
 
-// startWeb listens and serves st; it does not print the URL. A config base
-// or listen failure exits, so it must run before any child is launched. It
-// prints the one-time notice about a repo's retired .config/loghorn.
-func startWeb(o opts, cwd string, st *store.Store) *webServer {
+// webListener is a bound -web port, not yet serving.
+type webListener struct {
+	ln   net.Listener
+	base string
+}
+
+// listenWeb finds the config base and binds the -web port. Either failure
+// exits, so it must run before any child is launched, and before the store
+// opens, which can rebuild days from text for most of a minute. It prints
+// the one-time notice about a repo's retired .config/loghorn.
+func listenWeb(o opts, cwd string) *webListener {
 	base, err := svcconf.BaseFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loghorn: -web: config dir:", err)
@@ -321,6 +347,12 @@ func startWeb(o opts, cwd string, st *store.Store) *webServer {
 		fmt.Fprintln(os.Stderr, "loghorn: -web:", err)
 		os.Exit(1)
 	}
+	return &webListener{ln: ln, base: base}
+}
+
+// serve serves st on the bound port; it does not print the URL.
+func (l *webListener) serve(st *store.Store) *webServer {
+	ln, base := l.ln, l.base
 	srv := &http.Server{
 		Handler:           web.New(web.Options{Store: st, ConfigBase: base}),
 		ReadHeaderTimeout: 10 * time.Second,

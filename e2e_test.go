@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -402,5 +404,33 @@ func TestDisplayWarns(t *testing.T) {
 	r := runLoghorn(t, dir, nil, "--", "true")
 	if r.code != 0 || !strings.Contains(r.stderr, "[display] is ignored") {
 		t.Errorf("code %d stderr %q", r.code, r.stderr)
+	}
+}
+
+// A busy -web port must fail before the store opens: opening can rebuild
+// days from text for most of a minute, and the run would then fail anyway
+// (review minor 3).
+func TestWebPortCheckedBeforeRebuild(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+	dir := t.TempDir()
+	lh := filepath.Join(dir, ".loghorn")
+	if err := os.Mkdir(lh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"severity":"INFO","message":"stored","labels":{"schema":"app"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(lh, "loghorn.log"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := runLoghorn(t, dir, nil, "-web", "-web-port", strconv.Itoa(port), "--", "true")
+	if res.code != 1 || !strings.Contains(res.stderr, "loghorn: -web:") {
+		t.Fatalf("exit %d, want 1 with a -web error; stderr: %s", res.code, res.stderr)
+	}
+	if strings.Contains(res.stderr, "building DuckDB") {
+		t.Errorf("rebuilt from text before checking the port; stderr: %s", res.stderr)
 	}
 }

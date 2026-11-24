@@ -179,6 +179,23 @@ func TestSpanSinkAddsWhenFileFails(t *testing.T) {
 	}
 }
 
+// A live run without -web writes the day files but defers rebuilding them
+// (D-024): rebuilding can take most of a minute before the child starts.
+func TestLiveStoreOptionsDeferBuildWithoutWeb(t *testing.T) {
+	for _, tc := range []struct {
+		web, write, deferBuild bool
+	}{
+		{web: false, write: true, deferBuild: true},
+		{web: true, write: true, deferBuild: false},
+		{web: true, write: false, deferBuild: false},
+	} {
+		got := liveStoreOptions(opts{web: tc.web}, config.Config{}, "/x/.loghorn", tc.write)
+		if got.Write != tc.write || got.DeferBuild != tc.deferBuild || got.Dir != "/x/.loghorn" || got.Mode != store.ModeLive {
+			t.Errorf("web=%v write=%v: options %+v, want Write=%v DeferBuild=%v", tc.web, tc.write, got, tc.write, tc.deferBuild)
+		}
+	}
+}
+
 func TestLiveReaderStoreReadsStoredLogsAndSpans(t *testing.T) {
 	dir := t.TempDir()
 	pino, err := os.ReadFile("testdata/web/pino.log")

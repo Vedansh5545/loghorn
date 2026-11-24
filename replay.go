@@ -56,6 +56,7 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 	var st *store.Store
 	fromDays := false // the store reads the stored days itself
 	if m.web {
+		wl := listenWeb(o, cwd) // before the store, which can load days from text
 		gh := kind == kindGHJob || kind == kindGHRun
 		mode, runStart := webStoreMode(kind == kindHistorical, gh, kind == kindFile, time.Now())
 		if kind == kindHistorical {
@@ -70,7 +71,7 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 		if st == nil {
 			st = store.NewWithInput(mode, runStart, cfg.Input)
 		}
-		ws = startWeb(o, cwd, st)
+		ws = wl.serve(st)
 		defer ws.close()
 	}
 

@@ -226,7 +226,7 @@ or has not yet answered.
 
 ## D-018 Days in doubt are rebuilt at startup, synchronously
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (simplifies the design's background rebuild)
+- **Date:** 2026-11-23 · **Status:** Accepted; narrowed by D-024 (runs without `-web`) · **Decided by:** Claude (simplifies the design's background rebuild)
 - **Decision:** At startup the lock holder rebuilds each retained day whose
   pair is missing or in doubt, before records flow, into a temporary file
   then renamed. Other processes load such days from text into memory.
@@ -294,6 +294,25 @@ or has not yet answered.
   view. This keeps today's behaviour exactly; the update touches only the
   leading records of a session.
 - **Supersedes:** D-020.
+
+## D-024 A writer without `-web` defers rebuilds (narrows D-018)
+
+- **Date:** 2026-11-24 · **Status:** Accepted · **Decided by:** Claude (review minor 10; correct if wrong)
+- **Decision:** A lock holder running without `-web` rebuilds no day at
+  startup. It still writes today's records to today's pair, and marks
+  today dirty, so the next writer with `-web` rebuilds it from text.
+  Earlier days in doubt are left for that writer too. With `-web`, D-018
+  is unchanged. The `-web` port is bound before the store opens, so a busy
+  port fails before any rebuild.
+- **Why:** Nothing reads the day files in a run without `-web`, yet D-018
+  made every such run wait for rebuilds (about 44 s for 600k lines)
+  before the child started. The text files stay the source of truth
+  (D-007), so deferring loses nothing. This is simpler than the design's
+  background rebuild: a day still never switches from memory to file
+  mid-session.
+- **Consequences:** The first `-web` run after plain runs on a day in doubt
+  pays the rebuild. A run without `-web` writes today to a pair that is
+  rebuilt later anyway.
 
 ---
 

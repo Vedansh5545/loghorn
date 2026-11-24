@@ -129,6 +129,40 @@ func TestOpenWriterRebuildsDayWhoseTextChanged(t *testing.T) {
 	}
 }
 
+// TestOpenDeferredWriterBuildsNothing: a writer without -web (DeferBuild)
+// starts without rebuilding days from text, which can take most of a
+// minute, yet still stores its records; today is marked so the next -web
+// writer rebuilds it, and nothing is lost.
+func TestOpenDeferredWriterBuildsNothing(t *testing.T) {
+	dir := textDir(t)
+	o := &opened{}
+	s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, DeferBuild: true, Input: config.Input{},
+		Now: func() time.Time { return dayNow }, Warn: func(m string) { o.warns = append(o.warns, m) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.s = s
+	if got := o.built(); len(got) != 0 {
+		t.Errorf("a writer without -web built %v at startup", got)
+	}
+	line := logLine(9, dayNow)
+	o.s.Add(logRecord(t, line), dayNow)
+	writeText(t, dir, "loghorn.log", dayNow, line) // as the log writer does
+	o.s.Close()
+	if _, err := os.Stat(filepath.Join(dir, "logs-2026-11-23.duckdb")); err != nil {
+		t.Errorf("today's pair not written: %v", err)
+	}
+
+	w := openStore(t, dir, ModeLive, true)
+	defer w.s.Close()
+	if got := w.built(); strings.Join(got, ",") != "2026-11-22,2026-11-23" {
+		t.Errorf("next -web writer built %v, want yesterday and today", got)
+	}
+	if n := total(w.s); n != 7 {
+		t.Errorf("records = %d, want 7", n)
+	}
+}
+
 func TestOpenReaderUsesPairsAndTodaysText(t *testing.T) {
 	dir := textDir(t)
 	openStore(t, dir, ModeLive, true).s.Close()

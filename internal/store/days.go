@@ -28,8 +28,12 @@ type Options struct {
 	// Write is true in the process holding loghorn.lock (with or without
 	// -web): it writes, rebuilds and expires the day files.
 	Write bool
-	Now   func() time.Time // nil: time.Now
-	Warn  func(string)     // nil: print to stderr
+	// DeferBuild, with Write, is a run without -web: no day is rebuilt from
+	// text at startup, since nothing here reads the day files. Today's pair
+	// is still written, and marked so the next writer rebuilds it (D-024).
+	DeferBuild bool
+	Now        func() time.Time // nil: time.Now
+	Warn       func(string)     // nil: print to stderr
 }
 
 // Open opens a store over Dir's retained days (today and KeepDays before).
@@ -70,6 +74,15 @@ func Open(o Options) (*Store, error) {
 		st, stamped := e.ReadStamp(d)
 		valid := stamped && st.Clean && !st.Dirty && (len(files) == 0 || st.TextBytes == size)
 		switch {
+		case o.Write && o.DeferBuild && !valid && len(files) > 0:
+			// Leave the build to the next writer with -web; text stays the
+			// source of truth meanwhile.
+			if d == today {
+				if err := e.AttachDay(d, true); err != nil {
+					o.Warn("loghorn: DuckDB: can't open today's database (" + firstLine(err) + ")")
+				}
+				e.MarkDirty(d)
+			}
 		case o.Write:
 			if !valid && len(files) > 0 {
 				o.Warn(fmt.Sprintf("loghorn: building DuckDB for %s from its text logs", duckstore.DayName(d)))
