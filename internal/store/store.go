@@ -56,7 +56,8 @@ type Store struct {
 	e        *duckstore.Engine
 	mode     Mode
 	runStart time.Time
-	now      func() time.Time // the arrival clock for live ids
+	now      func() time.Time         // the arrival clock for live ids
+	waitFor  func(time.Duration) bool // the engine's Sync; tests replace it
 
 	mu       sync.Mutex
 	seq      map[int]int     // per day number: the last sequence used
@@ -64,6 +65,7 @@ type Store struct {
 	pending  []record.Record // leading records written with no time yet
 	fallback string          // service of records that name none
 	liveDay  int             // the latest arrival day given out
+	timedOut time.Time       // when a read's wait last timed out
 
 	cacheMu sync.Mutex
 	cache   map[[3]string]cached
@@ -91,7 +93,7 @@ func NewWithInput(mode Mode, runStart time.Time, in config.Input) *Store {
 }
 
 func wrap(e *duckstore.Engine, mode Mode, runStart time.Time) *Store {
-	return &Store{e: e, mode: mode, runStart: runStart, now: time.Now, seq: map[int]int{},
+	return &Store{e: e, mode: mode, runStart: runStart, now: time.Now, waitFor: e.Sync, seq: map[int]int{},
 		fallback: record.DefaultService, cache: map[[3]string]cached{}}
 }
 
@@ -180,9 +182,18 @@ func (s *Store) Close() error {
 }
 
 // read waits briefly for records added before it, then keeps the writer
-// from changing catalogs (a type change, midnight) until unlock.
+// from changing catalogs (a type change, midnight) until unlock. Within
+// readWait of a wait that timed out the writer is still behind, so reads
+// don't wait again: a request making two reads waits once.
 func (s *Store) read() (unlock func()) {
-	s.e.Sync(readWait)
+	s.mu.Lock()
+	behind := time.Since(s.timedOut) < readWait
+	s.mu.Unlock()
+	if !behind && !s.waitFor(readWait) {
+		s.mu.Lock()
+		s.timedOut = time.Now()
+		s.mu.Unlock()
+	}
 	return s.e.ReadLock()
 }
 

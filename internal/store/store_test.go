@@ -304,3 +304,21 @@ func TestReplayNeverSkips(t *testing.T) {
 		t.Fatalf("stored %d of 2000", n)
 	}
 }
+
+// A request makes two reads (schema then query, span then trace). When the
+// writer is behind, only the first may wait: the second would time out too.
+func TestReadsWaitOnceWhileWriterIsBehind(t *testing.T) {
+	s := New(ModeLive, time.Now())
+	defer s.Close()
+	waits := 0
+	s.waitFor = func(d time.Duration) bool { waits++; time.Sleep(d); return false }
+	start := time.Now()
+	s.Streams()
+	s.Info()
+	if waits != 1 {
+		t.Errorf("waited %d times for a writer that is behind, want 1", waits)
+	}
+	if el := time.Since(start); el > readWait+readWait/2 {
+		t.Errorf("two reads took %v", el)
+	}
+}
