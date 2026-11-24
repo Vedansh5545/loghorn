@@ -1,6 +1,6 @@
 # Project status: DuckDB storage for loghorn
 
-Last updated: 2026-11-23 · Branch `duckdb-storage`, based on `331ddc3`
+Last updated: 2026-11-24 · Branch `duckdb-storage`, based on `331ddc3`
 
 **Status values:** Planned · In progress · Completed (verified) · Failed ·
 Blocked. A task is Completed only when the check named next to it has
@@ -21,6 +21,12 @@ run and passed.
 | Task 3: `query.RunSQL` with parity | 2026-11-23 | All 8055 parity queries match `query.Run` (`PARITY_FULL=1`) | `5233a0a`, D-021, D-022 |
 | Task 4: web view served from DuckDB | 2026-11-23 | `go test ./...` (25 packages); `-race` on store, duckstore, web, recorder | `c2e38af`, D-023 |
 | Task 5: day files, modes, rebuild, rollover, failure | 2026-11-23 | `go test ./...`; smoke run of the built binary (two runs, then `-web` alone over the files) | `25b971e` |
+| `go.mod`/`go.sum` completed (`go mod tidy`) | 2026-11-24 | `go build/vet/test ./...` on the user's Mac (macOS 26.6, Go 1.27.4, cgo) | `2633b81` |
+| Verification on a normal machine | 2026-11-24 | `go test ./...` (26 packages); all 8055 parity queries (`PARITY_FULL=1`, 2 m 8 s); `-race` on store, duckstore, web, recorder, query, main | `2633b81` |
+| Spec sent for the author's review | 2026-11-24 | Spec-only PR open | jimbeveridge/loghorn#2 (branch `duckdb-storage-spec` on the user's fork) |
+| Minor 6: `.duckdb.wal` owner-only | 2026-11-24 | `TestDayWALIsOwnerOnly` failed first | `b4fb42b` |
+| Minor 1: a day-file batch is one transaction | 2026-11-24 | `TestFailedBatchLeavesNoPartialRows` failed first (records showed twice); `TestDayColumnWidensToStringInTransaction` | `7fc48f0` |
+| Minors 10 and 3: plain runs defer rebuilds; `-web` binds before the store | 2026-11-24 | `TestOpenDeferredWriterBuildsNothing`, `TestLiveStoreOptionsDeferBuildWithoutWeb`, `TestWebPortCheckedBeforeRebuild` failed first | `9acef4e`, D-024 |
 
 ## In progress
 
@@ -63,30 +69,33 @@ Fixed, each with a test that failed first:
 - Replays and text loads skipped records when the queue filled —
   `TestReplayNeverSkips` (they now wait for room).
 
-Deferred (Minor), for the next session:
-1. A failed batch isn't one transaction (index rows can be orphaned).
+Deferred (Minor); 1, 3, 6 and 10 fixed 2026-11-24 (see Completed):
+1. ~~A failed batch isn't one transaction (index rows can be orphaned).~~
+   Worse than noted: the batch then went whole to memory, so its rows
+   showed twice. Fixed.
 2. `ReadStamp` checks only the logs file's text size.
-3. The `-web` port check runs after a possibly long rebuild.
+3. ~~The `-web` port check runs after a possibly long rebuild.~~ Fixed.
 4. Requests can fail briefly at midnight rollover/expiry.
 5. A midnight race can send one record to memory only.
-6. `.duckdb.wal` files are not chmod 0600.
+6. ~~`.duckdb.wal` files are not chmod 0600.~~ Fixed.
 7. Each request can wait up to 2 × 250 ms when the writer is behind.
 8. `rebuild` makes a parser per row; DuckDB `trim` differs from Go's for tabs/newlines.
 9. Untimed records at the end of a rebuilt day aren't backfilled.
-10. Startup rebuild runs even without `-web` (about 44 s for 600k lines); consider background.
+10. ~~Startup rebuild runs even without `-web` (about 44 s for 600k lines).~~
+    Fixed by deferring, not by a background build (D-024).
 
 ## Planned (in order)
 
-1. On the user's PC (Claude Code): `go mod tidy`, full tests without the
-   build tag, then the deferred minors if wanted.
-2. Open a PR for the author's review.
+1. Remaining minors 2, 4, 5, 7, 8, 9, if wanted.
+2. Try `-web` on a real project.
+3. After the author answers the spec PR (#2): a PR for the code, from the
+   user's fork.
 
 ## Blocked
 
 | Item | Blocks | Needs |
 |---|---|---|
-| The cloud session can't push to `jimbeveridge/loghorn` | Sharing commits through GitHub | Push access, or the user applies the patches |
-| `go.sum` can't be completed offline | Merging | `go mod tidy` on a normal machine (D-013) |
+| The user's account can't push to `jimbeveridge/loghorn` | Pushing branches there | Nothing now: branches go to the user's fork, PRs from there |
 
 ## Failed
 
@@ -100,8 +109,16 @@ None.
   whose type differs between services or days read together.
 - The author has not reviewed this work (`docs/DECISIONS.md` O-2).
 
+## Environment note (user's Mac)
+
+The default SDK (`MacOSX27.0.sdk`) is newer than the Command Line Tools'
+linker (26.6), so cgo links of DuckDB fail with "unknown architecture
+arm64e.x1". Build and test with
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk` until
+the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
+`PATH`.
+
 ## Next actions
 
-1. Whole-branch review and fixes.
-2. On a normal machine: `go mod tidy`, `go test ./...`, then try `-web` on
-   a real project.
+1. Wait for the author on the spec PR (jimbeveridge/loghorn#2).
+2. Try `-web` on a real project; then the remaining minors.
