@@ -27,12 +27,20 @@ run and passed.
 | Minor 6: `.duckdb.wal` owner-only | 2026-11-24 | `TestDayWALIsOwnerOnly` failed first | `b4fb42b` |
 | Minor 1: a day-file batch is one transaction | 2026-11-24 | `TestFailedBatchLeavesNoPartialRows` failed first (records showed twice); `TestDayColumnWidensToStringInTransaction` | `7fc48f0` |
 | Minors 10 and 3: plain runs defer rebuilds; `-web` binds before the store | 2026-11-24 | `TestOpenDeferredWriterBuildsNothing`, `TestLiveStoreOptionsDeferBuildWithoutWeb`, `TestWebPortCheckedBeforeRebuild` failed first | `9acef4e`, D-024 |
+| Spec PR also carries `docs/DECISIONS.md` | 2026-11-24 | Pushed to the fork's `duckdb-storage-spec` | `f5f7b63` |
+| Minor 2: a pair whose stamps disagree on text size is in doubt | 2026-11-24 | `TestStampsDisagreeingOnTextAreInDoubt` failed first | `b0db6c4` |
+| Minor 8: SQL trims what Go trims; one parser for rebuilt rows | 2026-11-24 | Tab, newline and Unicode-space cases added to `TestRelationConvertsLikeConvert` failed first | `f375d0f` |
+| Minor 9: a rebuilt day's untimed records take times from that day only | 2026-11-24 | `TestRebuiltDayTimesComeFromThatDay` failed first | `556c850` |
+| Minors 4 and 5: reads wait out a rollover; late records keep a file | 2026-11-24 | `TestReadsDuringRolloverDontFail`, `TestLateDayRecordStillReachesAFile` failed first | `b7f588d` |
+| Minor 7: a request waits for a lagging writer once | 2026-11-24 | `TestReadsWaitOnceWhileWriterIsBehind` failed first | `d59a987` |
+| Found while verifying: a batch crossing midnight failed the day file and sent the rest of the run to memory | 2026-11-24 | `TestBatchAcrossMidnightIsWritten` failed first; day tests ×40 under `-race` beside the parity run (failed before) | `93ce5eb` |
+| Verification after all fixes | 2026-11-24 | `go vet ./...`, `go test ./...`; `-race` on duckstore, store, web, main; all 8055 parity queries at `d59a987` | — |
 
 ## In progress
 
 | Work | Started | State |
 |---|---|---|
-| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Review done: its 4 Important findings fixed test-first; Critical = `go.sum` (needs a networked machine); 10 Minor deferred (below) |
+| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Review done: its 4 Important findings, the Critical (`go.sum`) and all 10 Minors fixed; left: try `-web` on a real project |
 
 ### Speed at about 770k records (one day, 2-vCPU cloud sandbox)
 
@@ -69,26 +77,28 @@ Fixed, each with a test that failed first:
 - Replays and text loads skipped records when the queue filled —
   `TestReplayNeverSkips` (they now wait for room).
 
-Deferred (Minor); 1, 3, 6 and 10 fixed 2026-11-24 (see Completed):
+Minor (all fixed 2026-11-24, see Completed):
 1. ~~A failed batch isn't one transaction (index rows can be orphaned).~~
    Worse than noted: the batch then went whole to memory, so its rows
-   showed twice. Fixed.
-2. `ReadStamp` checks only the logs file's text size.
-3. ~~The `-web` port check runs after a possibly long rebuild.~~ Fixed.
-4. Requests can fail briefly at midnight rollover/expiry.
-5. A midnight race can send one record to memory only.
-6. ~~`.duckdb.wal` files are not chmod 0600.~~ Fixed.
-7. Each request can wait up to 2 × 250 ms when the writer is behind.
-8. `rebuild` makes a parser per row; DuckDB `trim` differs from Go's for tabs/newlines.
-9. Untimed records at the end of a rebuilt day aren't backfilled.
-10. ~~Startup rebuild runs even without `-web` (about 44 s for 600k lines).~~
-    Fixed by deferring, not by a background build (D-024).
+   showed twice.
+2. ~~`ReadStamp` checks only the logs file's text size.~~
+3. ~~The `-web` port check runs after a possibly long rebuild.~~
+4. ~~Requests can fail briefly at midnight rollover/expiry.~~ Every store
+   read now takes the lock the writer holds across rollover.
+5. ~~A midnight race can send one record to memory only.~~
+6. ~~`.duckdb.wal` files are not chmod 0600.~~
+7. ~~Each request can wait up to 2 × 250 ms when the writer is behind.~~
+8. ~~`rebuild` makes a parser per row; DuckDB `trim` differs from Go's.~~
+9. ~~Untimed records at the end of a rebuilt day aren't backfilled.~~ Each
+   day now takes times from its own text only; a day with no time keeps
+   its records untimed.
+10. ~~Startup rebuild runs even without `-web`.~~ Fixed by deferring, not
+    by a background build (D-024).
 
 ## Planned (in order)
 
-1. Remaining minors 2, 4, 5, 7, 8, 9, if wanted.
-2. Try `-web` on a real project.
-3. After the author answers the spec PR (#2): a PR for the code, from the
+1. Try `-web` on a real project.
+2. After the author answers the spec PR (#2): a PR for the code, from the
    user's fork.
 
 ## Blocked
@@ -121,4 +131,4 @@ the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
 ## Next actions
 
 1. Wait for the author on the spec PR (jimbeveridge/loghorn#2).
-2. Try `-web` on a real project; then the remaining minors.
+2. Try `-web` on a real project.
