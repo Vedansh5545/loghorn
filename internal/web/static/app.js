@@ -857,7 +857,7 @@ function wireHeatList() {
     if (e.key !== "Escape" || !heatSel || state.view !== "heatmap") return;
     // An open menu, pane or dialog takes the Esc for itself. Capture runs
     // first, so a new menu or pane must be added to this check.
-    if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
+    if (menuPath || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
     if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     clearHeatSelection();
   }, true);
@@ -930,7 +930,7 @@ async function loadSession() {
   const none = session.count === 0;
   $("empty").hidden = !none;
   $("results").hidden = none;
-  $("footer").hidden = none;
+  $("results-head").hidden = none;
   await chooseService();
 }
 
@@ -1040,12 +1040,14 @@ const NEED_SERVICE = "Choose a service to save";
 // readOnly() as they are drawn.)
 function syncReadOnly() {
   const ro = readOnly();
-  for (const id of ["fav-save", "fav-save-menu", "schema-save"]) {
+  for (const id of ["fav-save", "schema-save"]) {
     const b = $(id);
     b.disabled = ro;
     if (ro) b.title = NEED_SERVICE;
+    else if (id === "fav-save") b.title = FAV_SAVE_TITLE;
     else b.removeAttribute("title");
   }
+  if (railTab === "favs") loadFavorites(); // the list follows the service
 }
 
 // readOnly is true under All: the union of services is shown but nothing is
@@ -1265,7 +1267,7 @@ function clearResults() {
   forgetHeatSelection();
   drawHeat();
   $("more").hidden = true;
-  $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
+  $("summary").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
 }
 
 // setMode switches between Logs and Spans and selects the new mode's first
@@ -1529,7 +1531,7 @@ function renderTable(result) {
   const n = result.groups || 0;
   let foot = n.toLocaleString() + " " + (n === 1 ? "group" : "groups") + " · " + result.matched.toLocaleString() + " records match";
   if (result.truncated) foot += " · showing the top " + result.rows.length.toLocaleString();
-  $("footer-text").textContent = foot;
+  $("summary").textContent = foot;
   applyWidths();
 }
 
@@ -1558,7 +1560,7 @@ function renderGraph(result) {
     foot += " · top " + g.top + " of " + g.groups.toLocaleString() + " groups, the rest in other";
     if (state.top > g.top) foot += " (the graph draws at most " + g.top + ")";
   }
-  $("footer-text").textContent = foot;
+  $("summary").textContent = foot;
 }
 
 export function render(result) {
@@ -1599,7 +1601,7 @@ function renderSamplesFooter(result) {
   const off = result.offset || 0;
   const shown = result.rows.length;
   const span = shown ? (off + 1).toLocaleString() + "–" + (off + shown).toLocaleString() : "none";
-  $("footer-text").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
+  $("summary").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
     (state.stream === ALL_KINDS ? "span" : state.stream) + " records match · showing " + (off ? span : shown.toLocaleString());
   $("limit").value = String(state.limit || DEFAULT_LIMIT);
   $("more").hidden = !result.truncated && !off;
@@ -2318,14 +2320,16 @@ function setTripleError(t, msg) {
 
 // commitTriple brings t's filter in line with its inputs: it validates a
 // complete triple by running the query with it, and drops an incomplete one.
-async function commitTriple(t) {
+// With quiet, it leaves running the query to the caller (submitQuery).
+async function commitTriple(t, quiet = false) {
+  const run = () => (quiet ? undefined : runQuery());
   const f = candidate(t);
   if (!f) {
     setTripleError(t, "");
     if (t.filter) {
       t.filter = null;
       syncFilters();
-      runQuery();
+      run();
     }
     return;
   }
@@ -2340,7 +2344,7 @@ async function commitTriple(t) {
     t.filter = null;
     syncFilters();
     setTripleError(t, err.detail || err.message);
-    if (had) runQuery();
+    if (had) run();
     else saveURL();
     return;
   }
@@ -2348,7 +2352,47 @@ async function commitTriple(t) {
   t.filter = f;
   setTripleError(t, "");
   syncFilters();
+  run();
+}
+
+// submitQuery is the sidebar's default button (Search): it takes every filter
+// row and the search box as typed, then runs the query once.
+async function submitQuery(e) {
+  if (e) flashSubmit(); // a click; an Enter flashed already
+  for (const t of triples) {
+    const v = t.row && t.row.querySelector(".t-value > input, .t-value > select");
+    if (v && !isMulti(t.op)) t.value = v.value;
+  }
+  state.search = $("search").value;
+  await Promise.all(triples.map((t) => commitTriple(t, true)));
   runQuery();
+}
+
+// flashSubmit presses the Search button for a moment, so an Enter that ran
+// the query shows where it went.
+function flashSubmit() {
+  const b = $("run-query");
+  b.classList.remove("flash");
+  void b.offsetWidth; // restart the animation
+  b.classList.add("flash");
+}
+
+// wireSubmit makes Search the sidebar's default button: Enter in any of its
+// text fields runs it. It runs after the field's own Enter handling and the
+// change event Enter fires (Rows, a relative From, a field name), so it must
+// not cancel the key. The kind filter only narrows the stream list, so its
+// Enter is its own.
+function wireSubmit() {
+  $("run-query").addEventListener("click", submitQuery);
+  $("run-query").addEventListener("animationend", () => $("run-query").classList.remove("flash"));
+  $("sidebar").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.id === "kind-filter") return;
+    if (["button", "checkbox", "radio", "submit", "reset", "file", "range", "color"].includes(t.type)) return;
+    flashSubmit();
+    setTimeout(submitQuery, 0);
+  });
 }
 
 function removeTriple(t) {
@@ -2465,11 +2509,10 @@ function drawValue(t) {
     t.value = input.value;
     commitTriple(t);
   });
+  // Enter runs the Search button (wireSubmit), which commits this row; no
+  // change event besides, which would validate the row a second time.
   input.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    t.value = input.value;
-    commitTriple(t);
+    if (e.key === "Enter") e.preventDefault();
   });
   box.append(input);
 }
@@ -2987,7 +3030,6 @@ function openColumnMenu(path, anchorEl) {
     return;
   }
   closeColumnMenu();
-  closeFavorites();
   menuPath = path;
   menuAnchor = anchorEl;
   const menu = $("col-menu");
@@ -3402,8 +3444,14 @@ function favoriteColumns(list, name) {
   return f ? f.query.columns.slice() : [];
 }
 
+// favSeq numbers loadFavorites calls; an answer for an older call (another
+// service) is dropped.
+let favSeq = 0;
+
 async function loadFavorites() {
+  const seq = ++favSeq;
   const list = $("fav-list");
+  if (!state.service) return; // chooseService loads it once a service is chosen
   list.replaceChildren(el("li", "muted", "loading…"));
   const ro = readOnly();
   let favs;
@@ -3420,10 +3468,12 @@ async function loadFavorites() {
       favCache = { service: state.service, list: favs || [] };
     }
   } catch (err) {
+    if (seq !== favSeq) return;
     list.replaceChildren();
     favStatus(err.detail || err.message, true);
     return;
   }
+  if (seq !== favSeq) return;
   list.replaceChildren();
   if (!favs || !favs.length) list.append(el("li", "muted", "no favorites yet"));
   for (const f of favs || []) {
@@ -3443,21 +3493,42 @@ async function loadFavorites() {
   }
 }
 
-function openFavorites() {
-  closeColumnMenu();
-  $("fav-menu").hidden = false;
-  $("fav-button").setAttribute("aria-expanded", "true");
-  favStatus("");
-  loadFavorites();
+const RAIL_KEY = "loghorn.rail"; // localStorage: the sidebar tab, "query" or "favs"
+const FAV_SAVE_TITLE = "save this query as a favorite";
+let railTab = "query";
+
+// setRail shows the sidebar's Query controls or its Favorites list.
+function setRail(tab) {
+  railTab = tab === "favs" ? "favs" : "query";
+  for (const b of document.querySelectorAll("#rail-tabs [data-rail]")) {
+    const on = b.dataset.rail === railTab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  }
+  $("sb-query").hidden = railTab !== "query";
+  $("sb-favs").hidden = railTab !== "favs";
+  if (railTab === "favs") {
+    closeColumnMenu();
+    favStatus("");
+    loadFavorites();
+  }
 }
 
-function closeFavorites() {
-  $("fav-menu").hidden = true;
-  $("fav-button").setAttribute("aria-expanded", "false");
+// favSaved fills the heart for a moment, so a save shows even with the
+// Favorites tab closed.
+let favSavedTimer = 0;
+function favSaved(name) {
+  const b = $("fav-save");
+  b.classList.add("saved");
+  b.title = "saved \"" + name + "\"";
+  clearTimeout(favSavedTimer);
+  favSavedTimer = setTimeout(() => {
+    b.classList.remove("saved");
+    if (!readOnly()) b.title = FAV_SAVE_TITLE;
+  }, 1600);
 }
 
 async function loadFavorite(f) {
-  closeFavorites();
   const before = streamKey();
   const prevStream = state.stream;
   const prevSource = state.source;
@@ -3504,12 +3575,13 @@ async function saveFavorite() {
     }
     favCache = null;
     favStatus("saved \"" + n + "\"");
+    favSaved(n);
   } catch (err) {
     favStatus(err.detail || err.message, true);
     showError(err.message);
     return;
   }
-  if (!$("fav-menu").hidden) loadFavorites();
+  if (railTab === "favs") loadFavorites();
 }
 
 async function deleteFavorite(name) {
@@ -3525,19 +3597,25 @@ async function deleteFavorite(name) {
 }
 
 function wireFavorites() {
-  $("fav-button").addEventListener("click", (e) => {
-    e.stopPropagation();
-    if ($("fav-menu").hidden) openFavorites();
-    else closeFavorites();
-  });
-  $("fav-menu").addEventListener("click", (e) => e.stopPropagation());
-  document.addEventListener("click", () => closeFavorites());
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeFavorites();
-  });
+  for (const b of document.querySelectorAll("#rail-tabs [data-rail]")) {
+    b.addEventListener("click", () => {
+      setRail(b.dataset.rail);
+      try {
+        localStorage.setItem(RAIL_KEY, railTab);
+      } catch {
+        // remembering the tab is a per-browser convenience only
+      }
+    });
+  }
+  let tab = "query";
+  try {
+    tab = localStorage.getItem(RAIL_KEY) || "query";
+  } catch {
+    // as above
+  }
+  setRail(tab);
   $("fav-save").addEventListener("click", saveFavorite);
   $("table-copy").append(copyTableBar(shownTable, "", { formats: ["md", "csv", "tsv", "json", "jsonl", "yaml", "toon"], fetchText: fetchExport }));
-  $("fav-save-menu").addEventListener("click", saveFavorite);
 }
 
 // setSidebar slides the controls panel open or closed. The panel stays in
@@ -3589,6 +3667,7 @@ async function init() {
   wireLimit();
   wireSchema();
   wireFavorites();
+  wireSubmit();
   watchTableShown();
   initNav({ rootLabel });
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });

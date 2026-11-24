@@ -14,19 +14,28 @@
     <button id="sb-toggle" class="sb-toggle" type="button" aria-controls="sidebar" aria-expanded="true" title="hide the controls">◀</button>
     <h1 id="title">loghorn</h1>
   </div>
-  <div class="menu-wrap">
-    <button id="fav-button" type="button" aria-haspopup="true" aria-expanded="false">Favorites ▾</button>
-    <div id="fav-menu" class="menu" hidden>
-      <ul id="fav-list" class="fav-list"></ul>
-      <p id="fav-status" class="status"></p>
-      <button id="fav-save-menu" type="button">Save as favorite</button>
-    </div>
+  <div id="results-head" class="results-head">
+    <span id="summary" class="summary" role="status"></span>
+    <span class="results-actions">
+      <span id="table-copy" data-views="samples table graph heatmap"></span>
+      <button id="schema-open" type="button">Schema…</button>
+      <button id="fav-save" type="button" class="fav-heart" aria-label="save this query as a favorite" title="save this query as a favorite"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13.6S1.8 9.9 1.8 5.6A3.1 3.1 0 0 1 8 4.4a3.1 3.1 0 0 1 6.2 1.2C14.2 9.9 8 13.6 8 13.6z"/></svg></button>
+    </span>
   </div>
 </header>
 <div id="error" class="banner" role="alert" hidden></div>
 <p id="empty" class="empty" hidden>No labelled records yet — lines need a labels.schema</p>
 <div class="layout">
 <aside id="sidebar" class="sidebar">
+  <div id="rail-tabs" class="tabs rail-tabs" role="tablist" aria-label="controls or favorites">
+    <button type="button" class="tab" role="tab" data-rail="query" aria-controls="sb-query">Query</button>
+    <button type="button" class="tab" role="tab" data-rail="favs" aria-controls="sb-favs">Favorites</button>
+  </div>
+  <div id="sb-favs" class="sb-pane" role="tabpanel" hidden>
+    <ul id="fav-list" class="fav-list"></ul>
+    <p id="fav-status" class="status" role="status"></p>
+  </div>
+  <div id="sb-query" class="sb-pane" role="tabpanel">
   <p id="sb-note" class="sb-note" role="status" hidden><span id="sb-note-text"></span><button id="sb-note-back" type="button" class="link"></button>.</p>
   <section id="sb-view" class="sb tabs" role="tablist" aria-label="view">
     <button type="button" class="tab" role="tab" data-view="samples">Samples<svg class="tab-sym tab-svg" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h.01"/><path d="M5.5 4h8"/><path d="M2.5 8h.01"/><path d="M5.5 8h8"/><path d="M2.5 12h.01"/><path d="M5.5 12h8"/></svg></button>
@@ -117,6 +126,9 @@
     <h2>Filters</h2>
     <div id="triples" class="triples"></div>
     <datalist id="field-paths"></datalist>
+    <div class="sb-submit">
+      <button id="run-query" type="button" class="primary" title="apply the filters and search as typed and run the query (Enter in any field)">Search <span class="kbd" aria-hidden="true">↵</span></button>
+    </div>
   </section>
   <section id="sb-columns" class="sb" data-views="samples heatmap">
     <h2>Columns</h2>
@@ -129,6 +141,7 @@
       <button id="col-restore" type="button" title="show the stream's default columns" hidden>restore defaults</button>
     </div>
   </section>
+  </div>
 </aside>
 <div class="content">
 <form id="bar" class="bar" autocomplete="off">
@@ -155,14 +168,6 @@
   <div id="more" class="more" hidden><button id="more-first" type="button">◀ First</button><button id="more-btn" type="button"></button><span id="more-range" class="muted"></span></div>
   <div id="graph" hidden></div>
 </main>
-<footer id="footer" class="footer">
-  <span id="footer-text"></span>
-  <span class="footer-actions">
-    <span id="table-copy" data-views="samples table graph heatmap"></span>
-    <button id="fav-save" type="button">Save as favorite</button>
-    <button id="schema-open" type="button">Schema…</button>
-  </span>
-</footer>
 <nav id="crumbs" class="crumbs" aria-label="open views" hidden>
   <ol id="crumbs-list" class="crumbs-list"></ol>
   <button id="crumbs-close" type="button" class="crumbs-close" aria-label="close every view">✕</button>

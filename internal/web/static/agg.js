@@ -203,7 +203,7 @@ function closeAgg() {
 function showAgg() {
   $("bar").hidden = true;
   $("results").hidden = true;
-  $("footer").hidden = true;
+  $("results-head").hidden = true;
   $("trace").hidden = true;
   $("agg").hidden = false;
 }
@@ -218,7 +218,7 @@ function hideAgg() {
   if (!(p.trace || p.span || p.agg)) {
     $("bar").hidden = false;
     $("results").hidden = false;
-    $("footer").hidden = false;
+    $("results-head").hidden = false;
   }
   syncNav();
 }

@@ -50,6 +50,11 @@
   gets 403.
 - Number values in test records must be `json.Number`: `schema.Convert`
   rejects plain `float64`/`int64` as the wrong type.
+- Search (`#run-query`) is the sidebar's default button: `wireSubmit` runs
+  it on Enter in any sidebar input, after the field's own handlers. It does
+  not cancel the key, because Enter is what fires `change` on Rows, a
+  relative From or a field name; a field that commits on Enter itself must
+  `preventDefault` it (as the filter value does) or it validates twice.
 - A button inside a control that redraws on its input's blur/change must
   `preventDefault` on `mousedown`, or the redraw swallows the click.
 - The server requires `plot` and `order` to be count or one of `aggregates`,

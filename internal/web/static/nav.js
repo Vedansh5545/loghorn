@@ -181,7 +181,7 @@ export function syncNav() {
 }
 
 // lockSidebar makes the sidebar rows the view doesn't use inert and dim, and
-// says why; the view tabs and Favorites are locked too, since they change
+// says why; the view tabs and the Favorites list are locked too, since they change
 // only the results.
 function lockSidebar(view) {
   const keep = new Set(view ? LOCK_KEEP[view] : []);
@@ -190,7 +190,7 @@ function lockSidebar(view) {
     ...document.querySelectorAll(".sb-form > .sb-field"),
     $("sb-filters"),
     $("sb-columns"),
-    document.querySelector(".top .menu-wrap"),
+    $("sb-favs"),
   ];
   for (const r of rows) {
     if (!r) continue;

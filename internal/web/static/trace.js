@@ -271,7 +271,7 @@ function closeTrace() {
 function showView() {
   $("bar").hidden = true;
   $("results").hidden = true;
-  $("footer").hidden = true;
+  $("results-head").hidden = true;
   $("agg").hidden = true;
   $("trace").hidden = false;
 }
@@ -283,7 +283,7 @@ function hideView() {
   if (!new URLSearchParams(location.search).get("agg")) {
     $("bar").hidden = false;
     $("results").hidden = false;
-    $("footer").hidden = false;
+    $("results-head").hidden = false;
   }
   tv.data = null;
   tv.selected = null;
