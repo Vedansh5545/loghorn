@@ -209,6 +209,82 @@ func TestWriteFailureKeepsRecordsInMemory(t *testing.T) {
 	}
 }
 
+// A batch that fails partway through a day file must leave nothing of
+// itself there: the whole batch goes to memory instead, so each record shows
+// once, not once from the file and again from memory.
+func TestFailedBatchLeavesNoPartialRows(t *testing.T) {
+	g := newDayRig(t, t.TempDir(), true, 3)
+	defer g.close()
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	g.add(day0, 1, `,"n":1`) // stream api exists in the file
+	w0 := logRec(t, "s", "web", `,"n":10`)
+	w0.Seq = day0<<32 + 2
+	g.e.Add(w0) // so does stream web
+	if !g.e.Sync(10 * time.Second) {
+		t.Fatal("sync timed out")
+	}
+	// A column the writer doesn't know about, so adding field m to web fails
+	// after stream api's rows of the same batch were appended.
+	if _, err := g.e.DB().Exec(`ALTER TABLE "l2025-11-23"."s"."web" ADD COLUMN m INTEGER`); err != nil {
+		t.Fatal(err)
+	}
+	api := logRec(t, "s", "api", `,"n":3`)
+	api.Seq = day0<<32 + 3
+	web := logRec(t, "s", "web", `,"m":4`)
+	web.Seq = day0<<32 + 4
+	g.e.wmu.Lock()
+	g.e.write([]record.Record{api, web})
+	g.e.wmu.Unlock()
+
+	recs, err := g.e.Records(bg, "true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]int{}
+	for _, r := range recs {
+		seen[r.Seq-day0<<32]++
+	}
+	if want := map[int]int{1: 1, 2: 1, 3: 1, 4: 1}; !reflect.DeepEqual(seen, want) {
+		t.Errorf("records by sequence %v, want each once %v", seen, want)
+	}
+	var n int
+	if err := g.e.DB().QueryRow(`SELECT count(*) FROM "l2025-11-23"._loghorn._records WHERE _id = ?`, api.Seq).Scan(&n); err != nil || n != 0 {
+		t.Errorf("failed batch left %d index rows in the day file (%v), want 0", n, err)
+	}
+}
+
+// Widening a day file's column to string rewrites its values from _raw
+// inside the batch's transaction (it uses a temp table), and must still
+// commit.
+func TestDayColumnWidensToStringInTransaction(t *testing.T) {
+	g := newDayRig(t, t.TempDir(), true, 3)
+	defer g.close()
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	g.add(day0, 1, `,"v":1.50`)
+	g.add(day0, 2, `,"v":"text"`)
+	if len(g.warns) != 0 {
+		t.Fatalf("warnings %q", g.warns)
+	}
+	var got []string
+	rows, err := g.e.DB().Query(`SELECT v FROM "l2025-11-23"."s"."api" ORDER BY _id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		rows.Scan(&s)
+		got = append(got, s)
+	}
+	if want := []string{"1.50", "text"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("values %v, want %v (as received, in the file)", got, want)
+	}
+}
+
 func TestViewsWidenAcrossDays(t *testing.T) {
 	g := newDayRig(t, t.TempDir(), true, 3)
 	defer g.close()

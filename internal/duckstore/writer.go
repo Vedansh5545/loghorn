@@ -49,7 +49,7 @@ func (e *Engine) write(batch []record.Record) {
 	}
 	changed := false
 	for _, g := range groups {
-		ch, err := e.writeCatalog(g.c, g.recs)
+		ch, err := e.writeCatalogTx(g.c, g.recs)
 		changed = changed || ch
 		if err == nil {
 			ownerOnlyWAL(g.c)
@@ -161,6 +161,40 @@ func tableKey(r record.Record) string {
 		return record.StreamSpan
 	}
 	return r.Stream
+}
+
+// writeCatalogTx writes recs to a day file catalog in one transaction. If
+// any step fails, nothing of the batch stays in the file and c's model is
+// reloaded from the file, so the caller can send the whole batch to memory
+// without showing part of it twice. Memory catalogs are written directly.
+func (e *Engine) writeCatalogTx(c *catalog, recs []record.Record) (changed bool, err error) {
+	if c.day < 0 {
+		return e.writeCatalog(c, recs)
+	}
+	if err := e.exec("BEGIN TRANSACTION"); err != nil {
+		return false, err
+	}
+	changed, err = e.writeCatalog(c, recs)
+	if err == nil {
+		if err = e.exec("COMMIT"); err == nil {
+			return changed, nil
+		}
+	}
+	e.exec("ROLLBACK") // fails harmlessly when DuckDB already aborted it
+	e.reloadMeta(c)    // fails when c is gone; dropIfGone then forgets it
+	return true, err
+}
+
+// reloadMeta replaces c's model of tables, columns and tallies with what
+// its file holds.
+func (e *Engine) reloadMeta(c *catalog) error {
+	c.schemas = newNamer(schemaReserved...)
+	c.tnames = map[string]*namer{}
+	c.tables = map[tkey]*table{}
+	c.order = nil
+	c.tallies = map[fkey]*schema.Tally{}
+	c.changed = map[fkey]bool{}
+	return e.loadMeta(c)
 }
 
 // writeCatalog appends recs to c, creating tables and columns and changing
