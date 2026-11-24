@@ -307,8 +307,10 @@ func duckstoreDay(d int) string { return time.Unix(int64(d)*86400, 0).UTC().Form
 func TestLateDayRecordStillReachesAFile(t *testing.T) {
 	dir := t.TempDir()
 	now := dayNow
+	var warns []string
+	warn := func(m string) { warns = append(warns, m) }
 	s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{},
-		Now: func() time.Time { return now }, Warn: func(string) {}})
+		Now: func() time.Time { return now }, Warn: warn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,12 +322,12 @@ func TestLateDayRecordStillReachesAFile(t *testing.T) {
 	s.Close()
 
 	r, err := Open(Options{Mode: ModeHistorical, Dir: dir, Input: config.Input{},
-		Now: func() time.Time { return dayNow.AddDate(0, 0, 2) }, Warn: func(string) {}})
+		Now: func() time.Time { return dayNow.AddDate(0, 0, 2) }, Warn: warn})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
 	if n := total(r); n != 3 {
-		t.Errorf("records in the day files = %d, want 3", n)
+		t.Errorf("records in the day files = %d, want 3; warnings %q", n, warns)
 	}
 }

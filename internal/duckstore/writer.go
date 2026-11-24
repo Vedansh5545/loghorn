@@ -14,9 +14,37 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
-// write stores one batch, grouped by day pair and signal. A file catalog
-// that fails sends the rest of the session to memory (onFail).
+// write stores one batch. A batch crossing midnight is written in parts,
+// each day's records before the rollover that makes its file read-only.
 func (e *Engine) write(batch []record.Record) {
+	for len(batch) > 0 {
+		n := e.beforeRollover(batch)
+		e.writePart(batch[:n])
+		batch = batch[n:]
+	}
+}
+
+// beforeRollover is how many records lead batch before one that rolls the
+// writer over to a later day (at least 1).
+func (e *Engine) beforeRollover(batch []record.Record) int {
+	if e.days == nil || !e.days.Write || e.today == nil {
+		return len(batch)
+	}
+	cur := e.today.logs.day
+	for i, r := range batch {
+		if d := dayOf(r.Seq); d > cur {
+			if i > 0 {
+				return i
+			}
+			cur = d
+		}
+	}
+	return len(batch)
+}
+
+// writePart stores records grouped by day pair and signal. A file catalog
+// that fails sends the rest of the session to memory (onFail).
+func (e *Engine) writePart(batch []record.Record) {
 	defer e.unlockSchema()
 	type group struct {
 		c    *catalog

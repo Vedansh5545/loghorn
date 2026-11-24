@@ -225,6 +225,36 @@ func TestReadsDuringRolloverDontFail(t *testing.T) {
 	}
 }
 
+// A batch holding the last records of one day and the first of the next
+// must write the first day's before rolling over, which makes its file
+// read-only.
+func TestBatchAcrossMidnightIsWritten(t *testing.T) {
+	g := newDayRig(t, t.TempDir(), true, 3)
+	defer g.close()
+	if err := g.e.AttachDay(day0, true); err != nil {
+		t.Fatal(err)
+	}
+	var batch []record.Record
+	for i, d := range []int{day0, day0, day0 + 1, day0 + 1, day0 + 2} {
+		r := logRec(t, "s", "api", `,"n":1`)
+		r.Seq = d<<32 + i + 1
+		batch = append(batch, r)
+	}
+	g.e.wmu.Lock()
+	g.e.write(batch)
+	g.e.wmu.Unlock()
+	if len(g.warns) != 0 {
+		t.Errorf("warnings %q", g.warns)
+	}
+	for d, want := range map[int]int{day0: 2, day0 + 1: 2, day0 + 2: 1} {
+		var n int
+		q := `SELECT count(*) FROM "l` + DayName(d) + `"._loghorn._records`
+		if err := g.e.DB().QueryRow(q).Scan(&n); err != nil || n != want {
+			t.Errorf("%s holds %d records (%v), want %d", DayName(d), n, err, want)
+		}
+	}
+}
+
 func TestBuildDayFromLoader(t *testing.T) {
 	dir := t.TempDir()
 	g := newDayRig(t, dir, true, 3)
