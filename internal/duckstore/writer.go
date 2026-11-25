@@ -19,7 +19,7 @@ import (
 // transaction. A file that fails sends the batch, and the rest of the
 // session, to memory.
 func (e *Engine) write(batch []record.Record) {
-	e.archiveAtMidnight(batch)
+	defer e.archiveAtMidnight(batch)
 	bySource := map[string][]record.Record{}
 	var order []string
 	for _, r := range batch {

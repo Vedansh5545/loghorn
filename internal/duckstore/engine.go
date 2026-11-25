@@ -67,10 +67,11 @@ type Engine struct {
 	mem    map[string]*part // source -> the in-memory table
 	files  *FileOptions     // nil: memory only
 	failed bool             // a file write failed: the rest goes to memory
-	// failWrites makes file writes fail (tests).
-	failWrites bool
-	warned     map[string]bool // warnings already given
-	arch       archiveState
+	// failWrites and failArchive make file writes and archive checks fail
+	// (tests).
+	failWrites, failArchive bool
+	warned                  map[string]bool // warnings already given
+	arch                    archiveState
 
 	// schemaMu keeps queries off the views while the writer changes what
 	// they read (archiving a day).

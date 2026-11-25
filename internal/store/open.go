@@ -48,6 +48,7 @@ const importedKey = "imported"
 //   - Write: the database files, created if missing. Files not yet filled
 //     from text (new, cut short, or deferred) are started again from the
 //     retained days' text, once; after that the files hold the records.
+//     Closed days then move to Parquet archives, and expired ones go.
 //   - Live without Write: the owner has the files, so the retained days are
 //     read from their text into memory.
 //   - Otherwise (stored days): the files' records, copied into memory, or
@@ -115,8 +116,10 @@ func openWriter(o Options, today int) (*Store, error) {
 		if n > 0 {
 			o.Warn(fmt.Sprintf("loghorn: imported %d records from the text logs into DuckDB", n))
 		}
+		e.Archive(today)
 		return s.ready(today), nil
 	}
+	e.Archive(today) // failures are warned about and retried next time
 	return newStore(e, o).ready(today), nil
 }
 
