@@ -12,16 +12,16 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/record"
 )
 
-// ArchiveDir is the directory beside the database files holding the
-// Parquet archives of closed days: one file per signal per day.
+// ArchiveDir is the directory beside the database file holding the
+// Parquet archives of closed days: one file per day, logs and spans alike.
 const ArchiveDir = "duckdb-archive"
 
-var archiveKinds = map[string]string{record.SourceLog: "logs", record.SourceOtel: "traces"}
+// archivePrefix starts every archive's name: records-YYYY-MM-DD.parquet.
+const archivePrefix = "records-"
 
 type archiveFile struct {
-	source string
-	day    int
-	path   string
+	day  int
+	path string
 }
 
 type archiveState struct {
@@ -37,8 +37,8 @@ func dayName(day int) string { return time.Unix(int64(day)*86400, 0).UTC().Forma
 
 func (e *Engine) archiveDir() string { return filepath.Join(e.files.Dir, ArchiveDir) }
 
-func (e *Engine) archivePath(source string, day int) string {
-	return filepath.Join(e.archiveDir(), archiveKinds[source]+"-"+dayName(day)+".parquet")
+func (e *Engine) archivePath(day int) string {
+	return filepath.Join(e.archiveDir(), archivePrefix+dayName(day)+".parquet")
 }
 
 // loadArchives lists the archives in the files' directory. The writer
@@ -58,17 +58,15 @@ func (e *Engine) loadArchives() error {
 			os.Remove(filepath.Join(e.archiveDir(), name))
 			continue
 		}
-		for src, kind := range archiveKinds {
-			rest, ok := strings.CutPrefix(name, kind+"-")
-			if !ok || !strings.HasSuffix(rest, ".parquet") {
-				continue
-			}
-			d, err := time.Parse("2006-01-02", strings.TrimSuffix(rest, ".parquet"))
-			if err != nil {
-				continue
-			}
-			e.arch.files = append(e.arch.files, archiveFile{src, int(d.Unix() / 86400), filepath.Join(e.archiveDir(), name)})
+		rest, ok := strings.CutPrefix(name, archivePrefix)
+		if !ok || !strings.HasSuffix(rest, ".parquet") {
+			continue
 		}
+		d, err := time.Parse("2006-01-02", strings.TrimSuffix(rest, ".parquet"))
+		if err != nil {
+			continue
+		}
+		e.arch.files = append(e.arch.files, archiveFile{int(d.Unix() / 86400), filepath.Join(e.archiveDir(), name)})
 	}
 	sort.Slice(e.arch.files, func(i, j int) bool { return e.arch.files[i].path < e.arch.files[j].path })
 	return nil
@@ -88,44 +86,37 @@ func archiveSelect(paths []string) string {
 // still has rows in a hot table (a crash between publishing it and deleting
 // them) leaves out the rows it shares with them, so nothing is read twice.
 func (e *Engine) archiveSelects() []string {
-	var out []string
-	for _, src := range []string{record.SourceLog, record.SourceOtel} {
-		var plain, overlap []string
-		hot := e.hotDays(src)
-		for _, f := range e.arch.files {
-			switch {
-			case f.source != src:
-			case hot[f.day]:
-				overlap = append(overlap, f.path)
-			default:
-				plain = append(plain, f.path)
-			}
+	var out, plain, overlap []string
+	hot := e.hotDays()
+	for _, f := range e.arch.files {
+		if hot[f.day] {
+			overlap = append(overlap, f.path)
+		} else {
+			plain = append(plain, f.path)
 		}
-		if len(plain) > 0 {
-			out = append(out, archiveSelect(plain))
-		}
-		if len(overlap) > 0 {
-			out = append(out, archiveSelect(overlap)+" WHERE _id NOT IN ("+e.hotIDs(src)+")")
-		}
+	}
+	if len(plain) > 0 {
+		out = append(out, archiveSelect(plain))
+	}
+	if len(overlap) > 0 {
+		out = append(out, archiveSelect(overlap)+" WHERE _id NOT IN ("+e.hotIDs()+")")
 	}
 	return out
 }
 
-// hotIDs selects the ids of source in the tables (files and memory).
-func (e *Engine) hotIDs(src string) string {
-	var q []string
-	for _, p := range e.parts {
-		if p.source == src {
-			q = append(q, "SELECT _id FROM "+p.ref())
-		}
+// hotIDs selects the ids in the tables (file and memory).
+func (e *Engine) hotIDs() string {
+	q := make([]string, len(e.parts))
+	for i, p := range e.parts {
+		q[i] = "SELECT _id FROM " + p.ref()
 	}
 	return strings.Join(q, " UNION ALL ")
 }
 
-// hotDays are the days of source with rows in a table.
-func (e *Engine) hotDays(src string) map[int]bool {
+// hotDays are the days with rows in a table.
+func (e *Engine) hotDays() map[int]bool {
 	out := map[int]bool{}
-	rows, err := e.wc.QueryContext(bg, "SELECT DISTINCT _id >> 32 FROM ("+e.hotIDs(src)+")")
+	rows, err := e.wc.QueryContext(bg, "SELECT DISTINCT _id >> 32 FROM ("+e.hotIDs()+")")
 	if err != nil {
 		return out
 	}
@@ -139,7 +130,7 @@ func (e *Engine) hotDays(src string) map[int]bool {
 	return out
 }
 
-// Archive moves every closed day (before today) from the database files to
+// Archive moves every closed day (before today) from the database file to
 // Parquet, then deletes archives older than today − KeepDays (writer only).
 // A day whose export fails or doesn't validate stays in the files, with a
 // warning, and is tried again next time.
@@ -177,14 +168,10 @@ func (e *Engine) archive(today int) error {
 		return err
 	}
 	var errs []error
-	for _, src := range []string{record.SourceLog, record.SourceOtel} {
-		p := e.dest[src]
-		if !p.file {
-			continue
-		}
+	if p := e.dest; p.file {
 		for _, d := range e.closedDays(p, today) {
 			if err := e.archiveDay(p, d); err != nil {
-				e.warnOnce(fmt.Sprintf("loghorn: DuckDB archive of %s %s failed (%s); its records stay in %s", archiveKinds[src], dayName(d), firstLine(err), FileNames[src]))
+				e.warnOnce(fmt.Sprintf("loghorn: DuckDB archive of %s failed (%s); its records stay in %s", dayName(d), firstLine(err), FileName))
 				errs = append(errs, err)
 			}
 		}
@@ -218,7 +205,7 @@ func (e *Engine) closedDays(p *part, today int) []int {
 // that day it doesn't have, to a temporary file; checks the file holds
 // exactly those rows; publishes it; and deletes the day's rows from p.
 func (e *Engine) archiveDay(p *part, day int) error {
-	path := e.archivePath(p.source, day)
+	path := e.archivePath(day)
 	tmp := path + ".tmp"
 	os.Remove(tmp)
 	lo, hi := int64(day)<<32, int64(day+1)<<32
@@ -251,7 +238,7 @@ func (e *Engine) archiveDay(p *part, day int) error {
 		return err
 	}
 	if !e.hasArchive(path) {
-		e.arch.files = append(e.arch.files, archiveFile{p.source, day, path})
+		e.arch.files = append(e.arch.files, archiveFile{day, path})
 	}
 	if err := e.exec("DELETE FROM "+p.ref()+" WHERE _id >= ? AND _id < ?", lo, hi); err != nil {
 		return err

@@ -42,7 +42,7 @@ must stay available so structure can be pulled out later.
 | Fixed tables, views, attributes JSON | `internal/duckstore/tables.go` |
 | Engine, queue, writer goroutine | `internal/duckstore/engine.go`, `writer.go` |
 | Reads: `Relation` (JSON → typed per record), records, tallies | `internal/duckstore/read.go`, `sqltype.go` |
-| `logs.duckdb` / `traces.duckdb`, meta, readers' copy | `internal/duckstore/files.go` |
+| `loghorn.duckdb` (the `records` table, tallies, marks), readers' copy | `internal/duckstore/files.go` |
 | Parquet archive of closed days | `internal/duckstore/archive.go` |
 | Store façade and modes; first import from text | `internal/store/store.go`, `internal/store/open.go` |
 | Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |

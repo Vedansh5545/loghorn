@@ -23,8 +23,8 @@ import (
 
 // TestSpeedAtScale times the web view's requests over a spike-2 sized day
 // (about 770k records: 8 log streams in 3 services, and spans of 3 types)
-// against the ~500 ms target (v2 spec): first in logs.duckdb and
-// traces.duckdb, then after the next day's open has archived the day to
+// against the ~500 ms target (v2 spec): first in loghorn.duckdb,
+// then after the next day's open has archived the day to
 // Parquet. It also reports restart and archive times, disk sizes and peak
 // memory. It is slow, so it runs only with LOGHORN_SPEED=1, and reports
 // rather than fails.

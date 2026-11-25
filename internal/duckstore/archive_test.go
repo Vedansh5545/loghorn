@@ -15,14 +15,14 @@ import (
 
 const archDay = 20415 // 2025-11-23
 
-func archivePath(dir, kind string, day int) string {
-	return filepath.Join(dir, ArchiveDir, kind+"-"+dayName(day)+".parquet")
+func archivePath(dir string, day int) string {
+	return filepath.Join(dir, ArchiveDir, "records-"+dayName(day)+".parquet")
 }
 
 func hotCount(t *testing.T, e *Engine) int {
 	t.Helper()
 	var n int
-	q := "SELECT (SELECT count(*) FROM logs_db.main.logs) + (SELECT count(*) FROM traces_db.main.spans)"
+	q := "SELECT count(*) FROM loghorn_db.main.records"
 	if err := e.DB().QueryRow(q).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +47,9 @@ func TestArchiveMovesClosedDays(t *testing.T) {
 	if err := e.Archive(archDay); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"logs", "traces"} {
-		if _, err := os.Stat(archivePath(dir, kind, archDay-1)); err != nil {
-			t.Errorf("%s archive: %v", kind, err)
-		}
+	// One archive per day holds both signals.
+	if files, _ := filepath.Glob(filepath.Join(dir, ArchiveDir, "*")); len(files) != 1 || files[0] != archivePath(dir, archDay-1) {
+		t.Errorf("archives %v, want only %s", files, archivePath(dir, archDay-1))
 	}
 	if n := hotCount(t, e); n != 1 {
 		t.Errorf("hot rows = %d, want today's 1", n)
@@ -118,10 +117,10 @@ func TestArchiveExpiresOldDays(t *testing.T) {
 	if err := e.Archive(archDay + 3); err != nil { // keeps archDay..archDay+3: archDay−1 goes
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(archivePath(dir, "logs", archDay-1)); !os.IsNotExist(err) {
+	if _, err := os.Stat(archivePath(dir, archDay-1)); !os.IsNotExist(err) {
 		t.Errorf("old archive still there: %v", err)
 	}
-	if _, err := os.Stat(archivePath(dir, "logs", archDay)); err != nil {
+	if _, err := os.Stat(archivePath(dir, archDay)); err != nil {
 		t.Errorf("kept day's archive: %v", err)
 	}
 	if n := e.Count(); n != 1 {
@@ -175,7 +174,7 @@ func TestArchiveAtMidnight(t *testing.T) {
 	e.Archive(archDay)
 	addSync(t, e, withSeq(logRec(t, "s", "api", ``), archDay<<32+1))
 	addSync(t, e, withSeq(logRec(t, "s", "api", ``), (archDay+1)<<32+1))
-	if _, err := os.Stat(archivePath(dir, "logs", archDay)); err != nil {
+	if _, err := os.Stat(archivePath(dir, archDay)); err != nil {
 		t.Errorf("no archive after midnight: %v", err)
 	}
 	if n := hotCount(t, e); n != 1 || e.Count() != 2 {

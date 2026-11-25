@@ -44,13 +44,30 @@ func TestFilesPersistAcrossReopen(t *testing.T) {
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"logs.duckdb", "traces.duckdb"} {
-		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
-			t.Errorf("%s: %v", f, err)
-		}
+	if _, err := os.Stat(filepath.Join(dir, "loghorn.duckdb")); err != nil {
+		t.Fatal(err)
 	}
 	e = openFiles(t, dir, true, nil)
 	defer e.Close()
+	// One file, one records table for logs and spans (spec: Layout D).
+	var tables []string
+	rows, err := e.DB().Query("SELECT table_name FROM duckdb_tables() WHERE database_name = 'loghorn_db' ORDER BY 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		tables = append(tables, n)
+	}
+	rows.Close()
+	if strings.Join(tables, ",") != "_fields,_meta,records" {
+		t.Errorf("tables %v, want _fields, _meta, records", tables)
+	}
+	var sources int
+	if err := e.DB().QueryRow("SELECT count(DISTINCT _source) FROM loghorn_db.main.records").Scan(&sources); err != nil || sources != 2 {
+		t.Errorf("records table holds %d sources (%v), want logs and spans", sources, err)
+	}
 	recs, err := e.Records(context.Background(), "true")
 	if err != nil {
 		t.Fatal(err)

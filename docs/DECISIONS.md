@@ -314,7 +314,7 @@ or has not yet answered.
   pays the rebuild. A run without `-web` writes today to a pair that is
   rebuilt later anyway.
 
-## D-025 v2: one fixed table per signal, every field in JSON (proposed)
+## D-025 v2: one fixed table per signal, every field in JSON (superseded by D-030)
 
 - **Date:** 2026-11-24 · **Status:** Proposed (v2), pending the author's review · **Decided by:** user (v2 spec); details Claude
 - **Decision:** `logs` and `spans` tables with fixed columns: `_id`,
@@ -343,7 +343,7 @@ or has not yet answered.
   string that isn't valid UTF-8 reads with U+FFFD in place of the bad
   bytes (`_raw` keeps them). All 8055 parity queries match.
 
-## D-026 v2: `logs.duckdb` and `traces.duckdb`, owned by the lock holder (proposed)
+## D-026 v2: `logs.duckdb` and `traces.duckdb`, owned by the lock holder (superseded by D-030)
 
 - **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** user (v2 spec); details Claude
 - **Decision:** Two files, in `.loghorn/` by default or in `-db-dir`. The
@@ -408,6 +408,28 @@ or has not yet answered.
   (the bytes decoded as UTF-8, escaped where invalid) for search.
 - **Why:** The spec asks for lossless raw records; DuckDB `VARCHAR`
   rejects invalid UTF-8.
+
+## D-030 One `records` table in `loghorn.duckdb`, owned by `loghorn serve`
+
+- **Date:** 2026-11-25 · **Status:** Decided by the author (review of the
+  v2 spec) · **Decided by:** Jim Beveridge (review comment), confirmed on this branch
+- **Decision:** Logs and spans share one table, `records`, in one file,
+  `loghorn.duckdb`, with D-025's columns; `_source` tells them apart. One
+  Parquet archive per closed day, `records-YYYY-MM-DD.parquet`, holds both.
+  The file lives in serve's data folder, and `loghorn serve` is its only
+  writer: other processes send it OpenTelemetry.
+- **Why:** The author's review: one table with the common attributes as
+  columns and the rest together, never a table per attribute or stream
+  (no JOINs); DuckDB has no independent writers, and serve already accepts
+  OTLP from several processes at once.
+- **Supersedes:** D-025's two tables and D-026's two files and lock-holder
+  ownership. D-027 to D-029 are unchanged.
+- **Consequences:** Each batch is one transaction in one table. Files from
+  the two-table builds (`logs.duckdb`, `traces.duckdb`, `logs-` and
+  `traces-` archives) are ignored; the new file is filled from text once.
+- **Open:** the CLI query spec's SQL table model (schemas `logs` and
+  `spans`, one table per stream with typed columns) is still to be
+  provided, as views over `records`.
 
 ---
 

@@ -25,11 +25,12 @@ type Options struct {
 	RunStart time.Time
 	Input    config.Input
 	Dir      string // the .loghorn directory, with the text logs
-	// DBDir holds logs.duckdb, traces.duckdb and the Parquet archive; ""
+	// DBDir holds loghorn.duckdb and the Parquet archive; ""
 	// means Dir.
 	DBDir string
-	// Write is true in the process holding loghorn.lock (with or without
-	// -web): it owns the database files, writes and archives them.
+	// Write is true in the one process that owns the database file
+	// (loghorn serve, holding the data folder's lock): it writes and
+	// archives it.
 	Write bool
 	// DeferImport, with Write, is a run without -web: nothing reads the
 	// files this run, so an import from text is left to the next writer
@@ -43,7 +44,7 @@ type Options struct {
 
 // Open opens a store over the retained days (today and KeepDays before).
 //
-//   - Write: the database files, created if missing. Files not yet filled
+//   - Write: the database file, created if missing. Files not yet filled
 //     from text (new, cut short, or deferred) are started again from the
 //     retained days' text, once; after that the files hold the records.
 //     Closed days then move to Parquet archives, and expired ones go.
@@ -71,7 +72,7 @@ func Open(o Options) (*Store, error) {
 	}
 	e, err := duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o, false))
 	if err != nil {
-		if _, serr := os.Stat(filepath.Join(o.DBDir, duckstore.FileNames[record.SourceLog])); serr == nil {
+		if _, serr := os.Stat(filepath.Join(o.DBDir, duckstore.FileName)); serr == nil {
 			o.Warn("loghorn: DuckDB: can't read the stored records (" + firstLine(err) + "); reading the text logs")
 		}
 		return openText(o, today)
@@ -138,12 +139,10 @@ func archived(dir string) bool {
 	return len(entries) > 0
 }
 
-// clearFiles removes the database files and the archive.
+// clearFiles removes the database file and the archive.
 func clearFiles(dir string) {
-	for _, name := range duckstore.FileNames {
-		for _, sfx := range []string{"", ".wal"} {
-			os.Remove(filepath.Join(dir, name+sfx))
-		}
+	for _, sfx := range []string{"", ".wal"} {
+		os.Remove(filepath.Join(dir, duckstore.FileName+sfx))
 	}
 	os.RemoveAll(filepath.Join(dir, duckstore.ArchiveDir))
 }

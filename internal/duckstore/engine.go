@@ -1,6 +1,7 @@
-// Package duckstore keeps loghorn's records in DuckDB: one fixed table per
-// signal (logs, spans) with the common fields as columns, every normalized
-// field in a JSON attributes column, and the record as captured in _raw.
+// Package duckstore keeps loghorn's records in DuckDB: one fixed table,
+// records, for logs and spans alike, with the common fields as columns,
+// every normalized field in a JSON attributes column, and the record as
+// captured in _raw.
 // The views all_records and all_fields in the session's own in-memory
 // catalog cover every table and archive; the web view reads only those.
 package duckstore
@@ -66,11 +67,11 @@ type Engine struct {
 	// Writer state: touched with wmu held (the writer goroutine, Archive,
 	// SetMeta, Failed), or before the writer starts and after it stops.
 	wmu    sync.Mutex
-	parts  []*part          // every table holding records
-	dest   map[string]*part // source -> the table new records go to
-	mem    map[string]*part // source -> the in-memory table
-	files  *FileOptions     // nil: memory only
-	failed bool             // a file write failed: the rest goes to memory
+	parts  []*part      // every records table: memory, then the file's
+	dest   *part        // the table new records go to
+	mem    *part        // the in-memory table
+	files  *FileOptions // nil: memory only
+	failed bool         // a file write failed: the rest goes to memory
 	// failWrites and failArchive make file writes and archive checks fail
 	// (tests).
 	failWrites, failArchive bool
@@ -117,26 +118,21 @@ func open(in config.Input, warn func(string)) (*Engine, error) {
 		warn = func(string) {}
 	}
 	e := &Engine{connector: c, db: db, wc: wc, in: in, parser: adapter.New(in), warn: warn,
-		dest: map[string]*part{}, mem: map[string]*part{}, warned: map[string]bool{}}
+		warned: map[string]bool{}}
 	e.cond = sync.NewCond(&e.mu)
 	e.maxQueue = MaxQueue
 	if err := e.exec("SET memory_limit = " + lit(memoryLimit)); err != nil {
 		e.closeDB()
 		return nil, err
 	}
-	for _, src := range []string{record.SourceLog, record.SourceOtel} {
-		p := &part{alias: "memory", source: src, writable: true}
-		if err := e.exec(tableDDL(p.ref())); err != nil {
+	p := &part{alias: "memory", writable: true}
+	for _, ddl := range []string{tableDDL(p.ref()), fieldsDDL(p.fieldsRef())} {
+		if err := e.exec(ddl); err != nil {
 			e.closeDB()
 			return nil, err
 		}
-		e.mem[src], e.dest[src] = p, p
-		e.parts = append(e.parts, p)
 	}
-	if err := e.exec(fieldsDDL(e.mem[record.SourceLog].fieldsRef())); err != nil {
-		e.closeDB()
-		return nil, err
-	}
+	e.mem, e.dest, e.parts = p, p, []*part{p}
 	return e, nil
 }
 
@@ -286,7 +282,7 @@ func (e *Engine) writer() {
 }
 
 // Close writes what is queued, stops the writer and closes DuckDB, after
-// checkpointing the database files.
+// checkpointing the database file.
 func (e *Engine) Close() error {
 	return e.close(e.closeFiles)
 }

@@ -26,6 +26,7 @@ D-025 to D-029 are proposed until the author reviews the spec.
 | Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | `cedf198` |
 | Whole-branch review fixes (below) | 2026-11-24 | Each Important finding's test failed first; `go test ./...`; `-race`; all 8055 parity queries | `dc8e65a` |
 | Merge upstream `main` (CLI subcommands, `loghorn serve`) | 2026-11-25 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, serve, query, web, main; all 8055 parity queries | `a21dcaf` |
+| One `records` table in `loghorn.duckdb` (D-030) | 2026-11-25 | Tests changed first and failed; `go test ./...`; `-race`; all 8055 parity queries | this commit |
 
 ### After merging upstream main (2026-11-25)
 
@@ -45,8 +46,14 @@ D-025 to D-029 are proposed until the author reviews the spec.
   with `Round15`.
 - Upstream's multiline detection is kept in the tallies as a `Lines` bit
   in `schema.KindSet`.
-- Not yet done: the single `records` table in one file (spec, 2026-11-24).
-  `store.Options.DBDir` and `DeferImport` have no caller now.
+- `store.Options.DBDir` and `DeferImport` have no caller now.
+
+### One `records` table (2026-11-25, D-030)
+
+Logs and spans now share one table, `records`, in `loghorn.duckdb`, and
+each closed day is one Parquet archive, `records-YYYY-MM-DD.parquet`. The
+measurements below are from the two-file build and haven't been rerun.
+Files from that build are ignored: the new file starts again from text.
 
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 

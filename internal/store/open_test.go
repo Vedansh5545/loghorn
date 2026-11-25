@@ -173,7 +173,7 @@ func TestDBDirSeparateFromTextDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for _, f := range []string{"logs.duckdb", "traces.duckdb"} {
+	for _, f := range []string{"loghorn.duckdb"} {
 		if _, err := os.Stat(filepath.Join(db, f)); err != nil {
 			t.Errorf("%s not in the db dir: %v", f, err)
 		}
@@ -256,13 +256,13 @@ func TestWriterArchivesClosedDays(t *testing.T) {
 	dir := textDir(t)
 	w := openStore(t, dir, ModeLive, true)
 	defer w.s.Close()
-	if _, err := os.Stat(filepath.Join(dir, duckstore.ArchiveDir, "logs-2026-11-22.parquet")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, duckstore.ArchiveDir, "records-2026-11-22.parquet")); err != nil {
 		t.Errorf("yesterday's archive: %v", err)
 	}
 	if n := total(w.s); n != 6 {
 		t.Errorf("records = %d, want 6", n)
 	}
-	if _, err := os.Stat(filepath.Join(dir, duckstore.ArchiveDir, "logs-2026-11-23.parquet")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, duckstore.ArchiveDir, "records-2026-11-23.parquet")); err == nil {
 		t.Error("today was archived")
 	}
 }

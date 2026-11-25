@@ -15,33 +15,18 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
-// write stores one batch: each signal's records, with their tallies, in one
+// write stores one batch, logs and spans alike, with its tallies in one
 // transaction. A file that fails sends the batch, and the rest of the
 // session, to memory.
 func (e *Engine) write(batch []record.Record) {
 	defer e.archiveAtMidnight(batch)
-	bySource := map[string][]record.Record{}
-	var order []string
-	for _, r := range batch {
-		src := r.Key().Source
-		if bySource[src] == nil {
-			order = append(order, src)
+	p := e.dest
+	if err := e.writeTx(p, batch); err != nil {
+		if p.file {
+			e.fileFailed(err)
+			err = e.writeTx(e.dest, batch)
 		}
-		bySource[src] = append(bySource[src], r)
-	}
-	for _, src := range order {
-		recs := bySource[src]
-		p := e.dest[src]
-		err := e.writeTx(p, recs)
-		if err == nil {
-			continue
-		}
-		if !p.file {
-			e.warnOnce("loghorn: DuckDB write failed: " + err.Error())
-			continue
-		}
-		e.fileFailed(err)
-		if err := e.writeTx(e.dest[src], recs); err != nil {
+		if err != nil {
 			e.warnOnce("loghorn: DuckDB write failed: " + err.Error())
 		}
 	}
@@ -77,9 +62,7 @@ func (e *Engine) fileFailed(err error) {
 		e.failed = true
 		e.warn(fmt.Sprintf("loghorn: DuckDB write failed (%v); keeping this run's later records in memory (the text log keeps them)", firstLine(err)))
 	}
-	for src, p := range e.mem {
-		e.dest[src] = p
-	}
+	e.dest = e.mem
 }
 
 func (e *Engine) warnOnce(msg string) {
@@ -152,7 +135,7 @@ func row(r record.Record) []driver.Value {
 
 func (e *Engine) appendRows(p *part, recs []record.Record) error {
 	return e.wc.Raw(func(dc any) error {
-		a, err := duckdb.NewAppender(dc.(driver.Conn), p.alias, "main", tableFor(p.source))
+		a, err := duckdb.NewAppender(dc.(driver.Conn), p.alias, "main", recordsTable)
 		if err != nil {
 			return err
 		}
@@ -215,17 +198,19 @@ func (e *Engine) saveTallies(p *part, recs []record.Record) error {
 
 // applyFill sets the time of records written without one.
 func (e *Engine) applyFill(f *fill) {
-	ids := map[string][]string{}
-	for _, r := range f.recs {
-		src := r.Key().Source
-		ids[src] = append(ids[src], strconv.Itoa(r.Seq))
+	if len(f.recs) == 0 {
+		return
 	}
+	ids := make([]string, len(f.recs))
+	for i, r := range f.recs {
+		ids[i] = strconv.Itoa(r.Seq)
+	}
+	in := strings.Join(ids, ",")
 	ns := f.t.UnixNano()
 	for _, p := range e.parts {
-		if !p.writable || len(ids[p.source]) == 0 {
+		if !p.writable {
 			continue
 		}
-		in := strings.Join(ids[p.source], ",")
 		if err := e.exec("UPDATE "+p.ref()+" SET _time = make_timestamp_ns(CAST(? AS BIGINT)) WHERE _id IN ("+in+")", ns); err != nil {
 			e.warnOnce("loghorn: DuckDB: " + err.Error())
 		}

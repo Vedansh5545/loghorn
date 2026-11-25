@@ -401,7 +401,7 @@ func TestServeKeepsRecordsInDuckDB(t *testing.T) {
 	ship(s, "api", "r1", `{"labels":{"schema":"app"},"message":"kept"}`)
 	waitFor(t, "the line in loghorn.log", func() bool { return strings.Contains(logFile(t, o.DataDir), "kept") })
 	s.Close()
-	if _, err := os.Stat(filepath.Join(o.DataDir, "logs.duckdb")); err != nil {
+	if _, err := os.Stat(filepath.Join(o.DataDir, "loghorn.duckdb")); err != nil {
 		t.Fatalf("no database file: %v", err)
 	}
 	logs, _ := filepath.Glob(filepath.Join(o.DataDir, "loghorn*.log"))

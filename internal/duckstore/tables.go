@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
-
-	"github.com/jimbeveridge/loghorn/internal/record"
 )
 
-// columns are the fixed columns of both signal tables, in table order.
+// columns are the fixed columns of the records table, in table order.
 // Every normalized field is in attributes; the common ones are copied to
 // their own columns for filtering and trace correlation.
 var columns = []struct{ name, typ string }{
@@ -43,23 +41,17 @@ func fieldsDDL(ref string) string {
 	return "CREATE TABLE IF NOT EXISTS " + ref + " (day INTEGER, service VARCHAR, source VARCHAR, kind VARCHAR, path VARCHAR, n BIGINT, kinds INTEGER, PRIMARY KEY (day, service, source, kind, path))"
 }
 
-// tableFor is the table of a signal.
-func tableFor(source string) string {
-	if source == record.SourceOtel {
-		return "spans"
-	}
-	return "logs"
-}
+// recordsTable holds logs and spans alike; _source tells them apart.
+const recordsTable = "records"
 
-// part is one table holding records: in memory or in a database file.
+// part is one records table: in memory or in the database file.
 type part struct {
 	alias    string // catalog
-	source   string
 	writable bool
 	file     bool
 }
 
-func (p *part) ref() string       { return ident(p.alias) + ".main." + tableFor(p.source) }
+func (p *part) ref() string       { return ident(p.alias) + ".main." + recordsTable }
 func (p *part) fieldsRef() string { return ident(p.alias) + ".main._fields" }
 
 // sessionSchema is the session's own catalog, where the views live.
@@ -69,13 +61,9 @@ const sessionSchema = "memory.main."
 // current parts. Writer side, with schemaMu held or before readers start.
 func (e *Engine) rebuildViews() error {
 	var recs, fields []string
-	seen := map[string]bool{}
 	for _, p := range e.parts {
 		recs = append(recs, "SELECT "+columnList()+" FROM "+p.ref())
-		if !seen[p.alias] {
-			seen[p.alias] = true
-			fields = append(fields, "SELECT * FROM "+p.fieldsRef())
-		}
+		fields = append(fields, "SELECT * FROM "+p.fieldsRef())
 	}
 	recs = append(recs, e.archiveSelects()...)
 	for _, q := range []string{
