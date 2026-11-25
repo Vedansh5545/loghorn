@@ -52,39 +52,41 @@ D-025 to D-029 are proposed until the author reviews the spec.
 
 Logs and spans now share one table, `records`, in `loghorn.duckdb`, and
 each closed day is one Parquet archive, `records-YYYY-MM-DD.parquet`. The
-measurements below are from the two-file build and haven't been rerun.
-Files from that build are ignored: the new file starts again from text.
+measurements below were rerun on it. Files from that build are ignored: the new file starts again from text.
 
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 
 `LOGHORN_SPEED=1 LOGHORN_SPEED_DUCKDB_ONLY=1 go test -run SpeedAtScale -v -timeout 30m ./internal/store`.
 Medians of 5 warm runs, through the store as the web view calls it.
+Measured 2026-11-25 on the one-table build (D-030); the two-file build's
+numbers from 2026-11-24 are in the last column for comparison.
 
-| Request | In `logs.duckdb` | After archiving to Parquet |
-|---|---|---|
-| Samples, one stream | 21 ms | 40 ms |
-| Samples, filter + sort | 87 ms | 152 ms |
-| Search | 85 ms | 130 ms |
-| Table, p95 and error rate by status | 310 ms | 338 ms |
-| Graph by severity | 90 ms | 160 ms |
-| Graph, all kinds | 32 ms | 51 ms |
-| Heatmap, db spans | 86 ms | 136 ms |
-| Kinds / schema / trace | 3 / 2 / 3 ms | 4 / 2 / 20 ms |
+| Request | `records` in `loghorn.duckdb` | After archiving to Parquet | Two-file build, hot |
+|---|---|---|---|
+| Samples, one stream | 19 ms | 34 ms | 21 ms |
+| Samples, filter + sort | 56 ms | 97 ms | 87 ms |
+| Search | 36 ms | 64 ms | 85 ms |
+| Table, p95 and error rate by status | 145 ms | 153 ms | 310 ms |
+| Graph by severity | 54 ms | 90 ms | 90 ms |
+| Graph, all kinds | 19 ms | 29 ms | 32 ms |
+| Heatmap, db spans | 50 ms | 82 ms | 86 ms |
+| Kinds / schema / trace | 3 / 1 / 2 ms | 4 / 1 / 19 ms | 3 / 2 / 3 ms |
 
-- Every representative request is under the ~500 ms target. Table p95 is
-  the slowest: the latency field is text (`"0.123s"`) parsed per record.
-- Restart with 770k records stored: 25 ms (no text is reparsed).
-- Archiving the day at the next day's open: 1.5 s.
-- Writing: about 36k records/s.
-- Disk: `logs.duckdb` 192 MB and `traces.duckdb` 61 MB for the day; the
-  day's Parquet archives are 24 MB and 8 MB (ZSTD).
-- Peak RSS of the benchmark process: 1.7 GB, with DuckDB capped at 1 GB
-  (`memoryLimit`); 2.2 GB uncapped. Spike 2 measured about 3 GB for the
-  in-memory store.
+- Every representative request is under the ~500 ms target, and the one
+  table is as fast or faster than two everywhere. Table p95 is still the
+  slowest: the latency field is text (`"0.123s"`) parsed per record.
+- Restart with 770k records stored: 20 ms (no text is reparsed).
+- Archiving the day at the next day's open: 1.3 s.
+- Writing: about 35k records/s.
+- Disk: `loghorn.duckdb` 280 MB for the day (two files: 192 + 61 MB); the
+  day's Parquet archive is 37 MB (two archives: 24 + 8 MB), ZSTD.
+- Peak RSS of the benchmark process: 1.9 GB, with DuckDB capped at 1 GB
+  (`memoryLimit`); the two-file build measured 1.7 GB. Spike 2 measured
+  about 3 GB for the in-memory store.
 - With `query.Run`'s in-memory copy of every record in the same process
   (about 3 GB beside DuckDB), the machine was under memory pressure:
-  archiving took 25 s and Parquet queries up to 660 ms. Real runs don't
-  hold that copy.
+  archiving took 25 s and Parquet queries up to 660 ms (two-file build).
+  Real runs don't hold that copy.
 
 ### Review findings (2026-11-24, independent review of `duckdb-storage..duckdb-v2`)
 
