@@ -21,19 +21,19 @@ The goal is a small, working DuckDB-backed implementation for an individual deve
 
 ## Scope and requirements
 
-Implement the basic DuckDB path first, followed by basic Parquet archival and historical reads. Defer the SQL CLI, central server, multiple independent writers, advanced compaction, and performance tuning. Do not change input eligibility or redesign ingestion and the frontend in this slice.
+Implement the basic DuckDB path first, followed by basic Parquet archival and historical reads. Defer the SQL CLI, advanced compaction, and performance tuning. There are never multiple independent writers, because DuckDB does not support them; instead one process, `loghorn serve`, accepts OpenTelemetry from other processes (several at the same time) and writes the database, while also serving the web interface, which `loghorn ui` opens in the browser. Do not change input eligibility or redesign ingestion and the frontend in this slice.
 
 Keep query semantics, counts, record identity, and trace relationships correct. Use native DuckDB aggregations where appropriate; document and test reasonable numerical and percentile differences. Preserve invalid values and make storage failures visible. Use UTC/epoch time semantics in the engine and local time in the UI. The current retention period is a default policy, not a fixed constraint.
 
 ## Approach
 
-Start with a simplified Layout A: one fixed table per signal, with common typed columns and flexible JSON attributes. This is a proposed choice for review. Avoid dynamic schemas per service, tables per stream, automatic column creation, and type-widening rewrites. Jim's unified-table Layout D and the original typed-table Layout B remain alternatives if a concrete need emerges.
+Start with a simplified Layout A: two tables in all, `logs` and `spans`, with the same columns. Common attributes are typed columns, and every other attribute is kept together in one JSON `attributes` column. There is no table per attribute, service or stream, so reconstructing a record needs no JOIN; `all_records` is a UNION ALL of the two tables and the Parquet archives. This is a proposed choice for review. Avoid dynamic schemas per service, tables per stream, automatic column creation, and type-widening rewrites. Jim's unified-table Layout D and the original typed-table Layout B remain alternatives if a concrete need emerges.
 
 ## Design
 
 ### Files and ownership
 
-Use `logs.duckdb` and `traces.duckdb` for active data. A configurable user-local storage directory outside repositories is the proposed direction; its exact location and migration from `.loghorn/` remain open. Retain service and project provenance where available. A single owning process writes the active files and serves queries; do not implement a central server or direct multi-process database sharing in the first pass.
+Use `logs.duckdb` and `traces.duckdb` for active data. A configurable user-local storage directory outside repositories is the proposed direction; its exact location and migration from `.loghorn/` remain open. Retain service and project provenance where available. The `loghorn serve` process is the single owner: it writes the active files and serves queries. Other processes send it OpenTelemetry rather than opening the database files themselves.
 
 ### Tables and common query interface
 
