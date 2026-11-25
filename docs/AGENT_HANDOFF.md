@@ -22,34 +22,37 @@ must stay available so structure can be pulled out later.
 
 ## Where things stand
 
-- Design approved (`docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`,
-  D-011), refined by D-014 to D-023.
-- Plan `docs/superpowers/plans/2026-11-23-duckdb-storage.md`: tasks 1–6
-  done; the whole-branch review's Important findings are fixed. What is
-  left is in `docs/PROJECT_STATUS.md` (`go.sum`, deferred minors, PR).
-  Execution ledger (git-ignored, shipped beside the bundle as
-  `progress.md`): `.superpowers/sdd/2026-11-23-duckdb-storage/progress.md`,
-  with every ruling made while building.
+- Branch `duckdb-v2` implements the **v2 design**
+  (`docs/superpowers/specs/2026-11-23-duckdb-storage-design.md`, revised
+  2026-11-24) with plan `docs/superpowers/plans/2026-11-24-duckdb-storage-v2.md`.
+  It is built on `duckdb-storage` (PR jimbeveridge/loghorn#3, the first
+  design) and keeps its store façade, `query.RunSQL` and parity test; the
+  engine underneath is new. Its choices are D-025 to D-029, all
+  *proposed* until the author reviews the v2 spec (O-3).
 - `query.Run` and `schema.Infer` stay as the test oracle (D-016). The
   parity test (`internal/query/parity_test.go`) compares 1 in 10 of 8055
-  queries by default; `PARITY_FULL=1` runs all (about 4 minutes).
-- Speed at about 770k records: `LOGHORN_SPEED=1 go test -run SpeedAtScale -v ./internal/store`.
+  queries by default; `PARITY_FULL=1` runs all (about 2 minutes).
+- Speed at about 770k records, restart, archive, disk and memory:
+  `LOGHORN_SPEED=1 go test -run SpeedAtScale -v -timeout 30m ./internal/store`.
 
 ## The code now
 
 | What | Where |
 |---|---|
-| DuckDB engine: catalogs, writer, column evolution, views, relation | `internal/duckstore/` (`engine.go`, `writer.go`, `views.go`, `sqltype.go`) |
-| Day files: attach, stamp, build, rollover, expiry, failure | `internal/duckstore/days.go` |
-| Store façade and modes (writer, reader, stored days, replay) | `internal/store/store.go`, `internal/store/days.go` |
+| Fixed tables, views, attributes JSON | `internal/duckstore/tables.go` |
+| Engine, queue, writer goroutine | `internal/duckstore/engine.go`, `writer.go` |
+| Reads: `Relation` (JSON → typed per record), records, tallies | `internal/duckstore/read.go`, `sqltype.go` |
+| `logs.duckdb` / `traces.duckdb`, meta, readers' copy | `internal/duckstore/files.go` |
+| Parquet archive of closed days | `internal/duckstore/archive.go` |
+| Store façade and modes; first import from text | `internal/store/store.go`, `internal/store/open.go` |
 | Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |
-| Where a live run opens and closes the store | `wrapper.go` (`openLiveStore`, `closeStore`), `replay.go` |
+| Where a live run opens and closes the store; `-db-dir` | `wrapper.go`, `replay.go`, `main.go` |
 
 ## Environment notes
 
-- On a normal machine: Go 1.26.1 with cgo, then `go mod tidy` once (the
-  branch's `go.sum` lacks the DuckDB driver's entries, D-013) and
-  `go test ./...`.
+- On a normal machine: Go 1.27 with cgo, `go test ./...`. On macOS with
+  an SDK newer than the Command Line Tools' linker, set
+  `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`.
 - The cloud session that built this branch had no module proxy or push
   access; it used a local Go 1.26.1 build, module clones and DuckDB's
   shared library with `-tags=duckdb_use_lib` (D-013). Patches were handed

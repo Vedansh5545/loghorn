@@ -314,6 +314,94 @@ or has not yet answered.
   pays the rebuild. A run without `-web` writes today to a pair that is
   rebuilt later anyway.
 
+## D-025 v2: one fixed table per signal, every field in JSON (proposed)
+
+- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending the author's review · **Decided by:** user (v2 spec); details Claude
+- **Decision:** `logs` and `spans` tables with fixed columns: `_id`,
+  `_time`, `_time_inherited`, `_source`, `_service`, `_stream`,
+  `trace_id`, `span_id`, `parent_span_id`, `severity`, `message`,
+  `duration_ms`, `attributes` (JSON) and `_raw`. `attributes` holds every
+  normalized field, including the ones copied to columns. A field is read
+  from JSON and converted at query time, per record, by the kind of JSON
+  value it is, as `schema.Convert` converts it. Tallies per day, service,
+  stream and path feed `schema.FromTallies`. `all_records` is a plain
+  `UNION ALL` of the tables and archives.
+- **Why:** The v2 spec asks for no tables per stream, no columns added at
+  run time and no type-widening rewrites. Converting at query time makes a
+  new field or a changed type setting work with no table change, and keeps
+  every value as received, so D-011's first known difference (overrides
+  needing the original text) mostly goes away.
+- **Would supersede:** D-002, D-003, D-004, D-014 (durations are converted
+  at query time), D-017 (columns are `trace_id`, `span_id`,
+  `parent_span_id`; a span's name is `message`; JSON is DuckDB `JSON`),
+  D-021, D-022.
+- **Consequences:** Each query parses `attributes` once per record
+  (`json_extract` with every path at once). Known differences, tested by
+  `TestRelationConvertsLikeConvert`: a number read as text gives DuckDB's
+  canonical spelling (`1.50` reads `1.5`, `1e3` reads `1000.0`), and an
+  array read as text keeps `<`, `>` and `&` where Go escapes them. All 8055
+  parity queries match.
+
+## D-026 v2: `logs.duckdb` and `traces.duckdb`, owned by the lock holder (proposed)
+
+- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** user (v2 spec); details Claude
+- **Decision:** Two files, in `.loghorn/` by default or in `-db-dir`. The
+  process holding `loghorn.lock` owns them. A live run without the lock
+  reads the retained days' text into memory. A historical run copies the
+  files' rows into memory and detaches at once, so it never keeps the
+  owner out; the owner's open retries for two seconds meanwhile. `_id`
+  keeps the `day<<32 | seq` encoding, so a record's archive day needs no
+  column.
+- **Why:** The v2 spec's single owning process. DuckDB locks a file per
+  process, so a reader that kept the files open would lock a later writer
+  out of DuckDB for a whole run.
+- **Would supersede:** D-006. The default stays in `.loghorn/` until the
+  user-local location is decided (spec open question).
+
+## D-027 v2: the files hold the records after a one-time import (proposed)
+
+- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
+- **Decision:** A writer whose files lack the `imported` mark clears them
+  (and the archive), imports the retained days' text, and sets the mark.
+  After that the files are read, never rebuilt. A writer without `-web`
+  skips the import (as D-024): records go to the files, and the next
+  writer with `-web` starts them again from text. Text files are still
+  written and kept (D-007).
+- **Why:** The v2 spec wants startup to reuse persisted records rather
+  than reparse text. Clearing before an import is safe because, until the
+  mark is set, everything in the files came from text that still has it.
+- **Would supersede:** D-018, D-024 (adapted).
+- **Consequences / known gaps:** A crash loses at most the queued batch
+  from DuckDB (the text keeps it), and nothing brings it back. A run that
+  can't open the files (another process holds them past the retry) leaves
+  its records in text only. Whether to keep permanent text files is the
+  spec's open question.
+
+## D-028 v2: closed days archived to Parquet (proposed)
+
+- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
+- **Decision:** At open, and at the first record of a new day, each day
+  before today moves to `duckdb-archive/<logs|traces>-YYYY-MM-DD.parquet`
+  (ZSTD). The export is written to `.tmp`, checked against its rows
+  (count, min/max/sum of `_id`, XOR of hashes of `_raw` and
+  `attributes`), synced, renamed, and only then deleted from the file.
+  Archives and tallies older than 3 days before today (the text's
+  retention) are deleted.
+- **Why:** The v2 spec's basic archival. One file per signal per day
+  avoids many small files. Days match the text files' retention.
+- **Consequences:** A failure keeps the rows hot, warns once and retries
+  at the next open or midnight. Rows left hot for an archived day are
+  merged into it, and the view leaves out rows an archive shares with the
+  tables.
+
+## D-029 v2: `_raw` is BLOB; search reads it decoded (proposed)
+
+- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
+- **Decision:** `_raw` stores the captured bytes. `Relation` adds `_text`
+  (the bytes decoded as UTF-8, escaped where invalid) for search.
+- **Why:** The spec asks for lossless raw records; DuckDB `VARCHAR`
+  rejects invalid UTF-8.
+
 ---
 
 ## Open questions
@@ -325,3 +413,9 @@ or has not yet answered.
   the split. The speed gain needs the SQL part (notes #35).
 - **O-2 Author review.** D-001 to D-008 haven't been reviewed by the loghorn
   author. They follow his notes except D-001's two-files-by-signal split.
+- **O-3 v2 open questions** (from the v2 spec, for the author): the fixed
+  table layout; the storage directory and owner model (here: `.loghorn/`
+  or `-db-dir`, the lock holder); whether text files stay after recovery
+  testing; retention and archive boundaries (here: days, 3 kept); query
+  latency expectations (target about 500 ms). D-025 to D-029 record what
+  this branch does meanwhile.

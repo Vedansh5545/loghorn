@@ -1,12 +1,95 @@
 # Project status: DuckDB storage for loghorn
 
-Last updated: 2026-11-24 · Branch `duckdb-storage`, based on `331ddc3`
+Last updated: 2026-11-24 · Branch `duckdb-v2` (v2 design), built on
+`duckdb-storage`
 
 **Status values:** Planned · In progress · Completed (verified) · Failed ·
 Blocked. A task is Completed only when the check named next to it has
 run and passed.
 
-## Completed
+## v2 design (branch `duckdb-v2`)
+
+Spec: `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md` (v2,
+in review on jimbeveridge/loghorn#2). Plan:
+`docs/superpowers/plans/2026-11-24-duckdb-storage-v2.md`. Decisions
+D-025 to D-029 are proposed until the author reviews the spec.
+
+### Completed
+
+| Work | Date | Verified by | Ref |
+|---|---|---|---|
+| v2 spec on the spec PR | 2026-11-24 | Pushed to the fork's `duckdb-storage-spec` | `19b583d` |
+| Plan for v2 | 2026-11-24 | Self-review against the spec | `ef02aa6` |
+| Tasks 1–4: fixed tables with JSON attributes, raw BLOB, two files, first import, `-db-dir` | 2026-11-24 | New tests failed first; `go test ./...`; all 8055 parity queries (`PARITY_FULL=1`) | `8c36168`, D-025–D-027, D-029 |
+| Task 5: closed days to Parquet | 2026-11-24 | Archive tests failed first; `-race` on duckstore, store | `47d97d0`, D-028 |
+| Task 6: measurements at 770k records | 2026-11-24 | `LOGHORN_SPEED=1` runs below | this commit |
+| Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | this commit |
+
+### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
+
+`LOGHORN_SPEED=1 LOGHORN_SPEED_DUCKDB_ONLY=1 go test -run SpeedAtScale -v -timeout 30m ./internal/store`.
+Medians of 5 warm runs, through the store as the web view calls it.
+
+| Request | In `logs.duckdb` | After archiving to Parquet |
+|---|---|---|
+| Samples, one stream | 21 ms | 40 ms |
+| Samples, filter + sort | 87 ms | 152 ms |
+| Search | 85 ms | 130 ms |
+| Table, p95 and error rate by status | 310 ms | 338 ms |
+| Graph by severity | 90 ms | 160 ms |
+| Graph, all kinds | 32 ms | 51 ms |
+| Heatmap, db spans | 86 ms | 136 ms |
+| Kinds / schema / trace | 3 / 2 / 3 ms | 4 / 2 / 20 ms |
+
+- Every representative request is under the ~500 ms target. Table p95 is
+  the slowest: the latency field is text (`"0.123s"`) parsed per record.
+- Restart with 770k records stored: 25 ms (no text is reparsed).
+- Archiving the day at the next day's open: 1.5 s.
+- Writing: about 36k records/s.
+- Disk: `logs.duckdb` 192 MB and `traces.duckdb` 61 MB for the day; the
+  day's Parquet archives are 24 MB and 8 MB (ZSTD).
+- Peak RSS of the benchmark process: 1.7 GB, with DuckDB capped at 1 GB
+  (`memoryLimit`); 2.2 GB uncapped. Spike 2 measured about 3 GB for the
+  in-memory store.
+- With `query.Run`'s in-memory copy of every record in the same process
+  (about 3 GB beside DuckDB), the machine was under memory pressure:
+  archiving took 25 s and Parquet queries up to 660 ms. Real runs don't
+  hold that copy.
+
+### Known limits and gaps
+
+- DuckDB files don't shrink: after archiving, `logs.duckdb` keeps its
+  size (about the largest day) and reuses the space. Compaction is
+  deferred, as the spec allows.
+- A crash loses the queued batch from DuckDB (the text keeps it). A run
+  that can't open the files leaves its records in text only. Neither is
+  brought back automatically (D-027).
+- Known value differences: numbers read as text take DuckDB's canonical
+  spelling, and arrays read as text keep `<`, `>`, `&` unescaped (D-025).
+- DuckDB's file lock is per process, so a second writer is kept out only
+  across processes; tests can't check that in-process.
+
+### Next actions
+
+1. Wait for the author on the v2 spec (jimbeveridge/loghorn#2), especially
+   O-3.
+2. Decide with the user whether `duckdb-v2` replaces jimbeveridge/loghorn#3
+   or becomes a new PR.
+3. Try `-web` on a real project.
+
+## Environment note (user's Mac)
+
+The default SDK (`MacOSX27.0.sdk`) is newer than the Command Line Tools'
+linker (26.6), so cgo links of DuckDB fail with "unknown architecture
+arm64e.x1". Build and test with
+`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk` until
+the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
+`PATH`.
+
+
+## First design (branch `duckdb-storage`, jimbeveridge/loghorn#3)
+
+### Completed
 
 | Work | Date | Verified by | Ref |
 |---|---|---|---|
@@ -36,7 +119,7 @@ run and passed.
 | Found while verifying: a batch crossing midnight failed the day file and sent the rest of the run to memory | 2026-11-24 | `TestBatchAcrossMidnightIsWritten` failed first; day tests ×40 under `-race` beside the parity run (failed before) | `93ce5eb` |
 | Verification after all fixes | 2026-11-24 | `go vet ./...`, `go test ./...`; `-race` on duckstore, store, web, main; all 8055 parity queries at `d59a987` | — |
 
-## In progress
+### In progress
 
 | Work | Started | State |
 |---|---|---|
@@ -95,23 +178,23 @@ Minor (all fixed 2026-11-24, see Completed):
 10. ~~Startup rebuild runs even without `-web`.~~ Fixed by deferring, not
     by a background build (D-024).
 
-## Planned (in order)
+### Planned (in order)
 
 1. Try `-web` on a real project.
 2. After the author answers the spec PR (#2): a PR for the code, from the
    user's fork.
 
-## Blocked
+### Blocked
 
 | Item | Blocks | Needs |
 |---|---|---|
 | The user's account can't push to `jimbeveridge/loghorn` | Pushing branches there | Nothing now: branches go to the user's fork, PRs from there |
 
-## Failed
+### Failed
 
 None.
 
-## Known limits (not failures)
+### Known limits (not failures)
 
 - "All kinds" views read every stream table, so they slow down as tables
   multiply (128 ms above; D-021).
@@ -119,16 +202,7 @@ None.
   whose type differs between services or days read together.
 - The author has not reviewed this work (`docs/DECISIONS.md` O-2).
 
-## Environment note (user's Mac)
-
-The default SDK (`MacOSX27.0.sdk`) is newer than the Command Line Tools'
-linker (26.6), so cgo links of DuckDB fail with "unknown architecture
-arm64e.x1". Build and test with
-`SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk` until
-the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
-`PATH`.
-
-## Next actions
+### Next actions
 
 1. Wait for the author on the spec PR (jimbeveridge/loghorn#2).
 2. Try `-web` on a real project.

@@ -4,27 +4,38 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/adapter"
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/duckstore"
 	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
 // TestSpeedAtScale times the web view's requests over a spike-2 sized day
-// (about 770k records: 8 log streams in 3 services, and spans of 3 types),
-// stored in day files, against the ~50 ms target (notes #33). It is slow, so
-// it runs only with LOGHORN_SPEED=1, and reports rather than fails.
+// (about 770k records: 8 log streams in 3 services, and spans of 3 types)
+// against the ~500 ms target (v2 spec): first in logs.duckdb and
+// traces.duckdb, then after the next day's open has archived the day to
+// Parquet. It also reports restart and archive times, disk sizes and peak
+// memory. It is slow, so it runs only with LOGHORN_SPEED=1, and reports
+// rather than fails.
 func TestSpeedAtScale(t *testing.T) {
 	if os.Getenv("LOGHORN_SPEED") == "" {
 		t.Skip("set LOGHORN_SPEED=1 to time requests at scale")
 	}
 	n := 770_000
+	if v, err := strconv.Atoi(os.Getenv("LOGHORN_SPEED_N")); err == nil {
+		n = v
+	}
 	dir := t.TempDir()
 	start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
 	s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{}, Now: func() time.Time { return start.Add(20 * time.Hour) }, Warn: func(m string) { t.Log(m) }})
@@ -63,11 +74,16 @@ func TestSpeedAtScale(t *testing.T) {
 	}
 	s.Flush()
 	t.Logf("wrote %d records in %v", n, time.Since(t0))
-	all := s.Records()
-	if len(all) != n {
-		t.Fatalf("stored %d, want %d", len(all), n)
+	compare := os.Getenv("LOGHORN_SPEED_DUCKDB_ONLY") == ""
+	var all []record.Record // query.Run's copy of every record
+	if compare {
+		all = s.Records()
+	}
+	if got := s.Info().Count; got != n {
+		t.Fatalf("stored %d, want %d", got, n)
 	}
 	now := start.Add(24 * time.Hour)
+	t.Logf("machine: %s/%s, %d CPUs", runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	measure := func(name string, f func() error) {
 		var ds []time.Duration
@@ -81,29 +97,75 @@ func TestSpeedAtScale(t *testing.T) {
 		sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
 		t.Logf("%-40s median %v", name, ds[len(ds)/2].Round(100*time.Microsecond))
 	}
-	run := func(name string, q query.Query) {
-		src, _ := record.ParseSource(q.Source)
-		sch, err := s.Schema(q.Service, src, q.Stream)
+	queries := func(s *Store, label string, compare bool) {
+		run := func(name string, q query.Query) {
+			src, _ := record.ParseSource(q.Source)
+			sch, err := s.Schema(q.Service, src, q.Stream)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sch = schema.Effective(sch, nil)
+			measure(label+" "+name, func() error { _, err := s.Query(context.Background(), sch, q, now); return err })
+			if compare {
+				measure("query.Run "+name, func() error { _, err := query.Run(all, sch, q, now, time.Time{}); return err })
+			}
+		}
+		run("samples stream", query.Query{Stream: "stream1", Service: "*"})
+		run("samples filter+sort", query.Query{Stream: "stream1", Service: "*", Filters: []query.Filter{{Field: "httpRequest.status", Op: ">=", Values: []string{"400"}}}, Sort: query.Sort{Field: "bytes", Desc: true}})
+		run("search", query.Query{Stream: "stream1", Service: "*", Search: "user 4242"})
+		run("table p95 by status", query.Query{Stream: "stream1", Service: "*", View: "table", GroupBy: []string{"httpRequest.status"}, Aggregates: []query.Aggregate{{Op: "p95", Field: "httpRequest.latency"}, {Op: "error_rate"}}})
+		run("graph auto by severity", query.Query{Stream: "stream1", Service: "*", View: "graph", GroupBy: []string{"severity"}})
+		run("graph all kinds", query.Query{Stream: "*", Service: "*", View: "graph"})
+		run("heatmap db spans", query.Query{Stream: "db", Source: "otel", Service: "*", View: "heatmap"})
+		measure(label+" kinds", func() error { s.Kinds("log", "*", time.Time{}, time.Time{}); return nil })
+		measure(label+" schema (cache cold)", func() error { s.cache = map[[3]string]cached{}; _, err := s.Schema("*", "log", "stream1"); return err })
+		measure(label+" trace", func() error { s.TraceRecords(fmt.Sprintf("%032x", 1000)); return nil })
+	}
+	// LOGHORN_SPEED_DUCKDB_ONLY=1 skips query.Run and its copy of every
+	// record (about 3 GB here), to measure DuckDB without that memory
+	// pressure beside it.
+	queries(s, "duckdb", compare)
+	sizes := func(when string) {
+		var parts []string
+		for _, pat := range []string{"*.duckdb", "*.duckdb.wal", duckstore.ArchiveDir + "/*.parquet"} {
+			m, _ := filepath.Glob(filepath.Join(dir, pat))
+			for _, f := range m {
+				if fi, err := os.Stat(f); err == nil {
+					parts = append(parts, fmt.Sprintf("%s %.1f MB", filepath.Base(f), float64(fi.Size())/(1<<20)))
+				}
+			}
+		}
+		t.Logf("disk %s: %s", when, strings.Join(parts, ", "))
+	}
+	sizes("after writing")
+
+	s.Close()
+	reopen := func(at time.Time) (*Store, time.Duration) {
+		st := time.Now()
+		s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{}, Now: func() time.Time { return at }, Warn: func(m string) { t.Log(m) }})
 		if err != nil {
 			t.Fatal(err)
 		}
-		sch = schema.Effective(sch, nil)
-		measure("duckdb "+name, func() error { _, err := s.Query(context.Background(), sch, q, now); return err })
-		measure("query.Run "+name, func() error { _, err := query.Run(all, sch, q, now, time.Time{}); return err })
+		return s, time.Since(st)
 	}
-	run("samples stream", query.Query{Stream: "stream1", Service: "*"})
-	run("samples filter+sort", query.Query{Stream: "stream1", Service: "*", Filters: []query.Filter{{Field: "httpRequest.status", Op: ">=", Values: []string{"400"}}}, Sort: query.Sort{Field: "bytes", Desc: true}})
-	run("search", query.Query{Stream: "stream1", Service: "*", Search: "user 4242"})
-	run("table p95 by status", query.Query{Stream: "stream1", Service: "*", View: "table", GroupBy: []string{"httpRequest.status"}, Aggregates: []query.Aggregate{{Op: "p95", Field: "httpRequest.latency"}, {Op: "error_rate"}}})
-	run("graph auto by severity", query.Query{Stream: "stream1", Service: "*", View: "graph", GroupBy: []string{"severity"}})
-	run("graph all kinds", query.Query{Stream: "*", Service: "*", View: "graph"})
-	run("heatmap db spans", query.Query{Stream: "db", Source: "otel", Service: "*", View: "heatmap"})
-	measure("kinds", func() error { s.Kinds("log", "*", time.Time{}, time.Time{}); return nil })
-	measure("schema (cache cold)", func() error { s.cache = map[[3]string]cached{}; _, err := s.Schema("*", "log", "stream1"); return err })
-	measure("trace", func() error { s.TraceRecords(fmt.Sprintf("%032x", 1000)); return nil })
-	if fi, err := os.Stat(dir + "/logs-2026-11-23.duckdb"); err == nil {
-		t.Logf("logs file %d MB", fi.Size()>>20)
+	s, d := reopen(start.Add(20 * time.Hour))
+	t.Logf("restart with %d records stored: %v", n, d.Round(time.Millisecond))
+	s.Close()
+	s, d = reopen(start.Add(30 * time.Hour)) // the next day: archives this one
+	defer s.Close()
+	t.Logf("next day's open, archiving the day to Parquet: %v", d.Round(time.Millisecond))
+	sizes("after archiving")
+	if got := s.Info().Count; got != n {
+		t.Fatalf("after archiving: %d records, want %d", got, n)
 	}
+	queries(s, "parquet", false)
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	rss := ru.Maxrss // bytes on macOS, KiB on Linux
+	if runtime.GOOS == "linux" {
+		rss <<= 10
+	}
+	t.Logf("peak RSS of the test process: %d MB (query.Run's copy included: %v)", rss>>20, compare)
 }
 
 func logRecordOK(line string) (record.Record, bool) {

@@ -26,6 +26,9 @@ const (
 	MaxQueue = 200_000
 	// maxBatch caps the records written in one batch.
 	maxBatch = 20_000
+	// memoryLimit caps DuckDB's buffer pool (its default is 80% of RAM);
+	// past it DuckDB spills to temporary files.
+	memoryLimit = "1GB"
 )
 
 // item is one queued write: a record, or a time to give records already
@@ -115,6 +118,10 @@ func open(in config.Input, warn func(string)) (*Engine, error) {
 		dest: map[string]*part{}, mem: map[string]*part{}, warned: map[string]bool{}}
 	e.cond = sync.NewCond(&e.mu)
 	e.maxQueue = MaxQueue
+	if err := e.exec("SET memory_limit = " + lit(memoryLimit)); err != nil {
+		e.closeDB()
+		return nil, err
+	}
 	for _, src := range []string{record.SourceLog, record.SourceOtel} {
 		p := &part{alias: "memory", source: src, writable: true}
 		if err := e.exec(tableDDL(p.ref())); err != nil {
