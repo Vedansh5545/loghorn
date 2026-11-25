@@ -1,6 +1,6 @@
 # Project status: DuckDB storage for loghorn
 
-Last updated: 2026-11-24 · Branch `duckdb-v2` (v2 design), built on
+Last updated: 2026-11-25 · Branch `duckdb-v2` (v2 design), built on
 `duckdb-storage`
 
 **Status values:** Planned · In progress · Completed (verified) · Failed ·
@@ -24,7 +24,29 @@ D-025 to D-029 are proposed until the author reviews the spec.
 | Task 5: closed days to Parquet | 2026-11-24 | Archive tests failed first; `-race` on duckstore, store | `47d97d0`, D-028 |
 | Task 6: measurements at 770k records | 2026-11-24 | `LOGHORN_SPEED=1` runs below | `cedf198` |
 | Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | `cedf198` |
-| Whole-branch review fixes (below) | 2026-11-24 | Each Important finding's test failed first; `go test ./...`; `-race`; all 8055 parity queries | this commit |
+| Whole-branch review fixes (below) | 2026-11-24 | Each Important finding's test failed first; `go test ./...`; `-race`; all 8055 parity queries | `dc8e65a` |
+| Merge upstream `main` (CLI subcommands, `loghorn serve`) | 2026-11-25 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, serve, query, web, main; all 8055 parity queries | `a21dcaf` |
+
+### After merging upstream main (2026-11-25)
+
+- `wrapper.go` and `replay.go` are gone upstream, and with them `-web`,
+  `-db-dir` and the lock-holder ownership. `loghorn serve` now owns the
+  DuckDB files, in the data folder (`internal/serve/serve.go`,
+  `openStore`); if they can't open, serve falls back to a store in memory
+  filled from the text, as before. `loghorn open` and `query` keep
+  in-memory stores.
+- serve tags a run's lines with `service.name` and `loghorn.run.id`
+  before recording them, so the stored record matches the line in
+  `loghorn.log`: a restart now reads the database, not the text. Two
+  serve tests that keyed records by their untagged raw bytes now key them
+  by message.
+- `query.RunSQL` follows two upstream changes to `query.Run`: graphs echo
+  `groupBy`, and error rates, averages and non-integer sums are rounded
+  with `Round15`.
+- Upstream's multiline detection is kept in the tallies as a `Lines` bit
+  in `schema.KindSet`.
+- Not yet done: the single `records` table in one file (spec, 2026-11-24).
+  `store.Options.DBDir` and `DeferImport` have no caller now.
 
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 

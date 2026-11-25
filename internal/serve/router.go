@@ -46,8 +46,10 @@ func newRouter(sink func([]byte), st *store.Store, in config.Input, now func() t
 	}
 }
 
+// runLine records a run's line tagged with its service and run, as
+// loghorn.log keeps it, so the stored record is the one a restart reads back.
 func (r *router) runLine(l otlp.RunLine) {
-	r.recorderFor(l).Line(l.Line)
+	r.recorderFor(l).Line(tagRecord(l.Line, l.Service, l.RunID))
 }
 
 func (r *router) recorderFor(l otlp.RunLine) *recorder.Recorder {

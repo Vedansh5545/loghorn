@@ -145,9 +145,9 @@ func TestRunLinesUseRunInputAndService(t *testing.T) {
 	waitFor(t, "4 lines in loghorn.log", func() bool { return strings.Count(logFile(t, o.DataDir), "\n") == 4 })
 	got := map[string]string{}
 	for _, r := range records(s) {
-		got[string(r.Raw)] = r.Service
+		got[fmt.Sprint(r.Fields["message"])] = r.Service
 	}
-	if got[`{"labels":{"schema":"web"},"message":"a1"}`] != "api" || got[`{"labels":{"schema":"web"},"message":"b1"}`] != "web" {
+	if got["a1"] != "api" || got["b1"] != "web" {
 		t.Fatalf("services = %v", got)
 	}
 	log := logFile(t, o.DataDir)
@@ -332,15 +332,15 @@ func TestServeAdoptsIncoming(t *testing.T) {
 	services := func() map[string]string {
 		got := map[string]string{}
 		for _, r := range records(s) {
-			got[string(r.Raw)] = r.Service
+			got[fmt.Sprint(r.Fields["message"])] = r.Service
 		}
 		return got
 	}
 	got := services()
-	if got[`{"labels":{"schema":"app"},"message":"from ra"}`] != "a" || got[`{"labels":{"schema":"app"},"message":"from rb"}`] != "b" {
+	if got["from ra"] != "a" || got["from rb"] != "b" {
 		t.Fatalf("after Start: %v", got)
 	}
-	if _, ok := got[`{"labels":{"schema":"app"},"message":"from rc"}`]; ok {
+	if _, ok := got["from rc"]; ok {
 		t.Fatal("a run still held was adopted")
 	}
 	log := logFile(t, o.DataDir)
@@ -354,7 +354,7 @@ func TestServeAdoptsIncoming(t *testing.T) {
 	heldSpans.Close()
 	held.Close()
 	waitFor(t, "rc to be adopted", func() bool {
-		return services()[`{"labels":{"schema":"app"},"message":"from rc"}`] == "c"
+		return services()["from rc"] == "c"
 	})
 	if list, _ := incoming.List(o.DataDir); len(list) != 0 {
 		t.Fatalf("incoming left: %+v", list)
@@ -387,5 +387,32 @@ func TestRunServiceSurvivesRestart(t *testing.T) {
 	}
 	if got["live"] != "api/r1" || got["adopted"] != "web/r2" || got["named"] != "own/r1" {
 		t.Fatalf("after restart: %v", got)
+	}
+}
+
+// TestServeKeepsRecordsInDuckDB: serve writes the DuckDB files in the data
+// folder, and a restart reads the records from them, not from the text.
+func TestServeKeepsRecordsInDuckDB(t *testing.T) {
+	o := testOpts(t)
+	s, err := Start(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ship(s, "api", "r1", `{"labels":{"schema":"app"},"message":"kept"}`)
+	waitFor(t, "the line in loghorn.log", func() bool { return strings.Contains(logFile(t, o.DataDir), "kept") })
+	s.Close()
+	if _, err := os.Stat(filepath.Join(o.DataDir, "logs.duckdb")); err != nil {
+		t.Fatalf("no database file: %v", err)
+	}
+	logs, _ := filepath.Glob(filepath.Join(o.DataDir, "loghorn*.log"))
+	for _, p := range logs {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s2 := start(t, o)
+	recs := records(s2)
+	if len(recs) != 1 || recs[0].Fields["message"] != "kept" || recs[0].Service != "api" {
+		t.Fatalf("after restart without text: %+v", recs)
 	}
 }

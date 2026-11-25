@@ -149,8 +149,7 @@ func Start(o Options) (*Server, error) {
 	} else {
 		s.spans = w
 	}
-	s.st = store.New(store.ModeLive, o.Now())
-	s.preload()
+	s.openStore()
 
 	s.sink, s.spanFn = s.logSink(), s.spanSink()
 	s.router = newRouter(s.sink, s.st, o.Config.Input, o.Now)
@@ -202,7 +201,7 @@ func (s *Server) Close() error {
 		if s.spans != nil {
 			s.spans.Close()
 		}
-		s.closeErr = s.logs.Close()
+		s.closeErr = errors.Join(s.logs.Close(), s.st.Close())
 	})
 	return s.closeErr
 }
@@ -248,6 +247,25 @@ func (s *Server) checkSocket() {
 	}
 	s.logf("socket %s was deleted; re-created it", s.o.Socket)
 	s.serveSocket(ln)
+}
+
+// openStore opens the DuckDB files in the data folder: serve is their one
+// writer. The first open fills them from the stored days' text; later opens
+// read what they hold. If they can't be opened, the stored days are loaded
+// into a store in memory instead.
+func (s *Server) openStore() {
+	st, err := store.Open(store.Options{
+		Mode: store.ModeLive, RunStart: s.o.Now(), Input: s.o.Config.Input,
+		Dir: s.o.DataDir, Write: true, Now: s.o.Now,
+		Warn: func(m string) { fmt.Fprintln(s.o.Log, m) },
+	})
+	if err == nil {
+		s.st = st
+		return
+	}
+	s.logf("DuckDB: %v; records are kept in memory only", err)
+	s.st = store.New(store.ModeLive, s.o.Now())
+	s.preload()
 }
 
 // preload loads the stored days, then the stored spans, into the store.

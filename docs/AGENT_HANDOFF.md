@@ -46,7 +46,7 @@ must stay available so structure can be pulled out later.
 | Parquet archive of closed days | `internal/duckstore/archive.go` |
 | Store façade and modes; first import from text | `internal/store/store.go`, `internal/store/open.go` |
 | Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |
-| Where a live run opens and closes the store; `-db-dir` | `wrapper.go`, `replay.go`, `main.go` |
+| Where the store opens and closes: `loghorn serve` owns the DuckDB files in the data folder | `internal/serve/serve.go` (`openStore`, `Close`) |
 
 ## Environment notes
 

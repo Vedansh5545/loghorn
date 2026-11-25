@@ -28,7 +28,7 @@ func (s *Server) adopt() {
 		})
 		n := 0
 		err := incoming.Adopt(p, func(line []byte) {
-			rec.Line(line)
+			rec.Line(tagRecord(line, p.Meta.Service, p.Meta.RunID))
 			n++
 		}, s.spanFn)
 		if err != nil {
