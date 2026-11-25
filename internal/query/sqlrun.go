@@ -459,6 +459,16 @@ func finite(n sql.NullFloat64) (float64, bool) {
 	return n.Float64, true
 }
 
+// metric is a's value from n as metricValue gives it: error rates, averages
+// and sums of non-integers are rounded to 15 significant digits (Round15).
+func (x *sqlRun) metric(a Aggregate, n sql.NullFloat64) (float64, bool) {
+	v, ok := finite(n)
+	if ok && (a.Op == "error_rate" || a.Op == "avg" || (a.Op == "sum" && metricField(x.s, a).Type != schema.TInt)) {
+		v = Round15(v)
+	}
+	return v, ok
+}
+
 func (x *sqlRun) rank(groups []*scanned) {
 	o := x.orderAgg()
 	asc := x.q.Order != nil && x.q.Order.Asc
@@ -467,7 +477,7 @@ func (x *sqlRun) rank(groups []*scanned) {
 		if o.Op == "count" {
 			r.v, r.ok = float64(g.n), true
 		} else {
-			r.v, r.ok = finite(g.order)
+			r.v, r.ok = x.metric(o, g.order)
 		}
 		return r
 	}, asc)
@@ -525,7 +535,7 @@ func (x *sqlRun) table(res *Result) error {
 		}
 		cells = append(cells, Cell{V: int64(g.n)})
 		for i, a := range x.q.Aggregates {
-			val, ok := finite(g.mets[i])
+			val, ok := x.metric(a, g.mets[i])
 			cells = append(cells, metricCell(val, ok, metricColumn(a, x.s).Type))
 		}
 		res.Rows = append(res.Rows, Row{Cells: cells})
@@ -556,7 +566,7 @@ func (x *sqlRun) graph(from, to time.Time, loc *time.Location) (*Graph, error) {
 	if x.q.Plot != nil {
 		plot = *x.q.Plot
 	}
-	g := &Graph{Metric: metricColumn(plot, x.s), Starts: []time.Time{}, Series: []Series{}}
+	g := &Graph{Metric: metricColumn(plot, x.s), GroupBy: append([]string(nil), x.q.GroupBy...), Starts: []time.Time{}, Series: []Series{}}
 	first, last, n, err := x.timeBounds("_time IS NOT NULL")
 	if err != nil {
 		return nil, err
@@ -645,7 +655,7 @@ func (x *sqlRun) graph(from, to time.Time, loc *time.Location) (*Graph, error) {
 		if err := rows.Scan(&sr, &bi, &m); err != nil {
 			return nil, err
 		}
-		if f, ok := finite(m); ok {
+		if f, ok := x.metric(plot, m); ok {
 			get(int(sr))[bi] = &f
 		}
 	}

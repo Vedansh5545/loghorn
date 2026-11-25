@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 const lockName = "loghorn.lock"
@@ -51,9 +50,9 @@ func acquire(dir string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := lockFile(f); err != nil {
 		defer f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
+		if errors.Is(err, errWouldBlock) {
 			return nil, &LockedError{Dir: dir, PID: readPID(f)}
 		}
 		return nil, fmt.Errorf("locking %s: %w", f.Name(), err)
@@ -67,6 +66,27 @@ func acquire(dir string) (*os.File, error) {
 		return nil, fmt.Errorf("writing pid to %s: %w", f.Name(), err)
 	}
 	return f, nil
+}
+
+// errWouldBlock is lockFile's answer when another process holds the lock.
+var errWouldBlock = errors.New("lock is held")
+
+// TryLock takes dir's lock without opening any log file, for a reader that
+// must know nobody is writing there (adopting a finished run). It does not
+// create dir. The lock is held until release is called.
+func TryLock(dir string) (release func(), err error) {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", dir)
+	}
+	f, err := acquire(dir)
+	if err != nil {
+		return nil, err
+	}
+	return func() { f.Close() }, nil
 }
 
 // readPID reads the holder's PID from a just-opened lock file, or 0. The read

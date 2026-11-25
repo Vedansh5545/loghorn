@@ -24,6 +24,7 @@ type Options struct {
 	Live            bool                // stamp store records with arrival time (false for replays)
 	Alert           func(e entry.Entry) // called with each stored important entry; nil = none
 	DedupeAfterOTLP bool                // once an OTLP record arrives, stop storing input lines that are JSON objects
+	Service         string              // service of stored records that don't name their own; "" = the store's fallback
 	Now             func() time.Time    // nil = time.Now
 }
 
@@ -65,6 +66,15 @@ func (r *Recorder) OTLP(rec []byte) {
 	r.store(rec)
 }
 
+// MarkOTLP records that OTLP has arrived for this source without storing
+// anything, so DedupeAfterOTLP takes effect when the OTLP records themselves
+// are stored elsewhere.
+func (r *Recorder) MarkOTLP() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = true
+}
+
 // SawOTLP reports whether an OTLP record has arrived.
 func (r *Recorder) SawOTLP() bool {
 	r.mu.Lock()
@@ -87,6 +97,9 @@ func (r *Recorder) store(rec []byte) entry.Entry {
 			received = now
 		}
 		if rc, ok := record.Normalize(e, r.o.Input); ok {
+			if rc.Service == "" {
+				rc.Service = r.o.Service
+			}
 			r.o.Store.Add(rc, received)
 		}
 	}

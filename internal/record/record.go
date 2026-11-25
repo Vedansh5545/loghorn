@@ -35,9 +35,29 @@ type Record struct {
 // schema.
 const HTTPRequestStream = "http-request"
 
+// OTLPSource is the loghorn.source value on a line mapped from an OTLP log
+// record (otlp.Source). Such a line carries no stream label; its stream is
+// derived by otlpStream.
+const OTLPSource = "otlp"
+
+// OTLPDefaultStream is the stream of an OTLP log record with neither an event
+// name nor an instrumentation scope name.
+const OTLPDefaultStream = "otel"
+
+// otlpStream names an OTLP log line's stream from standard OTel fields only:
+// event.name, then otel.scope.name, else OTLPDefaultStream.
+func otlpStream(fields map[string]any) string {
+	for _, k := range []string{"event.name", "otel.scope.name"} {
+		if s, ok := fields[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return OTLPDefaultStream
+}
+
 // Normalize builds the canonical record for e. It returns false when the
-// record has no JSON object, or has neither a labels.schema stream label nor
-// an httpRequest object (see HTTPRequestStream).
+// record has no JSON object, or has neither a labels.schema stream label, an
+// OTLP origin (see otlpStream) nor an httpRequest object (see HTTPRequestStream).
 func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	raw := bytes.TrimSpace(e.Raw)
 
@@ -72,6 +92,9 @@ func Normalize(e entry.Entry, in config.Input) (Record, bool) {
 	n.payload()
 
 	stream, _ := n.fields["labels.schema"].(string)
+	if stream == "" && n.fields["loghorn.source"] == OTLPSource {
+		stream = otlpStream(n.fields)
+	}
 	if stream == "" && n.httpRequest {
 		stream = HTTPRequestStream
 	}

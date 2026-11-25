@@ -67,8 +67,11 @@ func TestStringBody(t *testing.T) {
 	if m["message"] != "hello" || m["loghorn.source"] != "otlp" {
 		t.Fatalf("%v", m)
 	}
-	if !reflect.DeepEqual(m["labels"], map[string]any{"schema": "otel"}) {
-		t.Fatalf("labels %v", m["labels"])
+	if _, ok := m["labels"]; ok {
+		t.Fatalf("labels written: %v", m)
+	}
+	if _, ok := m["event.name"]; ok {
+		t.Fatalf("event.name without an event: %v", m)
 	}
 }
 
@@ -221,14 +224,16 @@ func TestCollisions(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, m[k], w)
 		}
 	}
-	if !reflect.DeepEqual(m["labels"], map[string]any{"schema": "otel"}) {
-		t.Errorf("labels %v", m["labels"])
+	if _, ok := m["labels"]; ok {
+		t.Errorf("labels written: %v", m)
 	}
 	if _, ok := m["otel.resource"]; ok {
 		t.Errorf("otel.resource overwritten")
 	}
 }
 
+// The stream comes from standard OTel fields only: event name, the event.name
+// attribute, the scope name, else "otel".
 func TestStreamFallbacks(t *testing.T) {
 	ev := kv("event.name", sv("x"))
 	lib := &commonpb.InstrumentationScope{Name: "lib"}
@@ -244,8 +249,39 @@ func TestStreamFallbacks(t *testing.T) {
 		{&logspb.LogRecord{EventName: "", Attributes: []*commonpb.KeyValue{ev}}, nil, "x"},
 	}
 	for i, c := range cases {
-		if got := Stream(c.lr, c.scope); got != c.want {
-			t.Errorf("case %d: %q, want %q", i, got, c.want)
+		line := MapLogs(req(nil, c.scope, c.lr), now)[0]
+		if bytes.Contains(line, []byte(`"labels"`)) {
+			t.Errorf("case %d: labels written: %s", i, line)
+		}
+		r, ok := record.Normalize(adapter.ParseLine(line), config.Default().Input)
+		if !ok {
+			t.Fatalf("case %d: not normalized: %s", i, line)
+		}
+		if r.Stream != c.want {
+			t.Errorf("case %d: stream %q, want %q", i, r.Stream, c.want)
+		}
+	}
+}
+
+func TestEventNameStoredOnce(t *testing.T) {
+	// From the attribute: promoted, not also kept under otel.attributes.
+	m := one(t, rec(&logspb.LogRecord{Attributes: []*commonpb.KeyValue{kv("event.name", sv("x"))}}))
+	if m["event.name"] != "x" {
+		t.Errorf("event.name %v", m["event.name"])
+	}
+	if _, ok := m["otel.attributes.event.name"]; ok {
+		t.Errorf("duplicated: %v", m)
+	}
+	// The field wins; a different attribute and a body key are kept aside.
+	m = one(t, rec(&logspb.LogRecord{
+		EventName:  "app.db",
+		Body:       kvl(kv("event.name", sv("b"))),
+		Attributes: []*commonpb.KeyValue{kv("event.name", sv("a"))},
+	}))
+	want := map[string]any{"event.name": "app.db", "otel.attributes.event.name": "a", "otel.body.event.name": "b"}
+	for k, w := range want {
+		if m[k] != w {
+			t.Errorf("%s = %v, want %v", k, m[k], w)
 		}
 	}
 }

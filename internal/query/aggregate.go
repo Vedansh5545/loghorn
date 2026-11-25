@@ -150,7 +150,7 @@ func metricValue(recs []*record.Record, a Aggregate, f schema.Field) (float64, b
 				n++
 			}
 		}
-		return float64(n) / float64(len(recs)), true
+		return Round15(float64(n) / float64(len(recs))), true
 	}
 	vals := make([]float64, 0, len(recs))
 	for _, r := range recs {
@@ -179,6 +179,10 @@ func metricValue(recs []*record.Record, a Aggregate, f schema.Field) (float64, b
 		if a.Op == "avg" {
 			out /= float64(len(vals))
 		}
+		// A sum of ints stays exact (metricCell rounds it to an int64).
+		if a.Op == "avg" || f.Type != schema.TInt {
+			out = Round15(out)
+		}
 	case "min":
 		out = vals[0]
 		for _, x := range vals {
@@ -200,6 +204,20 @@ func metricValue(recs []*record.Record, a Aggregate, f schema.Field) (float64, b
 		return 0, false
 	}
 	return out, true
+}
+
+// Round15 rounds v to 15 significant digits, the digits a float64 holds
+// reliably, so arithmetic noise (0.30000000000000004) goes. NaN and ±Inf
+// pass through.
+func Round15(v float64) float64 {
+	if v == 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return v
+	}
+	r, err := strconv.ParseFloat(strconv.FormatFloat(v, 'g', 15, 64), 64)
+	if err != nil {
+		return v
+	}
+	return r
 }
 
 // metricCell encodes a metric value for a column of type typ.

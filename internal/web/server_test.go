@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/store"
 	"github.com/jimbeveridge/loghorn/internal/svcconf"
 )
@@ -264,6 +265,31 @@ func TestSchemaPutInvalid400(t *testing.T) {
 		wantError(t, code, 400, b)
 	}
 	f.noServices(t)
+}
+
+func TestRecordMultilineText(t *testing.T) {
+	logf := filepath.Join(t.TempDir(), "app.log")
+	lines := `{"severity":"INFO","time":"2026-11-17T17:00:01.000Z","message":"started\n","logging.googleapis.com/labels":{"schema":"app"}}
+{"severity":"ERROR","time":"2026-11-17T17:00:02.000Z","message":"panic: boom\n\ngoroutine 1 [running]:\nmain.main()","stack":"one line","logging.googleapis.com/labels":{"schema":"app"}}
+`
+	if err := os.WriteFile(logf, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t, logf)
+	var got struct {
+		Text map[string]string
+		SQL  map[string]string
+	}
+	// Inferred multiline: only values that span lines get a block.
+	f.getJSON(t, "/api/record?seq=2", &got)
+	if got.Text["message"] != "panic: boom\n\ngoroutine 1 [running]:\nmain.main()" || len(got.Text) != 1 || len(got.SQL) != 0 {
+		t.Fatalf("seq 2 text = %v sql = %v", got.Text, got.SQL)
+	}
+	got.Text = nil
+	f.getJSON(t, "/api/record?seq=1", &got)
+	if len(got.Text) != 0 {
+		t.Fatalf("seq 1 text = %v", got.Text)
+	}
 }
 
 func TestRecordSQLFormatted(t *testing.T) {
@@ -1061,5 +1087,76 @@ func TestServerHeatmapLogs(t *testing.T) {
 	code, _ := f.do(t, http.MethodPost, "/api/query", `{"stream":"app","view":"heatmap"}`, "")
 	if code != http.StatusBadRequest {
 		t.Fatalf("log heatmap = %d, want 400", code)
+	}
+}
+
+func TestQueryFormatCSV(t *testing.T) {
+	f := newFixture(t, pino)
+	post := func(body string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, f.srv.URL+"/api/query", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := f.srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	resp, body := post(`{"stream":"db","range":{"from":"all"},"columns":["severity","message"],"format":"csv"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("csv = %d %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if !strings.HasPrefix(body, "severity,message\nWARNING,slow query\n") {
+		t.Errorf("body = %q", body)
+	}
+	if n := resp.Header.Get("X-Loghorn-Note"); n != "" {
+		t.Errorf("note = %q", n)
+	}
+	resp, body = post(`{"stream":"db","range":{"from":"all"},"limit":1,"format":"csv"}`)
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("X-Loghorn-Note"), "3") {
+		t.Errorf("limited = %d note %q", resp.StatusCode, resp.Header.Get("X-Loghorn-Note"))
+	}
+	resp, body = post(`{"stream":"db","range":{"from":"all"},"format":"bogus"}`)
+	wantError(t, resp.StatusCode, http.StatusBadRequest, []byte(body))
+}
+
+func TestQueryFormatSQL(t *testing.T) {
+	f := newFixture(t, "../../testdata/web/aggregate.jsonl")
+	post := func(body string) (*http.Response, string) {
+		t.Helper()
+		resp, err := f.srv.Client().Post(f.srv.URL+"/api/query", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	resp, body := post(`{"stream":"app","service":"*","range":{"from":"24h"},"search":"x' OR 1=1","format":"sql"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("sql = %d %s", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/sql; charset=utf-8" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	for _, want := range []string{query.SQLHeader, `FROM logs."app"`, `raw ILIKE '%x'' or 1=1%' ESCAPE '\'`, `ORDER BY "time" DESC NULLS LAST, seq DESC`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q:\n%s", want, body)
+		}
+	}
+	resp, body = post(`{"stream":"app","range":{"from":"all"},"view":"graph","format":"sql"}`)
+	if resp.StatusCode != 200 || !strings.Contains(body, "time_bucket(") && !strings.Contains(body, "date_trunc('day'") {
+		t.Errorf("graph sql = %d %s", resp.StatusCode, body)
+	}
+	resp, body = post(`{"stream":"app","range":{"from":"all"},"view":"table","groupBy":["method"],"format":"sql"}`)
+	if resp.StatusCode != 200 || !strings.Contains(body, `GROUP BY "method"`) {
+		t.Errorf("table sql = %d %s", resp.StatusCode, body)
 	}
 }

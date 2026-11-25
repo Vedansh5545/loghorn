@@ -61,7 +61,58 @@ type Input struct {
 // Config is the whole file. Later sections (saved filters, keybindings) become
 // sibling fields here.
 type Config struct {
-	Input Input `toml:"input"`
+	Input Input       `toml:"input"`
+	Serve ServeConfig `toml:"serve"`
+	Run   RunConfig   `toml:"run"`
+}
+
+// Default ports of loghorn serve.
+const (
+	DefaultWebPort      = 4380
+	DefaultOTLPHTTPPort = 4318
+)
+
+// ServeConfig is [serve]: the ports loghorn serve binds. Zero means the
+// default. Only the user-level file is read for it (see LoadUser).
+type ServeConfig struct {
+	OTLPHTTPPort int `toml:"otlp-http-port,omitzero"`
+	WebPort      int `toml:"web-port,omitzero"`
+}
+
+// Resolved returns the web and OTLP/HTTP ports with defaults applied.
+func (c ServeConfig) Resolved() (web, otlp int) {
+	web, otlp = c.WebPort, c.OTLPHTTPPort
+	if web == 0 {
+		web = DefaultWebPort
+	}
+	if otlp == 0 {
+		otlp = DefaultOTLPHTTPPort
+	}
+	return web, otlp
+}
+
+// What loghorn run does when serve isn't running ([run] serve-down).
+const (
+	ServeDownRecord = "record"
+	ServeDownSkip   = "skip"
+	ServeDownFail   = "fail"
+)
+
+// ServeDownModes lists the permitted serve-down values, in the order messages
+// name them.
+var ServeDownModes = []string{ServeDownRecord, ServeDownSkip, ServeDownFail}
+
+// RunConfig is [run].
+type RunConfig struct {
+	ServeDown string `toml:"serve-down,omitempty"`
+}
+
+// Mode is the serve-down setting, record when unset.
+func (c RunConfig) Mode() string {
+	if c.ServeDown == "" {
+		return ServeDownRecord
+	}
+	return c.ServeDown
 }
 
 // Default is the configuration used when no file is found: every input key
@@ -212,6 +263,34 @@ func (l Loader) warn(msg string) {
 	}
 }
 
+// LoadUser reads only the user-level config file, never a repo's: loghorn
+// serve has no project directory, and a run's serve-down choice is the
+// user's, not a repo's. Defaults apply when there is no file.
+func LoadUser() (Config, string, error) {
+	home, _ := os.UserHomeDir()
+	return Loader{
+		XDG:  os.Getenv("XDG_CONFIG_HOME"),
+		Home: home,
+		Warn: func(msg string) { fmt.Fprintln(os.Stderr, "loghorn:", msg) },
+	}.LoadUser()
+}
+
+// LoadUser is LoadUser for this loader's XDG and Home; Dir is ignored.
+func (l Loader) LoadUser() (Config, string, error) {
+	path, data, err := l.userLevel()
+	if err != nil {
+		return Config{}, "", err
+	}
+	if path == "" {
+		return Default(), "", nil
+	}
+	cfg, err := l.parse(path, data)
+	if err != nil {
+		return Config{}, "", err
+	}
+	return cfg, path, nil
+}
+
 // validate rejects a value outside a key's permitted set. Unlike an unknown
 // key, an unknown value can't be ignored: the user asked for behaviour this
 // binary doesn't have, and guessing which of the permitted values they meant
@@ -225,10 +304,19 @@ func (c Config) validate(path string) error {
 		{"input.format", string(c.Input.Format), []string{"auto", "json", "yaml", "text"}},
 		{"input.field-naming", string(c.Input.FieldNaming), []string{"auto", "camel", "snake"}},
 		{"input.severity", string(c.Input.Severity), []string{"auto", "string", "numeric"}},
+		{"run.serve-down", c.Run.Mode(), ServeDownModes},
 	} {
 		if !slices.Contains(k.allowed, k.got) {
 			return fmt.Errorf("%s: %s = %q is not one of %s",
 				path, k.key, k.got, strings.Join(k.allowed, ", "))
+		}
+	}
+	for _, p := range []struct {
+		key  string
+		port int
+	}{{"serve.web-port", c.Serve.WebPort}, {"serve.otlp-http-port", c.Serve.OTLPHTTPPort}} {
+		if p.port < 0 || p.port > 65535 {
+			return fmt.Errorf("%s: %s = %d is not a port (1-65535, or 0 for the default)", path, p.key, p.port)
 		}
 	}
 	return nil

@@ -17,9 +17,10 @@ type Graph struct {
 	BucketSeconds float64     `json:"bucketSeconds"`
 	Starts        []time.Time `json:"starts"` // bucket start times, ascending
 	Metric        Column      `json:"metric"`
-	Groups        int         `json:"groups"` // groups before the top cut
-	Top           int         `json:"top"`    // groups drawn on their own (the cut)
-	Series        []Series    `json:"series"` // in group order (count desc by default); "other" last
+	GroupBy       []string    `json:"groupBy,omitempty"` // group-by paths, one per Series.Group label
+	Groups        int         `json:"groups"`            // groups before the top cut
+	Top           int         `json:"top"`               // groups drawn on their own (the cut)
+	Series        []Series    `json:"series"`            // in group order (count desc by default); "other" last
 }
 
 // Series is one line of a graph.
@@ -149,7 +150,7 @@ func runGraph(matched []*record.Record, s schema.Schema, q Query, from, to time.
 	if q.Plot != nil {
 		plot = *q.Plot
 	}
-	g := &Graph{Metric: metricColumn(plot, s), Starts: []time.Time{}, Series: []Series{}}
+	g := &Graph{Metric: metricColumn(plot, s), GroupBy: append([]string(nil), q.GroupBy...), Starts: []time.Time{}, Series: []Series{}}
 
 	var timed []*record.Record
 	for _, r := range matched {

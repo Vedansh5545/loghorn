@@ -215,7 +215,7 @@ func TestSIGINTDropped(t *testing.T) {
 	rec, _ := newRec(t)
 	var out, errb lockedBuf
 	sigs := make(chan os.Signal, 1)
-	ch := runAsync(start(t, "sleep 0.3; exit 0", false), Options{Recorder: rec, Stdout: &out, Stderr: &errb, Signals: sigs})
+	ch := runAsync(start(t, "sleep 0.3; exit 0", false), Options{Recorder: rec, Stdout: &out, Stderr: &errb, Signals: sigs, Grace: 5 * time.Second})
 	sigs <- syscall.SIGINT
 	sigs <- syscall.SIGQUIT
 	if got := waitStatus(t, ch, 5*time.Second); got != 0 {
@@ -366,5 +366,54 @@ func TestStripANSI(t *testing.T) {
 		if got := string(stripANSI([]byte(tc.in))); got != tc.want {
 			t.Errorf("stripANSI(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// Ctrl-C starts the same grace as SIGTERM: a command still running after it
+// is killed, and on a terminal a countdown says so from 500ms on.
+func TestSIGINTCountdownThenKill(t *testing.T) {
+	rec, _ := newRec(t)
+	var out, errb, cd lockedBuf
+	sigs := make(chan os.Signal, 1)
+	ch := runAsync(start(t, `echo ready; while :; do sleep 0.05; done`, false),
+		Options{Recorder: rec, Stdout: &out, Stderr: &errb, Signals: sigs, Grace: 2500 * time.Millisecond, Countdown: &cd, Name: "npm"})
+	waitFor(t, &out, "ready")
+	sigs <- syscall.SIGINT
+	if got := waitStatus(t, ch, 5*time.Second); got != 137 {
+		t.Fatalf("status %d, want 137", got)
+	}
+	for _, want := range []string{"loghorn: waiting for npm to exit; killing it in 2s", "killing it in 1s", "loghorn: killed npm"} {
+		if !strings.Contains(cd.String(), want) {
+			t.Fatalf("countdown %q lacks %q", cd.String(), want)
+		}
+	}
+}
+
+func TestSIGINTQuickExitShowsNoCountdown(t *testing.T) {
+	rec, _ := newRec(t)
+	var out, errb, cd lockedBuf
+	sigs := make(chan os.Signal, 1)
+	ch := runAsync(start(t, "sleep 0.2; exit 0", false),
+		Options{Recorder: rec, Stdout: &out, Stderr: &errb, Signals: sigs, Grace: 5 * time.Second, Countdown: &cd, Name: "npm"})
+	sigs <- syscall.SIGINT
+	if got := waitStatus(t, ch, 5*time.Second); got != 0 {
+		t.Fatalf("status %d, want 0", got)
+	}
+	if cd.String() != "" {
+		t.Fatalf("countdown shown for a quick exit: %q", cd.String())
+	}
+}
+
+func TestSecondSIGINTKillsNow(t *testing.T) {
+	rec, _ := newRec(t)
+	var out, errb, cd lockedBuf
+	sigs := make(chan os.Signal, 2)
+	ch := runAsync(start(t, `echo ready; while :; do sleep 0.05; done`, false),
+		Options{Recorder: rec, Stdout: &out, Stderr: &errb, Signals: sigs, Grace: 10 * time.Second, Countdown: &cd, Name: "npm"})
+	waitFor(t, &out, "ready")
+	sigs <- syscall.SIGINT
+	sigs <- syscall.SIGINT
+	if got := waitStatus(t, ch, 2*time.Second); got != 137 {
+		t.Fatalf("status %d, want 137", got)
 	}
 }

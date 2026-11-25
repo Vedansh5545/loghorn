@@ -36,9 +36,10 @@ func Listen() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") }
 // Receiver is an OTLP/HTTP endpoint. Logs and traces are kept, each mapped to
 // lines for its own callback; metrics are validated and discarded.
 type Receiver struct {
-	logs  func(line []byte)
-	spans func(line []byte) // nil: traces are decoded and discarded
-	now   func() time.Time
+	logs     func(line []byte)
+	spans    func(line []byte) // nil: traces are decoded and discarded
+	runLines func(RunLine)     // nil: loghorn.run records are mapped like any other
+	now      func() time.Time
 
 	// dmu orders delivery against Drain: handlers hold the read side while
 	// they deliver, Drain takes the write side to close, so no delivery can
@@ -62,6 +63,11 @@ func NewReceiver(logs, spans func(line []byte), now func() time.Time) *Receiver 
 	}
 	return &Receiver{logs: logs, spans: spans, now: now}
 }
+
+// SetRunLines diverts log records in the RunScope scope to f, one RunLine per
+// record with a string body, before the remaining records are mapped for the
+// logs callback. Call it before Serve.
+func (r *Receiver) SetRunLines(f func(RunLine)) { r.runLines = f }
 
 // Serve starts serving on ln in a goroutine.
 func (r *Receiver) Serve(ln net.Listener) {
@@ -202,12 +208,16 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	isJSON := ct == ctJSON
 	var resp proto.Message
 	var lines, spanLines [][]byte
+	var runLines []RunLine
 	switch req.URL.Path {
 	case "/v1/logs":
 		var lr collogspb.ExportLogsServiceRequest
 		if err := unmarshal(body, isJSON, &lr, fixHexIDs); err != nil {
 			http.Error(w, "malformed request", http.StatusBadRequest)
 			return
+		}
+		if r.runLines != nil {
+			runLines = SplitRunLines(&lr)
 		}
 		lines = MapLogs(&lr, r.now())
 		resp = &collogspb.ExportLogsServiceResponse{}
@@ -234,6 +244,9 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.dmu.RUnlock()
 		http.Error(w, "shutting down", http.StatusServiceUnavailable)
 		return
+	}
+	for _, l := range runLines {
+		r.runLines(l)
 	}
 	for _, l := range lines {
 		r.logs(l)

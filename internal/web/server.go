@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jimbeveridge/loghorn/internal/export"
 	"github.com/jimbeveridge/loghorn/internal/favorites"
 	"github.com/jimbeveridge/loghorn/internal/jsoncolor"
 	"github.com/jimbeveridge/loghorn/internal/query"
@@ -43,6 +45,20 @@ type Options struct {
 	// (svcconf.Dir) with pins, favorites and field settings.
 	ConfigBase string
 	Now        func() time.Time // nil means time.Now
+
+	// Instance identity, reported by /api/session so a CLI can pick among
+	// running instances: process id, working directory, TCP port and start time.
+	PID     int
+	Cwd     string
+	Port    int
+	Started time.Time
+
+	// loghorn serve's identity, also reported by /api/session: its data
+	// folder, socket, version and OTLP/HTTP port (0 for a view without one).
+	DataDir  string
+	Socket   string
+	Version  string
+	OTLPPort int
 }
 
 type server struct {
@@ -91,15 +107,20 @@ func New(o Options) http.Handler {
 
 // guard enforces the loopback Host on every request and the page's own
 // Origin on every non-GET request. POST /api/query alone may omit Origin (a
-// curl client); a present, foreign Origin is refused everywhere.
+// curl client); a present, foreign Origin is refused everywhere. Requests on
+// the per-user unix socket skip both checks: those guard against a browser
+// page reaching the TCP port, and a browser cannot reach the socket (its 0700
+// directory is the access control).
 func (s *server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		port := listenerPort(r)
-		if port == "" || (r.Host != "127.0.0.1:"+port && r.Host != "localhost:"+port) {
-			writeError(w, http.StatusForbidden, "forbidden host")
-			return
+		if !onUnixSocket(r) {
+			port := listenerPort(r)
+			if port == "" || (r.Host != "127.0.0.1:"+port && r.Host != "localhost:"+port) {
+				writeError(w, http.StatusForbidden, "forbidden host")
+				return
+			}
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if !onUnixSocket(r) && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			origin := r.Header.Get("Origin")
 			exempt := origin == "" && r.Method == http.MethodPost && r.URL.Path == "/api/query"
 			if !exempt && origin != "http://"+r.Host {
@@ -113,6 +134,12 @@ func (s *server) guard(next http.Handler) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// onUnixSocket reports whether the request arrived on a unix socket listener.
+func onUnixSocket(r *http.Request) bool {
+	_, ok := r.Context().Value(http.LocalAddrContextKey).(*net.UnixAddr)
+	return ok
 }
 
 // listenerPort is the port of the local address the request arrived on, or
@@ -212,6 +239,14 @@ type sessionJSON struct {
 	Latest     *time.Time `json:"latest"`
 	Count      int        `json:"count"`
 	ConfigBase string     `json:"configBase"`
+	PID        int        `json:"pid"`
+	Cwd        string     `json:"cwd"`
+	Port       int        `json:"port"`
+	Started    time.Time  `json:"started"`
+	Version    string     `json:"version"`
+	DataDir    string     `json:"dataDir"`
+	Socket     string     `json:"socket"`
+	OTLPPort   int        `json:"otlpPort"`
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +254,8 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sessionJSON{
 		Mode: in.Mode, RunStart: timePtr(in.RunStart), Earliest: timePtr(in.Earliest),
 		Latest: timePtr(in.Latest), Count: in.Count, ConfigBase: s.o.ConfigBase,
+		PID: s.o.PID, Cwd: s.o.Cwd, Port: s.o.Port, Started: s.o.Started,
+		Version: s.o.Version, DataDir: s.o.DataDir, Socket: s.o.Socket, OTLPPort: s.o.OTLPPort,
 	})
 }
 
@@ -429,6 +466,15 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream is required")
 		return
 	}
+	var format export.Format
+	if q.Format != "" {
+		f, err := export.ParseFormat(q.Format)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		format = f
+	}
 	src, ok := record.ParseSource(q.Source)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown source %q", q.Source))
@@ -449,7 +495,50 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	switch format {
+	case "":
+		writeJSON(w, http.StatusOK, res)
+	case export.SQL:
+		writeSQL(w, q, sch, &res)
+	default:
+		writeExport(w, format, &res, sch, q)
+	}
+}
+
+// writeSQL answers a query with its DuckDB SQL, built from the query and its
+// run (which resolves what the SQL freezes). A query the SQL cannot express
+// exactly is a 400.
+func writeSQL(w http.ResponseWriter, q query.Query, sch schema.Schema, res *query.Result) {
+	text, err := query.ToSQL(q, sch, res)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", export.SQL.ContentType())
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, text)
+}
+
+// writeExport answers a query in an export format: the text with the format's
+// Content-Type, and what the result left out in X-Loghorn-Note.
+func writeExport(w http.ResponseWriter, f export.Format, res *query.Result, sch schema.Schema, q query.Query) {
+	var b bytes.Buffer
+	if err := export.Write(&b, f, res, sch); err != nil {
+		code := http.StatusInternalServerError
+		if errors.Is(err, export.ErrUnsupported) {
+			code = http.StatusBadRequest
+		}
+		writeError(w, code, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", f.ContentType())
+	w.Header().Set("Cache-Control", "no-store")
+	if note := export.Note(res, q); note != "" {
+		w.Header().Set("X-Loghorn-Note", note)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b.Bytes())
 }
 
 // trace answers GET /api/trace?trace=<id>&span=<id>: the tree of one trace
@@ -508,6 +597,9 @@ func (s *server) aggregate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, op)
 }
 
+// record answers one record by ?seq=: the raw record pretty-printed and
+// coloured, each sql field formatted and coloured, and each multiline field
+// that holds more than one line (text) as it is, for the page's row detail.
 func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	seq, err := strconv.Atoi(r.URL.Query().Get("seq"))
 	if err != nil || seq < 1 {
@@ -532,13 +624,21 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 	}
 	sql := map[string]string{}
 	tokens := map[string][]sqlcolor.Token{}
+	text := map[string]string{} // multiline fields of several lines, as they are
 	system := sqlfmt.SystemOf(rec.Fields)
 	for _, f := range sch.Fields {
-		if f.Visualizer != schema.VSQL {
-			continue
-		}
 		v, ok := rec.Fields[f.Path].(string)
 		if !ok {
+			continue
+		}
+		if f.Visualizer == schema.VMultiline {
+			// One line reads well enough in the raw record below.
+			if schema.Multiline(v) {
+				text[f.Path] = v
+			}
+			continue
+		}
+		if f.Visualizer != schema.VSQL {
 			continue
 		}
 		if out, err := sqlfmt.Format(v, system); err == nil {
@@ -553,7 +653,8 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		RawTokens []sqlcolor.Token            `json:"rawTokens,omitempty"`
 		SQL       map[string]string           `json:"sql"`
 		SQLTokens map[string][]sqlcolor.Token `json:"sqlTokens"`
-	}{raw, jsoncolor.Tokens(raw), sql, tokens})
+		Text      map[string]string           `json:"text"`
+	}{raw, jsoncolor.Tokens(raw), sql, tokens, text})
 }
 
 func (s *server) listFavorites(w http.ResponseWriter, r *http.Request) {

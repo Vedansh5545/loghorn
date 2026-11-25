@@ -4,7 +4,9 @@
 // longer than maxWidth, which GoSQLX does not. Rendering is from the
 // parse tree, so the output can differ from what was logged beyond layout:
 // keywords are uppercased, quotes around plain names are dropped and a
-// trailing semicolon is added.
+// trailing semicolon is added. Never run generated SQL through it: dropping
+// the quotes changes meaning (spans."http.server" becomes spans.http."server"),
+// which is why query.ToSQL lays its SQL out by hand.
 package sqlfmt
 
 import (

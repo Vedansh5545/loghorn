@@ -1,11 +1,40 @@
 # loghorn — notes for agents
 
-## Startup ordering (`main.go`)
+## Startup ordering
 
-Validate or bind anything that can fail with `os.Exit` (flag conflicts, the
-`-web` listener) **before** launching the child command. `os.Exit` skips
-deferred cleanup, and the child runs in its own process group, so an exit
-after launch leaves it running.
+- `run` (`cmd_run.go`): validate or bind anything that can fail with
+  `os.Exit` (flags, config, the serve probe, the incoming folder and its
+  receiver) **before** launching the child command. `os.Exit` skips deferred
+  cleanup, and the child runs in its own process group, so an exit after
+  launch leaves it running.
+- `serve` (`internal/serve`): take the data folder's lock, then bind the
+  socket and both ports, and only then serve; a failure undoes what came
+  before it, so a supervisor can restart serve cleanly. serve never forks.
+
+## Commands and serve
+
+- Each command is a `cmdX(args, cliEnv) int` in `cmd_x.go` with its own
+  `flag.FlagSet` (`newFlagSet`, `parseCmd` in `dispatch.go`). `run` parses
+  flags only before the command; the others accept them anywhere. A removed
+  top-level flag gets a message from `migrations` in `dispatch.go`.
+- `topHelp` in `dispatch.go` is copied into README.md between the
+  `<!-- loghorn help -->` markers; `TestReadmeUsageMatchesHelp` keeps them
+  equal, so edit both.
+- Clients find serve only through its socket (`sock.DefaultPath()`:
+  `$LOGHORN_SOCKET`, else `/tmp/loghorn.sock`) and ask `/api/session` for its
+  ports. Never assume 4380/4318 in a client.
+- Tests must never reach a real serve or the real data folder: set
+  `LOGHORN_SOCKET` and `LOGHORN_DATA_DIR` (the e2e helpers `loghornCmd` and
+  `newServeEnv` do), and make socket paths under `os.MkdirTemp("/tmp", …)`:
+  macOS `t.TempDir()` paths overflow sun_path (103 bytes).
+- `serve` refuses to start (and `run -serve` is ignored) under an AI agent
+  (`CLAUDECODE`, `AI_AGENT`, `CODEX_SANDBOX` set; see `agent.go`), and the
+  tests run under one. Binary tests must append `noAgent` to the command's
+  environment, as `loghornCmd` and `serveEnv.environ` do; a hand smoke test
+  of `serve` needs `LOGHORN_ALLOW_AGENT=1`.
+- The web handler maps an empty query service to `default`, and records from
+  `run` carry the run's service, so a hand-written `/?q=` that should see
+  them needs `"service":"*"` (or the service).
 
 ## Web view (`internal/web`)
 
@@ -21,6 +50,11 @@ after launch leaves it running.
   gets 403.
 - Number values in test records must be `json.Number`: `schema.Convert`
   rejects plain `float64`/`int64` as the wrong type.
+- Search (`#run-query`) is the sidebar's default button: `wireSubmit` runs
+  it on Enter in any sidebar input, after the field's own handlers. It does
+  not cancel the key, because Enter is what fires `change` on Rows, a
+  relative From or a field name; a field that commits on Enter itself must
+  `preventDefault` it (as the filter value does) or it validates twice.
 - A button inside a control that redraws on its input's blur/change must
   `preventDefault` on `mousedown`, or the redraw swallows the click.
 - The server requires `plot` and `order` to be count or one of `aggregates`,
@@ -81,8 +115,8 @@ after launch leaves it running.
   must use `navState(crumb, push)` for the state and call `syncNav()` after
   any show, hide or URL write, or the breadcrumb, back labels and sidebar
   lock go stale. Close through `nav.back()`, never `history.back()` directly.
-- The demo loads spans with `-spans FILE` (lines as in
-  `.loghorn/loghorn.traces.jsonl`); the Spans stream list stays empty until a
+- The demo loads spans with `-spans FILE` (lines as in serve's
+  `loghorn.traces.jsonl`); the Spans stream list stays empty until a
   service is selected.
 
 ## Go modules
@@ -99,3 +133,11 @@ git root (`.git` may be a file in a worktree), and outside git must not walk
 above its start directory, or it picks up the user-level `~/.config/loghorn`.
 Test it with no `.git` and with `HOME` as an ancestor of the start directory
 (see `schema.FindConfigDir`).
+
+## DuckDB from tests and tools
+
+Unset `AI_AGENT` in the environment of any `duckdb` process loghorn runs:
+DuckDB's agent mode changes the `-json` output (see
+`internal/query/tosql_duckdb_test.go`). A DuckDB decimal literal such as
+`0.95` is a DECIMAL; cast it to DOUBLE wherever the SQL must match Go's
+float64 math.

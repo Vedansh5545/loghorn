@@ -336,6 +336,9 @@ export function visualize(cell, column) {
       // The server sends JSON cells as text; never re-parse it, because
       // JSON.parse rounds integers above 2^53.
       return truncated(asText(v), clip(80));
+    case "multiline":
+      if (!wrap) return firstLine(asText(v));
+      return truncated(asText(v), WRAP_MAX);
     case "sql":
       if (cell && Array.isArray(cell.sql)) return sqlSpan(cell.sql, asText(v), clip(120));
     // falls through: a value the server did not colour shows as raw
@@ -343,6 +346,24 @@ export function visualize(cell, column) {
     default:
       return truncated(asText(v), clip(120));
   }
+}
+
+// firstLine shows the first non-blank line of multi-line text, clipped, and a
+// badge with the number of lines after it; the row's detail holds the whole
+// text.
+function firstLine(text) {
+  const lines = text.replace(/\s+$/, "").split(/\r?\n/);
+  let i = lines.findIndex((l) => l.trim() !== "");
+  if (i < 0) i = 0;
+  const out = el("span");
+  out.append(truncated(lines[i], 120));
+  const more = lines.length - 1 - i;
+  if (more > 0) {
+    const b = el("span", "ml-more", "+" + more + (more === 1 ? " line" : " lines"));
+    b.title = "open the row to see all " + lines.length + " lines";
+    out.append(b);
+  }
+  return out;
 }
 
 // ---- URL state ----
@@ -857,7 +878,7 @@ function wireHeatList() {
     if (e.key !== "Escape" || !heatSel || state.view !== "heatmap") return;
     // An open menu, pane or dialog takes the Esc for itself. Capture runs
     // first, so a new menu or pane must be added to this check.
-    if (menuPath || !$("fav-menu").hidden || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
+    if (menuPath || !$("trace").hidden || !$("agg").hidden || document.querySelector("dialog[open]")) return;
     if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     clearHeatSelection();
   }, true);
@@ -930,7 +951,7 @@ async function loadSession() {
   const none = session.count === 0;
   $("empty").hidden = !none;
   $("results").hidden = none;
-  $("footer").hidden = none;
+  $("results-head").hidden = none;
   await chooseService();
 }
 
@@ -1040,12 +1061,14 @@ const NEED_SERVICE = "Choose a service to save";
 // readOnly() as they are drawn.)
 function syncReadOnly() {
   const ro = readOnly();
-  for (const id of ["fav-save", "fav-save-menu", "schema-save"]) {
+  for (const id of ["fav-save", "schema-save"]) {
     const b = $(id);
     b.disabled = ro;
     if (ro) b.title = NEED_SERVICE;
+    else if (id === "fav-save") b.title = FAV_SAVE_TITLE;
     else b.removeAttribute("title");
   }
+  if (railTab === "favs") loadFavorites(); // the list follows the service
 }
 
 // readOnly is true under All: the union of services is shown but nothing is
@@ -1265,7 +1288,7 @@ function clearResults() {
   forgetHeatSelection();
   drawHeat();
   $("more").hidden = true;
-  $("footer-text").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
+  $("summary").textContent = "no " + (state.source === "otel" ? "spans" : "log records") + " in range";
 }
 
 // setMode switches between Logs and Spans and selects the new mode's first
@@ -1421,6 +1444,38 @@ function cellCopyText(td) {
   return c.textContent;
 }
 
+// fetchExport asks the server for the shown query in an export format and
+// returns the text. It sends what runQuery sends (limit included) and, for a
+// Samples batch past the first, that batch's offset and columns as loadBatch
+// does, so the copy is the table on screen, not the first page of it.
+// In the Heatmap view that table is the span list (listQuery), not the
+// heatmap the CLI exports for the same URL: a deliberate exception (spec,
+// "Copy buttons in the page").
+function batchPart() {
+  const base = lastResult;
+  if (!base || (base.view && base.view !== "samples") || groupedList() || !base.offset) return {};
+  return { columns: base.columns.map((c) => c.path), offset: base.offset };
+}
+
+async function fetchExport(format) {
+  const resp = await fetch("/api/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({}, listQuery(), { format }, batchPart())),
+  });
+  if (!resp.ok) {
+    let msg = resp.status + " " + resp.statusText;
+    try {
+      const d = await resp.json();
+      if (d && d.error) msg = d.error;
+    } catch {
+      // keep the status line
+    }
+    throw new Error(msg);
+  }
+  return resp.text();
+}
+
 // shownTable is the results table as shown, for copying: the header labels
 // and each row's cells; opened record details are skipped.
 function shownTable() {
@@ -1497,7 +1552,7 @@ function renderTable(result) {
   const n = result.groups || 0;
   let foot = n.toLocaleString() + " " + (n === 1 ? "group" : "groups") + " · " + result.matched.toLocaleString() + " records match";
   if (result.truncated) foot += " · showing the top " + result.rows.length.toLocaleString();
-  $("footer-text").textContent = foot;
+  $("summary").textContent = foot;
   applyWidths();
 }
 
@@ -1526,7 +1581,7 @@ function renderGraph(result) {
     foot += " · top " + g.top + " of " + g.groups.toLocaleString() + " groups, the rest in other";
     if (state.top > g.top) foot += " (the graph draws at most " + g.top + ")";
   }
-  $("footer-text").textContent = foot;
+  $("summary").textContent = foot;
 }
 
 export function render(result) {
@@ -1567,7 +1622,7 @@ function renderSamplesFooter(result) {
   const off = result.offset || 0;
   const shown = result.rows.length;
   const span = shown ? (off + 1).toLocaleString() + "–" + (off + shown).toLocaleString() : "none";
-  $("footer-text").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
+  $("summary").textContent = result.matched.toLocaleString() + " of " + result.streamTotal.toLocaleString() + " " +
     (state.stream === ALL_KINDS ? "span" : state.stream) + " records match · showing " + (off ? span : shown.toLocaleString());
   $("limit").value = String(state.limit || DEFAULT_LIMIT);
   $("more").hidden = !result.truncated && !off;
@@ -1941,7 +1996,8 @@ function detailSection(title, body, open) {
 }
 
 // fillRecordDetail replaces container's children with record seq: its SQL
-// fields formatted and coloured, then the raw record, each in a section that
+// fields formatted and coloured, its multiline fields as they are, then the
+// raw record, each in a section that
 // opens and closes; recordOpen sets whether the raw record starts open. An
 // error shows in place.
 export async function fillRecordDetail(container, seq, { recordOpen = true } = {}) {
@@ -1958,6 +2014,12 @@ export async function fillRecordDetail(container, seq, { recordOpen = true } = {
       const sec = detailSection(path + " (SQL)", pre, true);
       const sql = String(rec.sql[path]);
       sec.querySelector("summary").append(copyButton(() => sql, { cls: "sum-copy" }));
+      container.append(sec);
+    }
+    for (const path of Object.keys(rec.text || {}).sort()) {
+      const text = String(rec.text[path]);
+      const sec = detailSection(path, preOf(text), true);
+      sec.querySelector("summary").append(copyButton(() => text, { title: "copy text", cls: "sum-copy" }));
       container.append(sec);
     }
     let raw = preOf(rec.raw);
@@ -2286,14 +2348,16 @@ function setTripleError(t, msg) {
 
 // commitTriple brings t's filter in line with its inputs: it validates a
 // complete triple by running the query with it, and drops an incomplete one.
-async function commitTriple(t) {
+// With quiet, it leaves running the query to the caller (submitQuery).
+async function commitTriple(t, quiet = false) {
+  const run = () => (quiet ? undefined : runQuery());
   const f = candidate(t);
   if (!f) {
     setTripleError(t, "");
     if (t.filter) {
       t.filter = null;
       syncFilters();
-      runQuery();
+      run();
     }
     return;
   }
@@ -2308,7 +2372,7 @@ async function commitTriple(t) {
     t.filter = null;
     syncFilters();
     setTripleError(t, err.detail || err.message);
-    if (had) runQuery();
+    if (had) run();
     else saveURL();
     return;
   }
@@ -2316,7 +2380,47 @@ async function commitTriple(t) {
   t.filter = f;
   setTripleError(t, "");
   syncFilters();
+  run();
+}
+
+// submitQuery is the sidebar's default button (Search): it takes every filter
+// row and the search box as typed, then runs the query once.
+async function submitQuery(e) {
+  if (e) flashSubmit(); // a click; an Enter flashed already
+  for (const t of triples) {
+    const v = t.row && t.row.querySelector(".t-value > input, .t-value > select");
+    if (v && !isMulti(t.op)) t.value = v.value;
+  }
+  state.search = $("search").value;
+  await Promise.all(triples.map((t) => commitTriple(t, true)));
   runQuery();
+}
+
+// flashSubmit presses the Search button for a moment, so an Enter that ran
+// the query shows where it went.
+function flashSubmit() {
+  const b = $("run-query");
+  b.classList.remove("flash");
+  void b.offsetWidth; // restart the animation
+  b.classList.add("flash");
+}
+
+// wireSubmit makes Search the sidebar's default button: Enter in any of its
+// text fields runs it. It runs after the field's own Enter handling and the
+// change event Enter fires (Rows, a relative From, a field name), so it must
+// not cancel the key. The kind filter only narrows the stream list, so its
+// Enter is its own.
+function wireSubmit() {
+  $("run-query").addEventListener("click", submitQuery);
+  $("run-query").addEventListener("animationend", () => $("run-query").classList.remove("flash"));
+  $("sidebar").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.id === "kind-filter") return;
+    if (["button", "checkbox", "radio", "submit", "reset", "file", "range", "color"].includes(t.type)) return;
+    flashSubmit();
+    setTimeout(submitQuery, 0);
+  });
 }
 
 function removeTriple(t) {
@@ -2433,11 +2537,10 @@ function drawValue(t) {
     t.value = input.value;
     commitTriple(t);
   });
+  // Enter runs the Search button (wireSubmit), which commits this row; no
+  // change event besides, which would validate the row a second time.
   input.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
-    e.preventDefault();
-    t.value = input.value;
-    commitTriple(t);
+    if (e.key === "Enter") e.preventDefault();
   });
   box.append(input);
 }
@@ -2955,7 +3058,6 @@ function openColumnMenu(path, anchorEl) {
     return;
   }
   closeColumnMenu();
-  closeFavorites();
   menuPath = path;
   menuAnchor = anchorEl;
   const menu = $("col-menu");
@@ -3187,9 +3289,15 @@ function schemaFieldBody(f) {
 // ---- schema panel ----
 
 const TYPES = ["int", "float", "bool", "string", "duration", "timestamp", "json"];
-const VISUALIZERS = ["raw", "number", "plain", "link", "local-time", "duration", "severity", "sql", "json"];
+const VISUALIZERS = ["raw", "number", "plain", "link", "local-time", "duration", "severity", "sql", "json", "multiline"];
 const UNITS = ["", "s", "ms", "us", "ns"];
 const UNIT_TYPES = new Set(["timestamp", "duration"]);
+
+// isStackPath mirrors schema.isStackPath in Go.
+function isStackPath(path) {
+  const last = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+  return last === "stack" || last === "stacktrace" || last === "stack_trace";
+}
 
 // defaultVisualizer mirrors schema.DefaultVisualizer in Go.
 function defaultVisualizer(path, type) {
@@ -3199,6 +3307,8 @@ function defaultVisualizer(path, type) {
   if (path === "severity") return "severity";
   if (path === "httpRequest.latency") return "duration";
   if (path === "httpRequest.requestUrl") return "link";
+  if (path === "db.query.text" || path === "db.statement") return "sql";
+  if (type === "string" && isStackPath(path)) return "multiline";
   switch (type) {
     case "int":
     case "float":
@@ -3370,8 +3480,14 @@ function favoriteColumns(list, name) {
   return f ? f.query.columns.slice() : [];
 }
 
+// favSeq numbers loadFavorites calls; an answer for an older call (another
+// service) is dropped.
+let favSeq = 0;
+
 async function loadFavorites() {
+  const seq = ++favSeq;
   const list = $("fav-list");
+  if (!state.service) return; // chooseService loads it once a service is chosen
   list.replaceChildren(el("li", "muted", "loading…"));
   const ro = readOnly();
   let favs;
@@ -3388,10 +3504,12 @@ async function loadFavorites() {
       favCache = { service: state.service, list: favs || [] };
     }
   } catch (err) {
+    if (seq !== favSeq) return;
     list.replaceChildren();
     favStatus(err.detail || err.message, true);
     return;
   }
+  if (seq !== favSeq) return;
   list.replaceChildren();
   if (!favs || !favs.length) list.append(el("li", "muted", "no favorites yet"));
   for (const f of favs || []) {
@@ -3411,21 +3529,42 @@ async function loadFavorites() {
   }
 }
 
-function openFavorites() {
-  closeColumnMenu();
-  $("fav-menu").hidden = false;
-  $("fav-button").setAttribute("aria-expanded", "true");
-  favStatus("");
-  loadFavorites();
+const RAIL_KEY = "loghorn.rail"; // localStorage: the sidebar tab, "query" or "favs"
+const FAV_SAVE_TITLE = "save this query as a favorite";
+let railTab = "query";
+
+// setRail shows the sidebar's Query controls or its Favorites list.
+function setRail(tab) {
+  railTab = tab === "favs" ? "favs" : "query";
+  for (const b of document.querySelectorAll("#rail-tabs [data-rail]")) {
+    const on = b.dataset.rail === railTab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+  }
+  $("sb-query").hidden = railTab !== "query";
+  $("sb-favs").hidden = railTab !== "favs";
+  if (railTab === "favs") {
+    closeColumnMenu();
+    favStatus("");
+    loadFavorites();
+  }
 }
 
-function closeFavorites() {
-  $("fav-menu").hidden = true;
-  $("fav-button").setAttribute("aria-expanded", "false");
+// favSaved fills the heart for a moment, so a save shows even with the
+// Favorites tab closed.
+let favSavedTimer = 0;
+function favSaved(name) {
+  const b = $("fav-save");
+  b.classList.add("saved");
+  b.title = "saved \"" + name + "\"";
+  clearTimeout(favSavedTimer);
+  favSavedTimer = setTimeout(() => {
+    b.classList.remove("saved");
+    if (!readOnly()) b.title = FAV_SAVE_TITLE;
+  }, 1600);
 }
 
 async function loadFavorite(f) {
-  closeFavorites();
   const before = streamKey();
   const prevStream = state.stream;
   const prevSource = state.source;
@@ -3472,12 +3611,13 @@ async function saveFavorite() {
     }
     favCache = null;
     favStatus("saved \"" + n + "\"");
+    favSaved(n);
   } catch (err) {
     favStatus(err.detail || err.message, true);
     showError(err.message);
     return;
   }
-  if (!$("fav-menu").hidden) loadFavorites();
+  if (railTab === "favs") loadFavorites();
 }
 
 async function deleteFavorite(name) {
@@ -3493,19 +3633,25 @@ async function deleteFavorite(name) {
 }
 
 function wireFavorites() {
-  $("fav-button").addEventListener("click", (e) => {
-    e.stopPropagation();
-    if ($("fav-menu").hidden) openFavorites();
-    else closeFavorites();
-  });
-  $("fav-menu").addEventListener("click", (e) => e.stopPropagation());
-  document.addEventListener("click", () => closeFavorites());
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeFavorites();
-  });
+  for (const b of document.querySelectorAll("#rail-tabs [data-rail]")) {
+    b.addEventListener("click", () => {
+      setRail(b.dataset.rail);
+      try {
+        localStorage.setItem(RAIL_KEY, railTab);
+      } catch {
+        // remembering the tab is a per-browser convenience only
+      }
+    });
+  }
+  let tab = "query";
+  try {
+    tab = localStorage.getItem(RAIL_KEY) || "query";
+  } catch {
+    // as above
+  }
+  setRail(tab);
   $("fav-save").addEventListener("click", saveFavorite);
-  $("table-copy").append(copyTableBar(shownTable));
-  $("fav-save-menu").addEventListener("click", saveFavorite);
+  $("table-copy").append(copyTableBar(shownTable, "", { formats: ["md", "csv", "tsv", "json", "jsonl", "yaml", "toon"], fetchText: fetchExport }));
 }
 
 // setSidebar slides the controls panel open or closed. The panel stays in
@@ -3557,6 +3703,7 @@ async function init() {
   wireLimit();
   wireSchema();
   wireFavorites();
+  wireSubmit();
   watchTableShown();
   initNav({ rootLabel });
   initTrace({ api, el, showError, clearError, fillRecordDetail, localTime, formatDuration, severityClass, cancelAggregate, openAggregate });

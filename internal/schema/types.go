@@ -34,8 +34,9 @@ const (
 	VSeverity  = "severity"
 	VSQL       = "sql"
 	VJSON      = "json"
-	VPlain     = "plain" // number shown without grouping separators
-	VLink      = "link"  // whole value shown as one link
+	VPlain     = "plain"     // number shown without grouping separators
+	VLink      = "link"      // whole value shown as one link
+	VMultiline = "multiline" // text of several lines, such as a stack trace
 )
 
 // Units valid for timestamp (epoch unit) and duration (display unit) fields.

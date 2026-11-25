@@ -23,7 +23,7 @@ When an item ships, change its status and add the commit or plan that delivered 
 
 | Scuba control | What it does | loghorn | Notes |
 |---|---|---|---|
-| Save | Saves the query by name | **done** | Favorites menu (`/api/favorites`), stored as TOML. |
+| Save | Saves the query by name | **done** | The heart in the header saves; the sidebar's Favorites tab lists them (`/api/favorites`), stored as TOML. |
 | FBUrl (short link) | Copies a shareable link to this query | **partial** | The URL query string already holds the full state (`history.replaceState`). Missing: a "copy link" button. A short link isn't needed for a loopback server. |
 | Export | Downloads results as CSV / TSV | **todo** | Export the current Samples or Table view as CSV or JSON Lines. |
 | Reset | Clears the query back to defaults | **todo** | Columns have "restore defaults", but there's no reset for the whole query. |

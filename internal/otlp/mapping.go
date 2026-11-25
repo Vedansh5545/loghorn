@@ -10,15 +10,14 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/entry"
+	"github.com/jimbeveridge/loghorn/internal/record"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 // Source is the value of the loghorn.source field on every mapped record.
-const Source = "otlp"
-
-const defaultStream = "otel"
+const Source = record.OTLPSource
 
 // reserved are the keys the normaliser reinterprets (record.promote) or that
 // would be hidden behind a promoted field. A body key or attribute with one of
@@ -26,7 +25,7 @@ const defaultStream = "otel"
 var reserved = map[string]bool{}
 
 func init() {
-	for _, k := range strings.Fields(`timestamp time severity message labels trace_id span_id
+	for _, k := range strings.Fields(`timestamp time severity message labels event.name trace_id span_id
 		service.name loghorn.run.id loghorn.source trace spanId httpRequest http_request
 		resource textPayload text_payload jsonPayload json_payload receiveTimestamp
 		receive_timestamp insertId insert_id logName log_name sourceLocation source_location
@@ -62,9 +61,12 @@ func MapLogs(req *collogspb.ExportLogsServiceRequest, now time.Time) [][]byte {
 }
 
 func mapRecord(lr *logspb.LogRecord, resAttrs []*commonpb.KeyValue, scope *commonpb.InstrumentationScope, now time.Time) map[string]any {
-	m := map[string]any{
-		"labels":         map[string]any{"schema": Stream(lr, scope)},
-		"loghorn.source": Source,
+	m := map[string]any{"loghorn.source": Source}
+	// The reader derives the record's stream from event.name, then
+	// otel.scope.name (record.otlpStream); nothing here invents a label.
+	name := EventName(lr)
+	if name != "" {
+		m["event.name"] = name
 	}
 
 	ts := lr.GetTimeUnixNano()
@@ -111,6 +113,9 @@ func mapRecord(lr *logspb.LogRecord, resAttrs []*commonpb.KeyValue, scope *commo
 
 	for _, kv := range lr.GetAttributes() {
 		k := kv.GetKey()
+		if k == "event.name" && lr.GetEventName() == "" && kv.GetValue().GetStringValue() == name {
+			continue // already stored as event.name above
+		}
 		if _, taken := m[k]; taken || isReserved(k) {
 			k = "otel.attributes." + k
 		}
@@ -183,9 +188,9 @@ func nonZero(b []byte) bool {
 	return false
 }
 
-// Stream names the schema stream for a record: event name, the event.name
-// attribute, the scope name, else "otel".
-func Stream(lr *logspb.LogRecord, scope *commonpb.InstrumentationScope) string {
+// EventName is the record's event name: the EventName field, else a non-empty
+// string event.name attribute (the older semantic-convention spelling).
+func EventName(lr *logspb.LogRecord) string {
 	if n := lr.GetEventName(); n != "" {
 		return n
 	}
@@ -196,10 +201,7 @@ func Stream(lr *logspb.LogRecord, scope *commonpb.InstrumentationScope) string {
 			}
 		}
 	}
-	if n := scope.GetName(); n != "" {
-		return n
-	}
-	return defaultStream
+	return ""
 }
 
 func anyValue(v *commonpb.AnyValue) any {

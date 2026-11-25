@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -69,7 +68,8 @@ func loghornCmd(t *testing.T, ctx context.Context, dir string, args ...string) *
 	t.Helper()
 	cmd := exec.CommandContext(ctx, buildLoghorn(t), args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir())
+	cmd.Env = append(append(os.Environ(), noAgent...), "HOME="+t.TempDir(), "XDG_CONFIG_HOME="+t.TempDir(),
+		"LOGHORN_DATA_DIR="+t.TempDir(), "LOGHORN_SOCKET="+noSocket())
 	return cmd
 }
 
@@ -99,14 +99,14 @@ func runLoghorn(t *testing.T, dir string, stdin io.Reader, args ...string) resul
 	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
 }
 
-// readLog returns dir's .loghorn/loghorn.log.
-func readLog(t *testing.T, dir string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, ".loghorn", "loghorn.log"))
-	if err != nil {
-		t.Fatalf("reading the log file: %v", err)
-	}
-	return string(b)
+// noAgent clears the variables that mark an AI coding agent (see agentEnv):
+// the tests may run under one, and serve refuses to start from one.
+var noAgent = []string{"CLAUDECODE=", "AI_AGENT=", "CODEX_SANDBOX=", "CODEX_SANDBOX_NETWORK_DISABLED=", "LOGHORN_ALLOW_AGENT="}
+
+// noSocket is a socket path nothing listens on, so a test never reaches a
+// real serve on /tmp/loghorn.sock.
+func noSocket() string {
+	return fmt.Sprintf("/tmp/lh-none-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
 }
 
 // watchWriter collects writes and closes seen once they contain want.
@@ -165,18 +165,19 @@ func startUntil(t *testing.T, cmd *exec.Cmd, want string) (out *watchWriter, don
 }
 
 func TestWrapperPassThroughAndRecord(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, nil, "--", "sh", "-c", `printf 'a\033[31mred\033[0m\nplain\n'; echo err >&2; exit 3`)
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, nil, nil, "--", "sh", "-c", `printf 'a\033[31mred\033[0m\nplain\n'; echo err >&2; exit 3`)
 	if r.code != 3 {
 		t.Errorf("code = %d, want 3; stderr %q", r.code, r.stderr)
 	}
 	if want := "a\x1b[31mred\x1b[0m\nplain\n"; r.stdout != want {
 		t.Errorf("stdout = %q, want %q", r.stdout, want)
 	}
-	if !strings.Contains(r.stderr, "err") || strings.Contains(r.stderr, "loghorn:") {
-		t.Errorf("stderr = %q, want the child's err and no loghorn: line", r.stderr)
+	if !strings.Contains(r.stderr, "err\n") || strings.Count(r.stderr, "loghorn:") != 1 {
+		t.Errorf("stderr = %q, want the child's err and only the recording line", r.stderr)
 	}
-	log := readLog(t, dir)
+	log := e.waitLog(t, "ared\n", "plain\n", "err\n")
 	for _, want := range []string{"ared\n", "plain\n", "err\n"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log file missing %q:\n%q", want, log)
@@ -242,7 +243,7 @@ func TestWrapperSIGTERMEscalates(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := loghornCmd(t, ctx, dir, "-shutdown-grace", "200ms", "--", "sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done")
+	cmd := loghornCmd(t, ctx, dir, "run", "-shutdown-grace", "200ms", "--", "sh", "-c", "trap '' TERM; echo ready; while :; do sleep 0.05; done")
 	_, done := startUntil(t, cmd, "ready")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -285,8 +286,9 @@ func TestWrapperIgnoresSIGINTToItself(t *testing.T) {
 }
 
 func TestWrapperFilter(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, nil, "-filter", "--", "sh", "-c",
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, nil, nil, "run", "-filter", "--", "sh", "-c",
 		`echo "{\"severity\":\"INFO\",\"message\":\"i\"}"; echo "{\"severity\":\"ERROR\",\"message\":\"e\"}"; exit 2`)
 	if r.code != 2 {
 		t.Errorf("code = %d, want 2; stderr %q", r.code, r.stderr)
@@ -295,59 +297,18 @@ func TestWrapperFilter(t *testing.T) {
 	if r.stdout != errLine+"\n" {
 		t.Errorf("stdout = %q, want only the ERROR line", r.stdout)
 	}
-	log := readLog(t, dir)
-	if !strings.Contains(log, `{"severity":"INFO","message":"i"}`) || !strings.Contains(log, errLine) {
-		t.Errorf("log file should hold both lines:\n%s", log)
-	}
+	// serve tags a run's JSON lines with its service and run id.
+	e.waitLog(t, `"severity":"INFO","message":"i"}`, `"severity":"ERROR","message":"e"}`, `{"service.name":`)
 }
 
 func TestPipedStdinPassesThrough(t *testing.T) {
-	dir := t.TempDir()
-	r := runLoghorn(t, dir, strings.NewReader("one\ntwo\n"))
+	e := newServeEnv(t)
+	e.startServe(t)
+	r := e.run(t, strings.NewReader("one\ntwo\n"), nil, "run")
 	if r.code != 0 || r.stdout != "one\ntwo\n" {
 		t.Errorf("code %d stdout %q, want 0 and the input; stderr %q", r.code, r.stdout, r.stderr)
 	}
-	log := readLog(t, dir)
-	if !strings.Contains(log, "one\n") || !strings.Contains(log, "two\n") {
-		t.Errorf("log file should hold both lines:\n%s", log)
-	}
-}
-
-func TestReplaysNeedWebOrFilter(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(t.TempDir(), "in.log")
-	if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	devNull := func() *os.File {
-		d, err := os.Open(os.DevNull)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { d.Close() })
-		return d
-	}
-
-	for _, tc := range []struct {
-		name  string
-		stdin io.Reader
-		args  []string
-		want  string
-	}{
-		{"file", f, nil, "loghorn: reading a file (loghorn < file) needs -web or -filter"},
-		{"historical", devNull(), []string{"-historical"}, "loghorn: -historical needs -web or -filter"},
-		{"nothing", devNull(), nil, "loghorn: nothing to read: give a command after --, pipe input into loghorn, or pass -web to browse the stored logs"},
-	} {
-		r := runLoghorn(t, dir, tc.stdin, tc.args...)
-		if r.code != 2 || !strings.Contains(r.stderr, tc.want) {
-			t.Errorf("%s: code %d stderr %q, want 2 and %q", tc.name, r.code, r.stderr, tc.want)
-		}
-	}
+	e.waitLog(t, "one\n", "two\n")
 }
 
 func TestRemovedFlagsExit2(t *testing.T) {
@@ -364,24 +325,12 @@ func TestFileWithFilter(t *testing.T) {
 	if err := os.WriteFile(p, []byte(errLine+"\n"+`{"severity":"INFO","message":"i"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	r := runLoghorn(t, dir, f, "-filter")
+	r := runLoghorn(t, dir, nil, "open", p, "-filter")
 	if r.code != 0 || r.stdout != errLine+"\n" {
 		t.Errorf("code %d stdout %q, want 0 and the ERROR line; stderr %q", r.code, r.stdout, r.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".loghorn")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("reading a file created .loghorn (stat err %v)", err)
-	}
-}
-
-func TestWebWithFilterAllowed(t *testing.T) {
-	r := runLoghorn(t, t.TempDir(), nil, "-web", "-filter", "--", "sh", "-c", "echo hi")
-	if r.code != 0 || !strings.Contains(r.stderr, "web view at http://127.0.0.1:") {
-		t.Errorf("code %d stderr %q", r.code, r.stderr)
 	}
 }
 
@@ -407,30 +356,11 @@ func TestDisplayWarns(t *testing.T) {
 	}
 }
 
-// A busy -web port must fail before the store opens: opening can rebuild
-// days from text for most of a minute, and the run would then fail anyway
-// (review minor 3).
-func TestWebPortCheckedBeforeRebuild(t *testing.T) {
-	busy, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer busy.Close()
-	port := busy.Addr().(*net.TCPAddr).Port
-	dir := t.TempDir()
-	lh := filepath.Join(dir, ".loghorn")
-	if err := os.Mkdir(lh, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	line := `{"severity":"INFO","message":"stored","labels":{"schema":"app"}}` + "\n"
-	if err := os.WriteFile(filepath.Join(lh, "loghorn.log"), []byte(line), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	res := runLoghorn(t, dir, nil, "-web", "-web-port", strconv.Itoa(port), "--", "true")
-	if res.code != 1 || !strings.Contains(res.stderr, "loghorn: -web:") {
-		t.Fatalf("exit %d, want 1 with a -web error; stderr: %s", res.code, res.stderr)
-	}
-	if strings.Contains(res.stderr, "building DuckDB") {
-		t.Errorf("rebuilt from text before checking the port; stderr: %s", res.stderr)
+func TestOpenNeedsOneSource(t *testing.T) {
+	for _, args := range [][]string{{"open"}, {"open", "a.log", "-gh-job", "5"}, {"open", "a.log", "b.log"}} {
+		r := runLoghorn(t, t.TempDir(), nil, args...)
+		if r.code != 2 || !strings.Contains(r.stderr, "loghorn: open") {
+			t.Errorf("%q: code %d stderr %q", args, r.code, r.stderr)
+		}
 	}
 }

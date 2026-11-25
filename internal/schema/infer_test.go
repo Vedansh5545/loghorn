@@ -275,3 +275,50 @@ func TestInferAllStreams(t *testing.T) {
 		t.Errorf("mixed type = %v, want string", got)
 	}
 }
+
+func TestDefaultVisualizerStackPaths(t *testing.T) {
+	for _, p := range []string{"stack", "stacktrace", "stack_trace", "stackTrace", "error.stack", "exception.stacktrace", "otel.attributes.exception.stacktrace"} {
+		if got := DefaultVisualizer(p, TString); got != VMultiline {
+			t.Errorf("%s=%s want multiline", p, got)
+		}
+	}
+	for _, p := range []string{"stacks", "haystack", "stack.depth"} {
+		if got := DefaultVisualizer(p, TString); got == VMultiline {
+			t.Errorf("%s=multiline, want raw", p)
+		}
+	}
+	if got := DefaultVisualizer("stack", TJSON); got != VJSON {
+		t.Errorf("json stack=%s want json", got)
+	}
+}
+
+func TestInferMultilineStrings(t *testing.T) {
+	s := Infer("*", "", "a", []record.Record{
+		rec("a", map[string]any{"msg": "one line", "err": "boom\n", "sev": "INFO", "n": json.Number("1")}),
+		rec("a", map[string]any{"msg": "panic: x\n\ngoroutine 1 [running]:\nmain.main()", "err": "boom", "sev": "ERROR\n", "n": json.Number("2")}),
+	})
+	vis := func(p string) string {
+		f, ok := s.Field(p)
+		if !ok {
+			t.Fatalf("no field %q", p)
+		}
+		return f.Visualizer
+	}
+	if v := vis("msg"); v != VMultiline {
+		t.Errorf("msg=%s want multiline", v)
+	}
+	if v := vis("err"); v != VRaw {
+		t.Errorf("err=%s want raw", v)
+	}
+	if v := vis("n"); v != VNumber {
+		t.Errorf("n=%s want number", v)
+	}
+	// A path with its own visualizer keeps it.
+	s = Infer("*", "", "a", []record.Record{rec("a", map[string]any{"severity": "ERROR\nmore", "db.statement": "select 1\nfrom t"})})
+	if v := vis("severity"); v != VSeverity {
+		t.Errorf("severity=%s", v)
+	}
+	if v := vis("db.statement"); v != VSQL {
+		t.Errorf("db.statement=%s", v)
+	}
+}

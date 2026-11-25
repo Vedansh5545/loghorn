@@ -7,6 +7,7 @@ package wrap
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -31,11 +32,17 @@ type Options struct {
 	StripANSI      bool                                           // strip ANSI escape sequences from each framed record before recording
 	Filter         bool                                           // print only important records (raw + "\n") to Stdout instead of passing bytes through
 	Stdout, Stderr io.Writer
-	Grace          time.Duration    // after a forwarded SIGTERM, SIGKILL the child this much later
+	Grace          time.Duration    // after Ctrl-C or a forwarded SIGTERM, SIGKILL the child this much later
 	Signals        <-chan os.Signal // from NotifySignals; nil = no forwarding (tests)
 	Terminal       *os.File         // a PTY child's window-size source; nil = none
 	Drain          time.Duration    // how long output readers get after the child is reaped; 0 = DefaultDrain
+	Countdown      io.Writer        // a terminal for the shutdown countdown; nil = none
+	Name           string           // the command's name, for the countdown
 }
+
+// countdownAfter is how long a child may take to exit after Ctrl-C or SIGTERM
+// before the countdown to its kill is shown.
+const countdownAfter = 500 * time.Millisecond
 
 // NotifySignals routes the signals Run forwards or drops to a channel. Using
 // signal.Notify rather than signal.Ignore for SIGINT and SIGQUIT matters: an
@@ -75,19 +82,31 @@ func Run(c *runner.Child, o Options) int {
 		close(drained)
 	}()
 
-	var kill *time.Timer
+	// Ctrl-C (which the terminal also delivers to the child) and a forwarded
+	// SIGTERM both start the grace: a child still running at its end is
+	// killed. A second Ctrl-C kills it at once.
+	sd := shutdown{c: c, o: o}
+	defer sd.stop()
 wait:
 	for {
 		select {
 		case <-c.Exited():
 			break wait
+		case <-sd.show:
+			sd.startCountdown()
+		case <-sd.tick:
+			sd.printCountdown()
 		case sig := <-o.Signals:
 			switch sig {
+			case syscall.SIGINT:
+				if sd.started() {
+					sd.killNow()
+				} else {
+					sd.start()
+				}
 			case syscall.SIGTERM:
 				c.Signal(syscall.SIGTERM)
-				if kill == nil {
-					kill = time.AfterFunc(o.Grace, func() { c.Signal(syscall.SIGKILL) })
-				}
+				sd.start()
 			case syscall.SIGHUP:
 				c.Signal(syscall.SIGHUP)
 			case syscall.SIGWINCH:
@@ -95,13 +114,12 @@ wait:
 					c.InheritSize(o.Terminal)
 				}
 			}
-			// SIGINT and SIGQUIT are dropped: the terminal delivers them to
-			// the child directly, and loghorn outlives it to drain and record.
+			// SIGQUIT is dropped, and SIGINT is not forwarded: the terminal
+			// delivers them to the child directly, and loghorn outlives it to
+			// drain and record.
 		}
 	}
-	if kill != nil {
-		kill.Stop()
-	}
+	sd.finish()
 
 	// A grandchild can hold the output open long after the child exits; its
 	// readers are abandoned after the drain.
@@ -256,4 +274,100 @@ func stripANSI(rec []byte) []byte {
 		}
 	}
 	return out
+}
+
+// shutdown is the grace between Ctrl-C or SIGTERM and the child's kill, and
+// the countdown to it on a terminal. Run's loop owns it; only the kill timer
+// runs on its own goroutine.
+type shutdown struct {
+	c        *runner.Child
+	o        Options
+	kill     *time.Timer
+	deadline time.Time
+	killed   atomicBool
+
+	showTimer *time.Timer
+	show      <-chan time.Time
+	ticker    *time.Ticker
+	tick      <-chan time.Time
+	shown     bool
+}
+
+type atomicBool struct {
+	mu sync.Mutex
+	v  bool
+}
+
+func (b *atomicBool) set() { b.mu.Lock(); b.v = true; b.mu.Unlock() }
+func (b *atomicBool) get() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.v
+}
+
+func (s *shutdown) started() bool { return s.kill != nil }
+
+func (s *shutdown) start() {
+	if s.kill != nil {
+		return
+	}
+	s.deadline = time.Now().Add(s.o.Grace)
+	s.kill = time.AfterFunc(s.o.Grace, s.killNow)
+	if s.o.Countdown != nil && s.o.Grace > countdownAfter {
+		s.showTimer = time.NewTimer(countdownAfter)
+		s.show = s.showTimer.C
+	}
+}
+
+func (s *shutdown) killNow() {
+	s.killed.set()
+	s.c.Signal(syscall.SIGKILL)
+}
+
+func (s *shutdown) startCountdown() {
+	s.show = nil
+	s.shown = true
+	s.ticker = time.NewTicker(time.Second)
+	s.tick = s.ticker.C
+	s.printCountdown()
+}
+
+func (s *shutdown) printCountdown() {
+	left := time.Until(s.deadline).Round(time.Second)
+	if left < time.Second {
+		left = time.Second
+	}
+	fmt.Fprintf(s.o.Countdown, "\rloghorn: waiting for %s to exit; killing it in %ds\x1b[K", s.name(), int(left/time.Second))
+}
+
+// finish clears the countdown line, or says the child was killed.
+func (s *shutdown) finish() {
+	s.stop()
+	if s.o.Countdown == nil || !s.shown && !s.killed.get() {
+		return
+	}
+	if s.killed.get() {
+		fmt.Fprintf(s.o.Countdown, "\rloghorn: killed %s\x1b[K\n", s.name())
+		return
+	}
+	fmt.Fprint(s.o.Countdown, "\r\x1b[K")
+}
+
+func (s *shutdown) stop() {
+	if s.kill != nil {
+		s.kill.Stop()
+	}
+	if s.showTimer != nil {
+		s.showTimer.Stop()
+	}
+	if s.ticker != nil {
+		s.ticker.Stop()
+	}
+}
+
+func (s *shutdown) name() string {
+	if s.o.Name != "" {
+		return s.o.Name
+	}
+	return "the command"
 }

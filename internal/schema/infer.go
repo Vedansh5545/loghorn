@@ -69,11 +69,21 @@ func isUnitDuration(s string) bool {
 	return ok
 }
 
-// KindSet is a set of observed value kinds, one bit per kind.
+// KindSet is a set of observed value kinds, one bit per kind, plus Lines.
 type KindSet uint16
 
-// Classify returns the one-kind set of v.
-func Classify(v any) KindSet { return 1 << classify(v) }
+// Lines is set in a KindSet when some string value holds a newline, so a
+// string field shows as multiline text. It is not a kind: types ignore it.
+const Lines KindSet = 1 << 15
+
+// Classify returns the one-kind set of v, with Lines for a multiline string.
+func Classify(v any) KindSet {
+	k := KindSet(1) << classify(v)
+	if str, ok := v.(string); ok && Multiline(str) {
+		k |= Lines
+	}
+	return k
+}
 
 // Tally is what inference keeps per path: how many records hold the path
 // (nulls included) and the kinds of value seen.
@@ -89,7 +99,7 @@ func TallyType(path string, k KindSet) Type {
 	if path == "timestamp" || path == "receiveTimestamp" {
 		return TTimestamp
 	}
-	k &^= 1 << kNone
+	k &^= 1<<kNone | Lines
 	switch k {
 	case 1 << kInt:
 		return TInt
@@ -141,9 +151,13 @@ func FromTallies(source, stream string, tallies map[string]Tally) Schema {
 	s := Schema{Stream: stream, Source: source, Fields: make([]Field, 0, len(tallies))}
 	for path, a := range tallies {
 		t := TallyType(path, a.Kinds)
+		vis := DefaultVisualizer(path, t)
+		if vis == VRaw && t == TString && a.Kinds&Lines != 0 {
+			vis = VMultiline
+		}
 		s.Fields = append(s.Fields, Field{
 			Path: path, Type: t, Inferred: t, Count: a.Count,
-			Visualizer: DefaultVisualizer(path, t),
+			Visualizer: vis,
 		})
 	}
 	sort.Slice(s.Fields, func(i, j int) bool { return s.Fields[i].Path < s.Fields[j].Path })
@@ -229,7 +243,23 @@ func DefaultColumns(source string, fields []Field) []string {
 	return cols
 }
 
-// DefaultVisualizer picks how an unconfigured field is shown.
+// Multiline reports whether s has more than one line once trailing
+// whitespace is dropped: a message that ends in a newline is one line.
+func Multiline(s string) bool {
+	return strings.Contains(strings.TrimRight(s, " \t\r\n"), "\n")
+}
+
+// isStackPath is a path whose last segment names a stack trace: stack,
+// stacktrace or stack_trace in any case (exception.stacktrace, error.stack,
+// stackTrace).
+func isStackPath(path string) bool {
+	last := strings.ToLower(path[strings.LastIndex(path, ".")+1:])
+	return last == "stack" || last == "stacktrace" || last == "stack_trace"
+}
+
+// DefaultVisualizer picks how an unconfigured field is shown from its path
+// and type. Infer also shows a string field as multiline when one of its
+// values holds a newline; that needs the values, so it is not done here.
 func DefaultVisualizer(path string, t Type) string {
 	switch {
 	case path == "pid", path == "httpRequest.status":
@@ -246,6 +276,8 @@ func DefaultVisualizer(path string, t Type) string {
 		return VLink
 	case path == "db.query.text", path == "db.statement": // OTel's SQL text, current and older name
 		return VSQL
+	case t == TString && isStackPath(path):
+		return VMultiline
 	}
 	switch t {
 	case TInt, TFloat:
