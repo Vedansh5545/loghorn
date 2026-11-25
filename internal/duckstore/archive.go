@@ -233,18 +233,23 @@ func (e *Engine) archiveDay(p *part, day int) error {
 	if err == nil {
 		err = syncFile(tmp)
 	}
-	if err == nil {
-		os.Chmod(tmp, 0o600)
-		err = os.Rename(tmp, path)
-	}
 	if err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	// From here the archive holds the day; readers wait while the rows
+	os.Chmod(tmp, 0o600)
+	// Readers wait while the archive replaces any earlier one, the rows
 	// leave the file and the view starts reading the archive whole.
 	e.schemaMu.Lock()
 	defer e.schemaMu.Unlock()
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	// The rename must be on disk before the rows leave the file.
+	if err := syncFile(e.archiveDir()); err != nil {
+		return err
+	}
 	if !e.hasArchive(path) {
 		e.arch.files = append(e.arch.files, archiveFile{p.source, day, path})
 	}
@@ -283,6 +288,7 @@ func (e *Engine) validate(src, file string) error {
 	return nil
 }
 
+// syncFile flushes a file or directory to disk.
 func syncFile(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

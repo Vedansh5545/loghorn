@@ -139,8 +139,8 @@ func TestFilesAreOwnerOnly(t *testing.T) {
 func TestMetaPersists(t *testing.T) {
 	dir := t.TempDir()
 	e := openFiles(t, dir, true, nil)
-	if _, ok := e.Meta("imported"); ok {
-		t.Error("meta set in new files")
+	if v, err := e.Meta("imported"); err != nil || v != "" {
+		t.Errorf("meta in new files: %q, %v", v, err)
 	}
 	if err := e.SetMeta("imported", "1"); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,52 @@ func TestMetaPersists(t *testing.T) {
 	e.Close()
 	e = openFiles(t, dir, true, nil)
 	defer e.Close()
-	if v, ok := e.Meta("imported"); !ok || v != "1" {
-		t.Errorf("meta after reopen = %q, %v", v, ok)
+	if v, err := e.Meta("imported"); err != nil || v != "1" {
+		t.Errorf("meta after reopen = %q, %v", v, err)
+	}
+}
+
+// TestReaderReadsMeta: a reader sees the writer's marks (review: Important 2).
+func TestReaderReadsMeta(t *testing.T) {
+	dir := t.TempDir()
+	w := openFiles(t, dir, true, nil)
+	w.Close()
+	r := openFiles(t, dir, false, nil)
+	if v, err := r.Meta("imported"); err != nil || v != "" {
+		t.Errorf("unmarked: %q, %v", v, err)
+	}
+	r.Close()
+	w = openFiles(t, dir, true, nil)
+	w.SetMeta("imported", "1")
+	w.Close()
+	r = openFiles(t, dir, false, nil)
+	defer r.Close()
+	if v, err := r.Meta("imported"); err != nil || v != "1" {
+		t.Errorf("marked: %q, %v", v, err)
+	}
+}
+
+// TestSkippedRecordsUnmarkImport: records skipped for a full queue are
+// counted, and the files lose their imported mark so the next import
+// brings them back from text (review: Important 5).
+func TestSkippedRecordsUnmarkImport(t *testing.T) {
+	dir := t.TempDir()
+	var warns []string
+	e := openFiles(t, dir, true, func(m string) { warns = append(warns, m) })
+	e.SetMeta("imported", "1")
+	e.SetMaxQueue(1)
+	e.wmu.Lock() // the writer stalls, as during a long archive
+	for i := 1; i <= 3; i++ {
+		e.Add(withSeq(logRec(t, "s", "api", ``), i))
+	}
+	e.wmu.Unlock()
+	e.Close()
+	if !strings.Contains(strings.Join(warns, "\n"), "skipped") {
+		t.Errorf("warnings %q", warns)
+	}
+	r := openFiles(t, dir, false, nil)
+	defer r.Close()
+	if v, _ := r.Meta("imported"); v == "1" {
+		t.Error("files with skipped records still marked imported")
 	}
 }

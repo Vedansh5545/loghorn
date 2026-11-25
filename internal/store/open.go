@@ -32,16 +32,14 @@ type Options struct {
 	// -web): it owns the database files, writes and archives them.
 	Write bool
 	// DeferImport, with Write, is a run without -web: nothing reads the
-	// files this run, so a first import from text is left to the next
-	// writer with -web and the command starts at once (D-024). Records
-	// still go to the files; that import starts the files again from text.
+	// files this run, so an import from text is left to the next writer
+	// with -web and the command starts at once (D-027, adapting D-024).
+	// Records still go to the files; that import starts them again from
+	// text.
 	DeferImport bool
 	Now         func() time.Time // nil: time.Now
 	Warn        func(string)     // nil: print to stderr
 }
-
-// importedKey marks files whose first import from text finished.
-const importedKey = "imported"
 
 // Open opens a store over the retained days (today and KeepDays before).
 //
@@ -51,8 +49,9 @@ const importedKey = "imported"
 //     Closed days then move to Parquet archives, and expired ones go.
 //   - Live without Write: the owner has the files, so the retained days are
 //     read from their text into memory.
-//   - Otherwise (stored days): the files' records, copied into memory, or
-//     the text when there are no files or they can't be read.
+//   - Otherwise (stored days): the files' and archives' records, copied
+//     into memory, or the text when there are no files, they can't be
+//     read, or they don't hold every record yet (not marked imported).
 func Open(o Options) (*Store, error) {
 	if o.Now == nil {
 		o.Now = time.Now
@@ -77,11 +76,16 @@ func Open(o Options) (*Store, error) {
 		}
 		return openText(o, today)
 	}
+	if v, _ := e.Meta(duckstore.ImportedKey); v != "1" {
+		// The text has everything the files have, and more.
+		e.Close()
+		return openText(o, today)
+	}
 	return newStore(e, o), nil
 }
 
 func fileOptions(o Options, write bool) duckstore.FileOptions {
-	return duckstore.FileOptions{Dir: o.DBDir, Write: write, KeepDays: KeepDays, Now: o.Now}
+	return duckstore.FileOptions{Dir: o.DBDir, Write: write, KeepDays: KeepDays}
 }
 
 func newStore(e *duckstore.Engine, o Options) *Store {
@@ -97,7 +101,13 @@ func openWriter(o Options, today int) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if v, _ := e.Meta(importedKey); v != "1" && !o.DeferImport {
+	v, err := e.Meta(duckstore.ImportedKey)
+	if err != nil {
+		// Unreadable marks must not look like files to start again.
+		e.Close()
+		return nil, err
+	}
+	if v != "1" && !o.DeferImport {
 		if e.Count() > 0 || archived(o.DBDir) {
 			// Whatever is there came from text, which still has it.
 			e.Close()
@@ -107,9 +117,9 @@ func openWriter(o Options, today int) (*Store, error) {
 			}
 		}
 		s := newStore(e, o)
-		n := s.importText(o, today)
-		if !e.Failed() {
-			if err := e.SetMeta(importedKey, "1"); err != nil {
+		n, complete := s.importText(o, today)
+		if complete && !e.Failed() {
+			if err := e.SetMeta(duckstore.ImportedKey, "1"); err != nil {
 				o.Warn("loghorn: DuckDB: " + firstLine(err))
 			}
 		}
@@ -146,18 +156,21 @@ func (s *Store) ready(today int) *Store {
 	return s
 }
 
-// importText adds the retained days' text, each day with its own ids, and
-// returns how many records it added.
-func (s *Store) importText(o Options, today int) int {
+// importText adds the retained days' text, each day with its own ids. It
+// returns how many records it added and whether every file was read; an
+// incomplete import leaves the files unmarked, to be done again.
+func (s *Store) importText(o Options, today int) (n int, complete bool) {
 	before := s.e.Count()
+	complete = true
 	for d := today - KeepDays; d <= today; d++ {
 		if files := dayText(o.Dir, d); textBytes(files) > 0 {
 			if err := s.load(files, d, o.Input); err != nil {
-				o.Warn("loghorn: reading the text logs: " + firstLine(err))
+				o.Warn("loghorn: reading the text logs: " + firstLine(err) + "; the next start imports them again")
+				complete = false
 			}
 		}
 	}
-	return s.e.Count() - before
+	return s.e.Count() - before, complete
 }
 
 // openText reads the retained days' text into memory.

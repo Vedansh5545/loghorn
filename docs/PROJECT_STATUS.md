@@ -22,8 +22,9 @@ D-025 to D-029 are proposed until the author reviews the spec.
 | Plan for v2 | 2026-11-24 | Self-review against the spec | `ef02aa6` |
 | Tasks 1–4: fixed tables with JSON attributes, raw BLOB, two files, first import, `-db-dir` | 2026-11-24 | New tests failed first; `go test ./...`; all 8055 parity queries (`PARITY_FULL=1`) | `8c36168`, D-025–D-027, D-029 |
 | Task 5: closed days to Parquet | 2026-11-24 | Archive tests failed first; `-race` on duckstore, store | `47d97d0`, D-028 |
-| Task 6: measurements at 770k records | 2026-11-24 | `LOGHORN_SPEED=1` runs below | this commit |
-| Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | this commit |
+| Task 6: measurements at 770k records | 2026-11-24 | `LOGHORN_SPEED=1` runs below | `cedf198` |
+| Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | `cedf198` |
+| Whole-branch review fixes (below) | 2026-11-24 | Each Important finding's test failed first; `go test ./...`; `-race`; all 8055 parity queries | this commit |
 
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 
@@ -56,6 +57,31 @@ Medians of 5 warm runs, through the store as the web view calls it.
   archiving took 25 s and Parquet queries up to 660 ms. Real runs don't
   hold that copy.
 
+### Review findings (2026-11-24, independent review of `duckdb-storage..duckdb-v2`)
+
+No Critical findings. Fixed:
+- Important 1: a historical reader broke when the writer later deleted an
+  archive it read. Readers now copy archives into memory too
+  (`TestReaderSurvivesExpiredArchive`).
+- Important 2: a historical run trusted files a deferred writer had
+  started, showing only that run's records. It now reads the text unless
+  the files are marked imported (`TestReaderReadsMeta`,
+  `TestHistoricalNeedsImportedFiles`).
+- Important 3: a partial import was marked complete. The mark now needs
+  every text file read (`TestPartialImportIsNotMarked`).
+- Important 4: the archive's rename wasn't synced before the day's rows
+  were deleted. The directory is synced now.
+- Important 5: records skipped for a full queue (as during a long
+  midnight archive) were lost from DuckDB with one warning. They are
+  counted, warned about at Close, and clear the imported mark so the next
+  `-web` run imports them from text (`TestSkippedRecordsUnmarkImport`).
+- Minor: an unreadable mark no longer looks like files to start again;
+  RFC 3339 strings keep nanoseconds (`tsns`, `tsoff` cases); replacing an
+  archive and deleting its rows happen under one view lock; stale doc
+  comments fixed; unused `FileOptions.Now` removed.
+
+Left as known limits: below.
+
 ### Known limits and gaps
 
 - DuckDB files don't shrink: after archiving, `logs.duckdb` keeps its
@@ -68,6 +94,11 @@ Medians of 5 warm runs, through the store as the web view calls it.
   spelling, and arrays read as text keep `<`, `>`, `&` unescaped (D-025).
 - DuckDB's file lock is per process, so a second writer is kept out only
   across processes; tests can't check that in-process.
+- DuckDB creates a `.wal` with the process umask; loghorn makes it 0600
+  after each batch. In a `-db-dir` that others can read, a new WAL is
+  readable by them until then. Use an owner-only directory.
+- A string that isn't valid UTF-8 is queried with U+FFFD in place of the
+  bad bytes (D-025).
 
 ### Next actions
 

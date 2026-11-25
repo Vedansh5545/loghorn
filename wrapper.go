@@ -278,8 +278,8 @@ func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store
 }
 
 // liveStoreOptions opens dir for a live run. write is true for the lock
-// holder. Without -web nothing reads the database files this run, so a
-// first import from text is left to the next -web writer (D-024).
+// holder. Without -web nothing reads the database files this run, so an
+// import from text is left to the next -web writer (D-027).
 func liveStoreOptions(o opts, cfg config.Config, dir string, write bool) store.Options {
 	return store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir, DBDir: o.dbDir,
 		Write: write, DeferImport: write && !o.web}

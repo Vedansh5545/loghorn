@@ -96,10 +96,20 @@ func conv(c string, from schema.Type, to schema.Field) string {
 			return "(CASE WHEN " + c + " = trunc(" + c + ") AND abs(" + c + ") < 9.2e18 THEN " + epochIntSQL("CAST("+c+" AS BIGINT)", to.Unit) + " ELSE " + epochFloatSQL(c, to.Unit) + " END)"
 		case from == schema.TString:
 			s := trimSQL(c)
-			return "(CASE WHEN regexp_full_match(" + s + ", " + lit(rfc3339Re) + ") THEN CAST(TRY_CAST(" + s + " AS TIMESTAMPTZ) AT TIME ZONE 'UTC' AS TIMESTAMP_NS) END)"
+			return "(CASE WHEN regexp_full_match(" + s + ", " + lit(rfc3339Re) + ") THEN " + rfc3339SQL(s) + " END)"
 		}
 	}
 	return nullOf(t)
+}
+
+// rfc3339SQL is an RFC 3339 string (already matched) as UTC TIMESTAMP_NS,
+// keeping nanoseconds: TIMESTAMPTZ would round to microseconds.
+func rfc3339SQL(s string) string {
+	local := "TRY_CAST(replace(regexp_extract(" + s + ", '^(.*?)(Z|[+-][0-9]{2}:[0-9]{2})$', 1), 'T', ' ') AS TIMESTAMP_NS)"
+	off := "regexp_extract(" + s + ", '(Z|[+-][0-9]{2}:[0-9]{2})$', 1)"
+	secs := "(CASE WHEN " + off + " = 'Z' THEN 0 ELSE (CASE WHEN starts_with(" + off + ", '-') THEN -1 ELSE 1 END) * " +
+		"(CAST(substr(" + off + ", 2, 2) AS INTEGER) * 3600 + CAST(substr(" + off + ", 5, 2) AS INTEGER) * 60) END)"
+	return "(" + local + " - to_seconds(" + secs + "))"
 }
 
 // goSpace is what strings.TrimSpace trims (unicode.IsSpace); DuckDB's

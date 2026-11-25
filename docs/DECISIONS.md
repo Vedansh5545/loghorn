@@ -338,9 +338,10 @@ or has not yet answered.
 - **Consequences:** Each query parses `attributes` once per record
   (`json_extract` with every path at once). Known differences, tested by
   `TestRelationConvertsLikeConvert`: a number read as text gives DuckDB's
-  canonical spelling (`1.50` reads `1.5`, `1e3` reads `1000.0`), and an
-  array read as text keeps `<`, `>` and `&` where Go escapes them. All 8055
-  parity queries match.
+  canonical spelling (`1.50` reads `1.5`, `1e3` reads `1000.0`), an
+  array read as text keeps `<`, `>` and `&` where Go escapes them, and a
+  string that isn't valid UTF-8 reads with U+FFFD in place of the bad
+  bytes (`_raw` keeps them). All 8055 parity queries match.
 
 ## D-026 v2: `logs.duckdb` and `traces.duckdb`, owned by the lock holder (proposed)
 
@@ -348,8 +349,10 @@ or has not yet answered.
 - **Decision:** Two files, in `.loghorn/` by default or in `-db-dir`. The
   process holding `loghorn.lock` owns them. A live run without the lock
   reads the retained days' text into memory. A historical run copies the
-  files' rows into memory and detaches at once, so it never keeps the
-  owner out; the owner's open retries for two seconds meanwhile. `_id`
+  files' and archives' rows into memory and holds nothing open, so it
+  never keeps the owner out and outlives archives the owner later
+  replaces or deletes; the owner's open retries for two seconds meanwhile.
+  It reads the text instead when the files aren't marked imported. `_id`
   keeps the `day<<32 | seq` encoding, so a record's archive day needs no
   column.
 - **Why:** The v2 spec's single owning process. DuckDB locks a file per
@@ -371,11 +374,14 @@ or has not yet answered.
   than reparse text. Clearing before an import is safe because, until the
   mark is set, everything in the files came from text that still has it.
 - **Would supersede:** D-018, D-024 (adapted).
-- **Consequences / known gaps:** A crash loses at most the queued batch
-  from DuckDB (the text keeps it), and nothing brings it back. A run that
-  can't open the files (another process holds them past the retry) leaves
-  its records in text only. Whether to keep permanent text files is the
-  spec's open question.
+- **Consequences / known gaps:** The mark is set only when every text file
+  was read. A run that skips records (a full queue) or fails a file write
+  clears it at Close, with a warning, so the next `-web` writer imports
+  those records again from text. Not covered: a crash loses the queued
+  batch from DuckDB (the text keeps it) and leaves the mark set; a run
+  that can't open the files (another process holds them past the retry)
+  leaves its records in text only. Whether to keep permanent text files is
+  the spec's open question.
 
 ## D-028 v2: closed days archived to Parquet (proposed)
 
@@ -384,7 +390,8 @@ or has not yet answered.
   before today moves to `duckdb-archive/<logs|traces>-YYYY-MM-DD.parquet`
   (ZSTD). The export is written to `.tmp`, checked against its rows
   (count, min/max/sum of `_id`, XOR of hashes of `_raw` and
-  `attributes`), synced, renamed, and only then deleted from the file.
+  `attributes`), synced, renamed (and the directory synced), and only then
+  deleted from the file.
   Archives and tallies older than 3 days before today (the text's
   retention) are deleted.
 - **Why:** The v2 spec's basic archival. One file per signal per day

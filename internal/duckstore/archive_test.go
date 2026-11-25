@@ -217,3 +217,21 @@ func TestReaderSeesArchives(t *testing.T) {
 		t.Errorf("reader sees %d records, want 3", n)
 	}
 }
+
+// TestReaderSurvivesExpiredArchive: a reader keeps working after the writer
+// deletes an archive it read (review: Important 1).
+func TestReaderSurvivesExpiredArchive(t *testing.T) {
+	dir := t.TempDir()
+	w := openFiles(t, dir, true, nil)
+	twoDays(t, w)
+	w.Archive(archDay)
+	w.Close()
+	r := openFiles(t, dir, false, nil)
+	defer r.Close()
+	w = openFiles(t, dir, true, nil)
+	w.Archive(archDay + 4) // expires both archived days
+	w.Close()
+	if n := r.Count(); n != 3 {
+		t.Errorf("reader sees %d records after the archives went, want 3", n)
+	}
+}

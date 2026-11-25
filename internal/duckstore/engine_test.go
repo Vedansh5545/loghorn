@@ -279,6 +279,7 @@ func TestRelationConvertsLikeConvert(t *testing.T) {
 		"tabint": `"\t12\n"`, "tabfloat": `"\r\n2.5\t"`, "tabbool": `"\ttrue\n"`, "tabdur": `"\t1m30s\n"`,
 		"tabts": `"\n2026-11-23T10:00:00.5Z\t"`, "nbspint": `" 12　"`,
 		// Past BIGINT, spelled unusually, empty, nested, and false.
+		"tsns": `"2026-11-23T10:00:00.123456789Z"`, "tsoff": `"2026-11-23T12:00:00.123456789+02:00"`,
 		"big": `18446744073709551615`, "exp": `1e3`, "zeros": `1.50`, "null": `null`, "empty": `""`,
 		"obj": `[{"a":"<b>"}]`, "false": `false`,
 	}

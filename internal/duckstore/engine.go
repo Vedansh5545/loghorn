@@ -61,9 +61,10 @@ type Engine struct {
 	wdone     chan struct{}
 	maxQueue  int  // MaxQueue, unless SetMaxQueue changed it
 	overflow  bool // the queue overflowed (warned once)
+	skipped   int  // records skipped for DuckDB this run
 
-	// Writer state: touched only by the writer goroutine (holding wmu), or
-	// before it starts and after it stops.
+	// Writer state: touched with wmu held (the writer goroutine, Archive,
+	// SetMeta, Failed), or before the writer starts and after it stops.
 	wmu    sync.Mutex
 	parts  []*part          // every table holding records
 	dest   map[string]*part // source -> the table new records go to
@@ -75,6 +76,7 @@ type Engine struct {
 	failWrites, failArchive bool
 	warned                  map[string]bool // warnings already given
 	arch                    archiveState
+	meta                    map[string]string // a reader's copy of the files' marks
 
 	// schemaMu keeps queries off the views while the writer changes what
 	// they read (archiving a day).
@@ -163,7 +165,7 @@ func (e *Engine) Version() uint64 { return e.version.Load() }
 
 // Add queues r for writing; r.Seq is its _id. It never blocks on DuckDB:
 // past the queue bound the record is skipped for DuckDB (live input, whose
-// text log keeps it).
+// text log keeps it) and counted (see closeFiles).
 func (e *Engine) Add(r record.Record) { e.add(r, false) }
 
 // AddWait is Add for input with no text log behind it (replays, loading
@@ -183,6 +185,7 @@ func (e *Engine) add(r record.Record, wait bool) {
 	}
 	if len(e.queue) >= e.maxQueue {
 		e.committed++
+		e.skipped++
 		if !e.overflow {
 			e.overflow = true
 			e.warn("loghorn: DuckDB writer is behind; skipping records for DuckDB (the text log keeps them)")

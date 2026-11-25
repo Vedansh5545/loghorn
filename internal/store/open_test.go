@@ -266,3 +266,42 @@ func TestWriterArchivesClosedDays(t *testing.T) {
 		t.Error("today was archived")
 	}
 }
+
+// TestHistoricalNeedsImportedFiles: files a deferred writer started hold
+// only that run's records, so a historical run reads the text (review:
+// Important 2).
+func TestHistoricalNeedsImportedFiles(t *testing.T) {
+	dir := textDir(t)
+	d, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, DeferImport: true, Now: func() time.Time { return dayNow }, Warn: func(string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Add(logRecord(t, logLine(9, dayNow)), dayNow)
+	d.Close()
+	h := openStore(t, dir, ModeHistorical, false)
+	defer h.s.Close()
+	if n := total(h.s); n != 6 {
+		t.Errorf("records = %d, want the 6 in the text", n)
+	}
+}
+
+// TestPartialImportIsNotMarked: a day whose text can't be read leaves the
+// files unmarked, so the next writer imports again (review: Important 3).
+func TestPartialImportIsNotMarked(t *testing.T) {
+	dir := textDir(t)
+	y := filepath.Join(dir, "loghorn-2026-11-22.log")
+	if err := os.Chmod(y, 0); err != nil {
+		t.Fatal(err)
+	}
+	w := openStore(t, dir, ModeLive, true)
+	if v, _ := w.s.e.Meta("imported"); v == "1" {
+		t.Error("a partial import was marked complete")
+	}
+	w.s.Close()
+	os.Chmod(y, 0o600)
+	again := openStore(t, dir, ModeLive, true)
+	defer again.s.Close()
+	if n := total(again.s); n != 6 {
+		t.Errorf("after the retry: %d records, want 6", n)
+	}
+}
