@@ -12,7 +12,7 @@ The goal is a small, working DuckDB-backed implementation for an individual deve
 
 ## Goals
 
-- Store logs and spans in DuckDB; metrics remain out of scope. Start with separate files for the two signals, as discussed with Jim. The separation is provisional.
+- Store logs and spans in DuckDB, together in one table in one database file; metrics remain out of scope.
 - Provide a common SQL interface for querying both signals and correlating traces across services. Preserve the existing web UI and REST API contracts during migration.
 - Reduce startup processing by reusing persisted records rather than reparsing historical text or loading all records into Go memory.
 - Preserve original captured records for new field discovery, schema changes, and historical reprocessing.
@@ -27,17 +27,17 @@ Keep query semantics, counts, record identity, and trace relationships correct. 
 
 ## Approach
 
-Start with a simplified Layout A: two tables in all, `logs` and `spans`, with the same columns. Common attributes are typed columns, and every other attribute is kept together in one JSON `attributes` column. There is no table per attribute, service or stream, so reconstructing a record needs no JOIN; `all_records` is a UNION ALL of the two tables and the Parquet archives. This is a proposed choice for review. Avoid dynamic schemas per service, tables per stream, automatic column creation, and type-widening rewrites. Jim's unified-table Layout D and the original typed-table Layout B remain alternatives if a concrete need emerges.
+Use a single table, `records`, for both logs and spans (Jim's unified-table Layout D). Common attributes are typed columns, and every other attribute is kept together in one JSON `attributes` column; `_source` tells logs from spans. There is no table per signal, attribute, service or stream, so reconstructing a record needs no JOIN. Avoid dynamic schemas per service, automatic column creation, and type-widening rewrites. The original typed-table Layout B remains an alternative if a concrete need emerges.
 
 ## Design
 
 ### Files and ownership
 
-Use `logs.duckdb` and `traces.duckdb` for active data. A configurable user-local storage directory outside repositories is the proposed direction; its exact location and migration from `.loghorn/` remain open. Retain service and project provenance where available. The `loghorn serve` process is the single owner: it writes the active files and serves queries. Other processes send it OpenTelemetry rather than opening the database files themselves.
+Use one database file, `loghorn.duckdb`, for active data. A configurable user-local storage directory outside repositories is the proposed direction; its exact location and migration from `.loghorn/` remain open. Retain service and project provenance where available. The `loghorn serve` process is the single owner: it writes the database and serves queries. Other processes send it OpenTelemetry rather than opening the database file themselves.
 
 ### Tables and common query interface
 
-Use the following fixed logical fields in both signal tables, with NULL where a field does not apply:
+The `records` table has the following fixed columns, with NULL where a field does not apply to a record's signal:
 
 | Field | Type / purpose |
 |---|---|
@@ -49,7 +49,7 @@ Use the following fixed logical fields in both signal tables, with NULL where a 
 | `attributes` | JSON; other normalized field paths and values |
 | `_raw` | Original captured record, preserved losslessly |
 
-Use `all_records`, a logical UNION ALL view with explicit compatible columns over the signal tables. Filter by service and stream values rather than creating new physical tables or per-stream views. The existing Go `record.Record` remains the application-level representation. Custom fields are extracted and converted safely from JSON; values that fail conversion remain available in the raw data.
+Use `all_records`, a logical UNION ALL view with explicit compatible columns over the `records` table and the Parquet archives. Filter by service and stream values rather than creating new physical tables or per-stream views. The existing Go `record.Record` remains the application-level representation. Custom fields are extracted and converted safely from JSON; values that fail conversion remain available in the raw data.
 
 ### Original records and schema discovery
 
@@ -63,7 +63,7 @@ Retain existing text files and the writer during migration until raw-record comp
 
 ### Parquet historical storage
 
-Keep active records in DuckDB. Export committed records from closed periods to Parquet, including raw records, effective metadata and identifiers. Start with one archive per signal per closed period rather than per service/stream; avoid excessive small files. The Parquet physical schema need not mirror DuckDB’s schema, provided the canonical fields are compatible.
+Keep active records in DuckDB. Export committed records from closed periods to Parquet, including raw records, effective metadata and identifiers. Start with one archive per closed period, holding both signals, rather than per signal, service or stream; avoid excessive small files. The Parquet physical schema need not mirror DuckDB’s schema, provided the canonical fields are compatible.
 
 Read active and archived records through DuckDB. Validate an archive before publishing it (row counts, identifiers, representative raw values). Avoid duplicate reads and retain original data if export fails. Remove archived hot records only after validation and safe retention rules are established. Basic archival is part of this design, not an indefinite deferred goal.
 
@@ -75,10 +75,10 @@ Use simple batched writes if necessary, keep writes off the query path where pra
 
 ## Implementation milestones
 
-1. **Basic DuckDB prototype:** create fixed tables in two files, ingest representative logs and spans, retain raw records, query through `all_records`, and demonstrate restart persistence.
+1. **Basic DuckDB prototype:** create the fixed `records` table in one file, ingest representative logs and spans, retain raw records, query through `all_records`, and demonstrate restart persistence.
 2. **Minimal integration:** connect the existing normalizers and basic web query path. Verify filters, record details, and trace correlation. Extend remaining endpoints incrementally.
 3. **Basic Parquet path:** export a closed period safely, query historical plus active records without duplicates, and verify historical raw-record reprocessing.
-4. **Review:** measure representative workloads. Investigate a single database, unified table, promoted fields, or other changes only when a concrete issue warrants them.
+4. **Review:** measure representative workloads. Investigate separate signal tables or files, promoted fields, or other changes only when a concrete issue warrants them.
 
 ## Testing and acceptance
 
@@ -88,6 +88,6 @@ Verify restart persistence, raw preservation, schema reinterpretation, archive r
 
 ## Decisions and open questions
 
-Confirm with Jim: the initial fixed signal-table layout; exact storage directory and owner model; the need for separate original text files after recovery testing; retention and archive boundaries; and numerical/query-latency expectations. Reconcile the earlier decisions on dynamic tables, per-repository storage, permanent text persistence and exact parity in `docs/DECISIONS.md` after review. Driver choice, batching, and exact SQL are left to the builder.
+Confirm with Jim: exact storage directory and owner model; the need for separate original text files after recovery testing; retention and archive boundaries; and numerical/query-latency expectations. Reconcile the earlier decisions on dynamic tables, per-repository storage, permanent text persistence and exact parity in `docs/DECISIONS.md` after review. Driver choice, batching, and exact SQL are left to the builder.
 
 Basis: original DuckDB storage design (2026-11-23), Jim’s review comments, and `docs/superpowers/specs/2026-11-19-architecture-working-notes.md` in Loghorn. The revised design is a proposal, not an implementation or benchmark result.
