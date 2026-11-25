@@ -201,7 +201,7 @@ func (e *Engine) closeFiles() error {
 	e.mu.Unlock()
 	if skipped > 0 || e.failed {
 		if skipped > 0 {
-			e.warn(fmt.Sprintf("loghorn: DuckDB skipped %d records this run; the next -web run imports them again from the text logs", skipped))
+			e.warn(fmt.Sprintf("loghorn: DuckDB skipped %d records this run; loghorn serve imports them again from the text logs when it next starts", skipped))
 		}
 		errs = append(errs, e.setMeta(ImportedKey, "0"))
 	}
