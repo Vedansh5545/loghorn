@@ -1,7 +1,9 @@
 package duckstore
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -133,32 +135,90 @@ func TestTalliesGiveInferSchema(t *testing.T) {
 	}
 }
 
-func TestWideningKeepsTextAsReceived(t *testing.T) {
+// TestNumbersAsTextAreCanonical: read as text, a number gives its JSON
+// form, which can differ from the line's spelling (1.50 reads "1.5").
+func TestNumbersAsTextAreCanonical(t *testing.T) {
 	g := newRig(t)
-	g.add(logRec(t, "s", "api", `,"v":5`))
-	if typ := g.colType("s", "api", "v"); typ != "BIGINT" {
-		t.Fatalf("after int: %s", typ)
-	}
-	g.add(logRec(t, "s", "api", `,"v":1.50`))
-	if typ := g.colType("s", "api", "v"); typ != "DOUBLE" {
-		t.Fatalf("after float: %s", typ)
-	}
-	g.add(logRec(t, "s", "api", `,"v":"x"`))
-	if typ := g.colType("s", "api", "v"); typ != "VARCHAR" {
-		t.Fatalf("after string: %s", typ)
-	}
+	g.add(logRec(t, "s", "api", `,"v":5`), logRec(t, "s", "api", `,"v":1.50`), logRec(t, "s", "api", `,"v":"x"`))
 	vals, _ := g.relation(record.SourceLog, "s", "api", schema.Field{Path: "v", Type: schema.TString})
-	want := []any{"5", "1.50", "x"}
+	want := []any{"5", "1.5", "x"}
 	if !reflect.DeepEqual(vals, want) {
 		t.Errorf("values %v, want %v", vals, want)
 	}
 }
 
-func (g *rig) colType(svc, table, col string) string {
-	g.t.Helper()
-	v := g.one(`SELECT data_type FROM duckdb_columns() WHERE database_name = 'lmem' AND schema_name = ? AND table_name = ? AND column_name = ?`, svc, table, col)
-	s, _ := v.(string)
-	return s
+// TestRawIsLossless: a line that is not valid UTF-8 is kept byte for byte.
+func TestRawIsLossless(t *testing.T) {
+	g := newRig(t)
+	r := logRec(t, "s", "api", ``)
+	r.Raw = append([]byte(`{"labels":{"schema":"api"},"m":"`), 0xff, 0x00, '"', '}')
+	g.add(r)
+	var raw []byte
+	if err := g.e.DB().QueryRow(`SELECT _raw FROM all_records`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, r.Raw) {
+		t.Errorf("_raw = %q, want %q", raw, r.Raw)
+	}
+}
+
+// TestUntimedRecordIsStored: a record with no time keeps its day in _id.
+func TestUntimedRecordIsStored(t *testing.T) {
+	g := newRig(t)
+	r := logRec(t, "s", "api", ``)
+	r.Time, r.Seq = time.Time{}, 5<<32+1
+	g.e.Add(r)
+	g.e.Sync(5 * time.Second)
+	if v := g.one(`SELECT _time IS NULL FROM all_records`); v != true {
+		t.Errorf("_time IS NULL = %v", v)
+	}
+	recs, err := g.e.Records(context.Background(), "true")
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("records %v, %v", recs, err)
+	}
+	if recs[0].Seq != 5<<32+1 || !recs[0].Time.IsZero() {
+		t.Errorf("got seq %d time %v", recs[0].Seq, recs[0].Time)
+	}
+}
+
+func spanRec(t *testing.T, line string) record.Record {
+	t.Helper()
+	r, ok := record.NormalizeSpan([]byte(line))
+	if !ok {
+		t.Fatalf("not a span: %s", line)
+	}
+	return r
+}
+
+// TestCommonColumns: the fixed columns are filled from the fields.
+func TestCommonColumns(t *testing.T) {
+	g := newRig(t)
+	g.add(
+		spanRec(t, `{"trace_id":"0AF7651916CD43DD8448EB211C80319C","span_id":"A000000000000002","parent_span_id":"a000000000000001","name":"chat","kind":"client","start":"2026-11-17T17:01:01.000Z","end":"2026-11-17T17:01:02.500Z","duration_ms":1500,"status":"error","service.name":"svc"}`),
+		logRec(t, "s", "api", `,"trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"a000000000000002"`),
+	)
+	type row struct {
+		trace, span, parent, sev, msg sql.NullString
+		dur                           sql.NullFloat64
+	}
+	read := func(src string) row {
+		var r row
+		if err := g.e.DB().QueryRow(`SELECT trace_id, span_id, parent_span_id, severity, message, duration_ms FROM all_records WHERE _source = ?`, src).
+			Scan(&r.trace, &r.span, &r.parent, &r.sev, &r.msg, &r.dur); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	sp := read(record.SourceOtel)
+	if sp.trace.String != "0af7651916cd43dd8448eb211c80319c" || sp.span.String != "a000000000000002" || sp.parent.String != "a000000000000001" ||
+		sp.sev.String != "ERROR" || sp.msg.String != "chat" || sp.dur.Float64 != 1500 {
+		t.Errorf("span row %+v", sp)
+	}
+	lg := read(record.SourceLog)
+	if lg.trace.String != "0af7651916cd43dd8448eb211c80319c" || lg.span.String != "a000000000000002" || lg.parent.Valid ||
+		lg.sev.String != "INFO" || lg.msg.String != "m" || lg.dur.Valid {
+		t.Errorf("log row %+v", lg)
+	}
 }
 
 func TestBadValueIsNullAndFlagged(t *testing.T) {
@@ -218,6 +278,9 @@ func TestRelationConvertsLikeConvert(t *testing.T) {
 		// Go's TrimSpace also trims tabs, newlines and Unicode spaces.
 		"tabint": `"\t12\n"`, "tabfloat": `"\r\n2.5\t"`, "tabbool": `"\ttrue\n"`, "tabdur": `"\t1m30s\n"`,
 		"tabts": `"\n2026-11-23T10:00:00.5Z\t"`, "nbspint": `" 12　"`,
+		// Past BIGINT, spelled unusually, empty, nested, and false.
+		"big": `18446744073709551615`, "exp": `1e3`, "zeros": `1.50`, "null": `null`, "empty": `""`,
+		"obj": `[{"a":"<b>"}]`, "false": `false`,
 	}
 	for svc, v := range stored {
 		g.add(logRec(t, svc, "conv", `,"f":`+v))
@@ -255,17 +318,21 @@ func TestRelationConvertsLikeConvert(t *testing.T) {
 	}
 }
 
-// knownDifference lists the stored → effective pairs where the original text
-// is needed to match Convert, which typed columns don't keep (D-011 #1).
+// knownDifference lists the values whose text DuckDB's JSON re-spells when
+// read as text: a number with an exponent or trailing zeros gives its
+// canonical form (TestNumbersAsTextAreCanonical), and an array keeps <, >
+// and & where Go's encoder escapes them. The JSON means the same.
 func knownDifference(stored, eff schema.Type, raw any) bool {
-	if stored == eff {
+	if eff != schema.TString && eff != schema.TJSON {
 		return false
 	}
-	switch {
-	case eff == schema.TString || eff == schema.TJSON:
-		return stored == schema.TFloat || stored == schema.TTimestamp || stored == schema.TDuration
-	case stored == schema.TFloat && eff == schema.TInt:
-		return true
+	switch x := raw.(type) {
+	case json.Number:
+		s := x.String()
+		return strings.ContainsAny(s, "eE") || (strings.Contains(s, ".") && strings.HasSuffix(s, "0") && !strings.HasSuffix(s, ".0"))
+	case []any:
+		b, _ := json.Marshal(x)
+		return strings.Contains(string(b), `\u00`)
 	}
 	return false
 }

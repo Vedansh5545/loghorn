@@ -61,7 +61,7 @@ func runReplay(m mode, o opts, cfg config.Config, cwd string) int {
 		mode, runStart := webStoreMode(kind == kindHistorical, gh, kind == kindFile, time.Now())
 		if kind == kindHistorical {
 			if dir, err := logDir(); err == nil {
-				if st, err = store.Open(store.Options{Mode: mode, Input: cfg.Input, Dir: dir}); err == nil {
+				if st, err = store.Open(store.Options{Mode: mode, Input: cfg.Input, Dir: dir, DBDir: o.dbDir}); err == nil {
 					fromDays = true
 				} else {
 					fmt.Fprintln(os.Stderr, "loghorn: DuckDB:", err)

@@ -10,9 +10,9 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/query"
 )
 
-// TestQueriesDuringRetype: queries keep answering while the writer widens
-// columns from int to string under them.
-func TestQueriesDuringRetype(t *testing.T) {
+// TestQueriesWhileKindsChange: queries keep answering while the fields they
+// read change from numbers to text in the records being written.
+func TestQueriesWhileKindsChange(t *testing.T) {
 	s := New(ModeHistorical, time.Time{})
 	defer s.Close()
 	const fields = 40

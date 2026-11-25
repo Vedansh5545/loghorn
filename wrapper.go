@@ -255,8 +255,8 @@ func (w *webServer) close() {
 }
 
 // openLiveStore opens the DuckDB store of a live run. The log file's lock
-// holder writes the day files, with or without -web (D-006); another run
-// with -web reads them. Without either there is no store. A failure is
+// holder owns the database files, with or without -web (D-006); another run
+// with -web reads the text. Without either there is no store. A failure is
 // reported; -web then falls back to a store in memory.
 func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store {
 	if logs == nil && !o.web {
@@ -278,15 +278,14 @@ func openLiveStore(o opts, cfg config.Config, logs *logfile.Writer) *store.Store
 }
 
 // liveStoreOptions opens dir for a live run. write is true for the lock
-// holder. Without -web nothing reads the day files this run, so rebuilding
-// them from text is left to the next -web writer (D-024).
+// holder. Without -web nothing reads the database files this run, so a
+// first import from text is left to the next -web writer (D-024).
 func liveStoreOptions(o opts, cfg config.Config, dir string, write bool) store.Options {
-	return store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir,
-		Write: write, DeferBuild: write && !o.web}
+	return store.Options{Mode: store.ModeLive, RunStart: time.Now(), Input: cfg.Input, Dir: dir, DBDir: o.dbDir,
+		Write: write, DeferImport: write && !o.web}
 }
 
-// closeStore closes the store after the log file, so the day files record
-// the text files' final sizes.
+// closeStore closes the store after the log file.
 func closeStore(st *store.Store) {
 	if st != nil {
 		if err := st.Close(); err != nil {

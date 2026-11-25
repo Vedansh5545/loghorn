@@ -179,19 +179,20 @@ func TestSpanSinkAddsWhenFileFails(t *testing.T) {
 	}
 }
 
-// A live run without -web writes the day files but defers rebuilding them
-// (D-024): rebuilding can take most of a minute before the child starts.
-func TestLiveStoreOptionsDeferBuildWithoutWeb(t *testing.T) {
+// A live run without -web writes the database files but leaves a first
+// import from text to the next -web run (D-024): importing can take most of
+// a minute before the child starts. -db-dir picks where the files go.
+func TestLiveStoreOptions(t *testing.T) {
 	for _, tc := range []struct {
-		web, write, deferBuild bool
+		web, write, deferImport bool
 	}{
-		{web: false, write: true, deferBuild: true},
-		{web: true, write: true, deferBuild: false},
-		{web: true, write: false, deferBuild: false},
+		{web: false, write: true, deferImport: true},
+		{web: true, write: true, deferImport: false},
+		{web: true, write: false, deferImport: false},
 	} {
-		got := liveStoreOptions(opts{web: tc.web}, config.Config{}, "/x/.loghorn", tc.write)
-		if got.Write != tc.write || got.DeferBuild != tc.deferBuild || got.Dir != "/x/.loghorn" || got.Mode != store.ModeLive {
-			t.Errorf("web=%v write=%v: options %+v, want Write=%v DeferBuild=%v", tc.web, tc.write, got, tc.write, tc.deferBuild)
+		got := liveStoreOptions(opts{web: tc.web, dbDir: "/db"}, config.Config{}, "/x/.loghorn", tc.write)
+		if got.Write != tc.write || got.DeferImport != tc.deferImport || got.Dir != "/x/.loghorn" || got.DBDir != "/db" || got.Mode != store.ModeLive {
+			t.Errorf("web=%v write=%v: options %+v, want Write=%v DeferImport=%v", tc.web, tc.write, got, tc.write, tc.deferImport)
 		}
 	}
 }

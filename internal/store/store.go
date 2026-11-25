@@ -182,7 +182,7 @@ func (s *Store) Close() error {
 }
 
 // read waits briefly for records added before it, then keeps the writer
-// from changing catalogs (a type change, midnight) until unlock. Within
+// from changing the views (archiving a day) until unlock. Within
 // readWait of a wait that timed out the writer is still behind, so reads
 // don't wait again: a request making two reads waits once.
 func (s *Store) read() (unlock func()) {
@@ -385,7 +385,7 @@ func (s *Store) SpanRecords(spanID string) []record.Record {
 		return nil
 	}
 	defer s.read()()
-	recs, _ := s.e.Records(context.Background(), "_span_id = ?", id)
+	recs, _ := s.e.Records(context.Background(), "span_id = ?", id)
 	return recs
 }
 
@@ -396,7 +396,7 @@ func (s *Store) TraceRecords(traceID string) []record.Record {
 		return nil
 	}
 	defer s.read()()
-	recs, _ := s.e.Records(context.Background(), "_trace_id = ?", id)
+	recs, _ := s.e.Records(context.Background(), "trace_id = ?", id)
 	return recs
 }
 
@@ -406,7 +406,7 @@ func (s *Store) TraceRecords(traceID string) []record.Record {
 func (s *Store) AggregateRecords(name string) []record.Record {
 	defer s.read()()
 	recs, _ := s.e.Records(context.Background(),
-		"_source = 'otel' AND (_trace_id IN (SELECT _trace_id FROM all_records WHERE _source = 'otel' AND _name = ? AND _span_id IS NOT NULL AND _trace_id IS NOT NULL)"+
-			" OR _span_id IN (SELECT _parent_span_id FROM all_records WHERE _source = 'otel' AND _name = ? AND _parent_span_id IS NOT NULL))", name, name)
+		"_source = 'otel' AND (trace_id IN (SELECT trace_id FROM all_records WHERE _source = 'otel' AND message = ? AND span_id IS NOT NULL AND trace_id IS NOT NULL)"+
+			" OR span_id IN (SELECT parent_span_id FROM all_records WHERE _source = 'otel' AND message = ? AND parent_span_id IS NOT NULL))", name, name)
 	return recs
 }

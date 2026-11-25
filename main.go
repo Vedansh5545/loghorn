@@ -115,6 +115,7 @@ type opts struct {
 	web          bool
 	otel         bool
 	webPort      int
+	dbDir        string
 	args         []string
 }
 
@@ -134,6 +135,7 @@ func parseFlags() opts {
 	flag.BoolVar(&o.otel, "otel", false, "receive the command's OTLP/HTTP logs and traces on 127.0.0.1 and record them (needs -- <command>)")
 	flag.BoolVar(&o.web, "web", false, "serve the web query view on 127.0.0.1 and print its URL to stderr")
 	flag.IntVar(&o.webPort, "web-port", 0, "port for -web (0 picks a free one)")
+	flag.StringVar(&o.dbDir, "db-dir", "", "directory for the DuckDB files and their Parquet archive (default: the .loghorn directory)")
 	flag.Usage = usage
 	flag.Parse()
 	o.args = flag.Args()

@@ -14,7 +14,7 @@
 
 - Build and test on macOS with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`.
 - Keep the web UI and REST contracts; `query.Run` stays the reference, and the parity test (`PARITY_FULL=1`) must pass or each difference must be documented.
-- Fixed fields in both tables: `_id` BIGINT, `_time` TIMESTAMP_NS (UTC), `_time_inherited` BOOLEAN, `_source`, `_service`, `_stream`, `trace_id`, `span_id`, `parent_span_id`, `severity`, `message` VARCHAR, `duration_ms` DOUBLE, `attributes` JSON, `_raw` (lossless). One added internal column, `_day` INTEGER (`store.DayNumber` of the record), sets the archive period.
+- Fixed fields in both tables: `_id` BIGINT, `_time` TIMESTAMP_NS (UTC), `_time_inherited` BOOLEAN, `_source`, `_service`, `_stream`, `trace_id`, `span_id`, `parent_span_id`, `severity`, `message` VARCHAR, `duration_ms` DOUBLE, `attributes` JSON, `_raw` (lossless). `_id` keeps the existing encoding `day<<32 | seq` (day = `store.DayNumber`), so `_id >> 32` is a record's archive period and no extra column is needed.
 - No tables per stream, no columns added at run time, no type-widening rewrites.
 - Do not delete text logs or change the text writer, `internal/ingest`, `internal/otlp` or `internal/recorder`.
 - Nothing may `os.Exit` after the child process starts. Tests never write to the repo's `.loghorn/`.
@@ -41,14 +41,14 @@
 
 **Interfaces:**
 - Produces: `OpenMemory(in config.Input, warn func(string)) (*Engine, error)`; `(*Engine) Add(r record.Record)`, `AddWait`, `Sync(time.Duration) bool`, `Close() error`, `ReadLock() func()`, `DB() *sql.DB`, `QueryContext`, `Version() uint64`, `SetTime`, `SetMaxQueue`; `Records(ctx, where string, args ...any) ([]record.Record, error)` with `where` over `all_records` columns; `Rebuild(id int64, t time.Time, inherited bool, service, source, stream, raw string) record.Record`.
-- Tables: `logs` and `spans`, each with the fixed fields plus `_day`. The view `memory.main.all_records` is `logs UNION ALL spans` (plus archives, Task 5).
+- Tables: `logs` and `spans`, each with the fixed fields. The view `memory.main.all_records` is `logs UNION ALL spans` (plus archives, Task 5).
 - `attributes` is `record.Fields` encoded as one flat JSON object (dotted path keys), using `json.Encoder` with `SetEscapeHTML(false)`; `json.Number` stays a JSON number.
 - Common fields: `trace_id`/`span_id` from `record.TraceRef`; `parent_span_id` (normalized) and `message` = span `name` for spans; for logs `severity` = `Fields["severity"]`, `message` = `Fields["message"]`; `duration_ms` = span `duration_ms` field when numeric.
 
 - [ ] **Step 1: Write the failing tests**
   - `TestRecordsRoundTrip`: add a log and a span; `Records(ctx, "true")` returns both, in `_id` order, with equal `Seq`, `Time`, `Service`, `Stream`, `Source`, `Fields` and `Raw`.
   - `TestRawIsLossless`: raw `"{\"labels\":{\"schema\":\"s\"},\"m\":\"\xff\x00\"}"` (invalid UTF-8) is stored and read back byte for byte from `_raw`.
-  - `TestUntimedRecordIsStored`: a record with zero `Time` is stored with NULL `_time` and its `_day`, and is returned by `Records`.
+  - `TestUntimedRecordIsStored`: a record with zero `Time` is stored with NULL `_time`, keeps its day in `_id`, and is returned by `Records`.
   - `TestCommonColumns`: a span's `trace_id`, `span_id`, `parent_span_id`, `message`, `duration_ms` and a log's `severity`, `message` are set; others NULL.
 - [ ] **Step 2: Run them to see them fail**
 
@@ -84,11 +84,11 @@
 - Test: `internal/duckstore/files_test.go`
 
 **Interfaces:**
-- Produces: `type FileOptions struct { Dir string; Write bool; KeepDays int; Now func() time.Time }`; `OpenFiles(in config.Input, warn func(string), o FileOptions) (*Engine, error)` attaching `Dir/logs.duckdb` and `Dir/traces.duckdb` (created when `Write`, chmod 0600 with their WAL; read-only otherwise; an error if a read-only file is missing or locked); `(*Engine) NextID() int64` (max `_id` over all records + 1); `(*Engine) Meta(key string) (string, bool)` and `SetMeta(key, value string) error` (table `_meta` in `logs.duckdb`).
+- Produces: `type FileOptions struct { Dir string; Write bool; KeepDays int; Now func() time.Time }`; `OpenFiles(in config.Input, warn func(string), o FileOptions) (*Engine, error)` attaching `Dir/logs.duckdb` and `Dir/traces.duckdb` (created when `Write`, chmod 0600 with their WAL; read-only otherwise; an error if a read-only file is missing or locked); `(*Engine) MaxSeq(day int) int` (highest stored seq of a day, hot or archived); `(*Engine) Meta(key string) (string, bool)` and `SetMeta(key, value string) error` (table `_meta` in `logs.duckdb`).
 - On the first failed file write: warn once, and send the rest of the session to the memory tables (the `all_records` view covers both).
 
 - [ ] **Step 1: Write the failing tests**
-  - `TestFilesPersistAcrossReopen`: write two records, close, reopen; `Records` returns them with the same ids, and `NextID` is 3.
+  - `TestFilesPersistAcrossReopen`: write two records, close, reopen; `Records` returns them with the same ids, and `MaxSeq(day)` is 2.
   - `TestReadOnlyOpenNeedsFiles`: `OpenFiles` with `Write: false` on an empty dir fails; after a writer closes, it opens and reads.
   - `TestWriteFailureFallsBackToMemory`: after the files are made unwritable mid-session (detach under the writer), later records are still returned and exactly one warning was given.
   - `TestFilesAreOwnerOnly`: both files have mode 0600.
@@ -100,14 +100,14 @@
 ### Task 4: Store open, first import and the storage directory
 
 **Files:**
-- Rewrite: `internal/store/days.go` → `internal/store/open.go`; modify `internal/store/store.go` (one id counter instead of per-day sequences)
+- Rewrite: `internal/store/days.go` → `internal/store/open.go`
 - Modify: `wrapper.go`, `replay.go`, `main.go` (flag `-db-dir`)
 - Test: `internal/store/open_test.go` (replaces `days_test.go`), `main_test.go`
 
 **Interfaces:**
-- Consumes: `OpenFiles`, `NextID`, `Meta`/`SetMeta`.
+- Consumes: `OpenFiles`, `MaxSeq`, `Meta`/`SetMeta`.
 - Produces: `store.Options{Mode, RunStart, Input, Dir, DBDir, Write, Now, Warn}` (`DeferBuild` removed; `DBDir == ""` means `Dir`); `store.Open(Options) (*Store, error)`.
-  - `Write`: open the files for writing. If meta `imported` is not `"1"`, the files are new or a first import was interrupted: delete them, recreate, import the retained days' text (`KeepDays` = 3 and today) with their own `_day`, then `SetMeta("imported", "1")`.
+  - `Write`: open the files for writing. If meta `imported` is not `"1"`, the files are new or a first import was interrupted: delete them, recreate, import the retained days' text (`KeepDays` = 3 and today) with their own days, then `SetMeta("imported", "1")`. Ids continue per day from `MaxSeq(day)`.
   - Not `Write`, live: memory engine with the retained days read from text (as on `main`).
   - Historical: open the files read-only; if that fails (missing or locked by a live writer), read the text into memory and warn.
 - Flag: `-db-dir DIR`, "directory for loghorn's DuckDB and Parquet files (default: the .loghorn directory)".
@@ -119,7 +119,7 @@
   - `TestHistoricalFallsBackToText`: with the files held open by a writer, a historical `Open` reads the text and warns.
   - `TestDBDirSeparateFromTextDir`: with `DBDir` set, the `.duckdb` files are created there and none in `Dir`.
 - [ ] **Step 2: Run them to see them fail.**
-- [ ] **Step 3: Implement** `open.go`, the id counter in `Store.add`, and the wrapper, replay and flag changes.
+- [ ] **Step 3: Implement** `open.go` and the wrapper, replay and flag changes.
 - [ ] **Step 4: Run** `go test ./...` — Expected: PASS.
 - [ ] **Step 5: Commit** `feat(store): open the two DuckDB files, import text once, -db-dir`
 
@@ -131,11 +131,11 @@
 - Test: `internal/duckstore/archive_test.go`, `internal/store/open_test.go`
 
 **Interfaces:**
-- Produces: `(*Engine) Archive(today int) error` (writer only): for each signal and each `_day < today` present in the hot table, export to `Dir/archive/<logs|traces>-YYYY-MM-DD.parquet.tmp` (ZSTD), validate, rename to `.parquet`, then delete that day's hot rows; finally delete archives and `_fields` rows with day `< today - KeepDays`. The view adds `read_parquet([...], union_by_name = true)` per signal when archives exist.
+- Produces: `(*Engine) Archive(today int) error` (writer only): for each signal and each day (`_id >> 32`) before `today` present in the hot table, export to `Dir/archive/<logs|traces>-YYYY-MM-DD.parquet.tmp` (ZSTD), validate, rename to `.parquet`, then delete that day's hot rows; finally delete archives and `_fields` rows with day `< today - KeepDays`. The view adds `read_parquet([...], union_by_name = true)` per signal when archives exist.
   - Validation: row count, `min/max/sum(_id)`, and `md5(_raw)` aggregate equal between the hot day and the file.
   - Failure (export, validation or rename): remove the `.tmp`, keep the hot rows, warn once; the next `Archive` tries again.
   - An archive file for a day that still has hot rows is skipped by the view until the hot rows are gone, so nothing is read twice.
-- Midnight: the writer calls `Archive` when a batch carries a later `_day` than the last one it wrote.
+- Midnight: the writer calls `Archive` when a batch carries a later day than the last one it wrote.
 
 - [ ] **Step 1: Write the failing tests**
   - `TestArchiveMovesClosedDays`: records on days d−1 and d; `Archive(d)` writes `logs-<d−1>.parquet` and `traces-<d−1>.parquet`; hot tables keep only day d; `Records` returns every record once with its id and raw.

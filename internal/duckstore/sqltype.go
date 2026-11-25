@@ -1,14 +1,13 @@
 package duckstore
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
-// sqlType is the DuckDB column type of a loghorn type (D-014, D-017).
+// sqlType is the DuckDB type of a loghorn type (D-014, D-017).
 func sqlType(t schema.Type) string {
 	switch t {
 	case schema.TInt:
@@ -31,18 +30,6 @@ func norm(t schema.Type) schema.Type {
 	return t
 }
 
-// widest is the type of a view column holding columns of types a and b.
-func widest(a, b schema.Type) schema.Type {
-	a, b = norm(a), norm(b)
-	switch {
-	case a == b:
-		return a
-	case (a == schema.TInt && b == schema.TFloat) || (a == schema.TFloat && b == schema.TInt):
-		return schema.TFloat
-	}
-	return schema.TString
-}
-
 // ident quotes an identifier.
 func ident(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
@@ -61,10 +48,9 @@ const (
 	durPart   = `([0-9]+\.?[0-9]*|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h)`
 )
 
-// conv is the SQL giving schema.Convert's value for a column c stored as
-// type from, read as field to. NULL means empty or not convertible; callers
-// tell the two apart with bad. Where the original text would be needed
-// (D-011 #1) it gives DuckDB's cast instead.
+// conv is the SQL giving schema.Convert's value for a value c of type from
+// (a string, json.Number, bool or JSON text), read as field to. NULL means
+// not convertible.
 func conv(c string, from schema.Type, to schema.Field) string {
 	from, t := norm(from), norm(to.Type)
 	if from == t {
@@ -114,32 +100,6 @@ func conv(c string, from schema.Type, to schema.Field) string {
 		}
 	}
 	return nullOf(t)
-}
-
-var (
-	numericKinds = schema.Classify(json.Number("1")) | schema.Classify(json.Number("1.5"))
-	noneKind     = schema.Classify(nil)
-)
-
-// convCol is conv for a table column, using the kinds of value it holds: a
-// timestamp column holding only numbers stored them as epoch ms (the
-// inferred field has no unit), so a saved unit rescales them as
-// schema.Convert would read the numbers. A column mixing numbers and text
-// can't tell its rows apart and keeps ms (D-011 #1).
-func convCol(c string, col column, to schema.Field) string {
-	k := col.kinds &^ noneKind
-	if norm(col.typ) == schema.TTimestamp && norm(to.Type) == schema.TTimestamp && k != 0 && k&^numericKinds == 0 {
-		ns := "epoch_ns(" + c + ")"
-		switch to.Unit {
-		case schema.UnitS:
-			return "(CASE WHEN abs(" + ns + ") <= 9223372036854775 THEN make_timestamp_ns(" + ns + " * 1000) END)"
-		case schema.UnitUs:
-			return "make_timestamp_ns(" + ns + " // 1000)"
-		case schema.UnitNs:
-			return "make_timestamp_ns(" + ns + " // 1000000)"
-		}
-	}
-	return conv(c, col.typ, to)
 }
 
 // goSpace is what strings.TrimSpace trims (unicode.IsSpace); DuckDB's

@@ -149,7 +149,7 @@ func (x *sqlRun) where(from, to time.Time) func() string {
 		conds = append(conds, c+")")
 	}
 	if x.q.Search != "" {
-		conds = append(conds, "contains(lower(_raw), ?)")
+		conds = append(conds, "contains(lower(_text), ?)")
 		x.args = append(x.args, strings.ToLower(x.q.Search))
 	}
 	for _, c := range compile(x.s, x.q) {

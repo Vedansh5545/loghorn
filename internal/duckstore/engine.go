@@ -1,7 +1,8 @@
-// Package duckstore keeps loghorn's records in DuckDB: a database per day and
-// signal (logs, traces), a schema per service, a table per stream and a
-// typed column per field. Views in the session's own in-memory catalog join
-// every attached day; the web view reads only those (D-004).
+// Package duckstore keeps loghorn's records in DuckDB: one fixed table per
+// signal (logs, spans) with the common fields as columns, every normalized
+// field in a JSON attributes column, and the record as captured in _raw.
+// The views all_records and all_fields in the session's own in-memory
+// catalog cover every table and archive; the web view reads only those.
 package duckstore
 
 import (
@@ -20,8 +21,8 @@ import (
 )
 
 const (
-	// MaxQueue bounds the records waiting to be written; past it, records
-	// are skipped for DuckDB only and the day is marked dirty.
+	// MaxQueue bounds the records waiting to be written; past it, live
+	// records are skipped for DuckDB (their text log keeps them).
 	MaxQueue = 200_000
 	// maxBatch caps the records written in one batch.
 	maxBatch = 20_000
@@ -55,31 +56,26 @@ type Engine struct {
 	committed uint64 // records written or given up on
 	closing   bool
 	wdone     chan struct{}
-	maxQueue  int          // MaxQueue, unless SetMaxQueue changed it
-	overflow  bool         // the queue overflowed (warned once)
-	skipped   map[int]bool // days with records skipped for DuckDB
+	maxQueue  int  // MaxQueue, unless SetMaxQueue changed it
+	overflow  bool // the queue overflowed (warned once)
 
-	// Writer state: touched only by the writer goroutine, or before it
-	// starts and after it stops.
-	cats    []*catalog
-	mem     *pair
-	pairFor func(day int) (*pair, error)
-	onFail  func(err error) // a file write failed (nil: memory only)
-	vnames  *namer          // view names, stable across rebuilds
-	wmu     sync.Mutex      // held while writing or changing catalogs
-	// schemaMu keeps queries off a column whose type is changing: the
-	// writer holds it from a type change until the new model is published.
-	schemaMu     sync.RWMutex
-	schemaLocked bool
-	days         *DayOptions   // nil: memory only
-	route        map[int]*pair // day -> writable pair
-	today        *pair         // the open day (writer)
-	failed       bool          // a file write failed: the rest goes to memory
-	viewsMade    map[string]bool
-	warned       map[string]bool // writer-side warnings already given
+	// Writer state: touched only by the writer goroutine (holding wmu), or
+	// before it starts and after it stops.
+	wmu    sync.Mutex
+	parts  []*part          // every table holding records
+	dest   map[string]*part // source -> the table new records go to
+	mem    map[string]*part // source -> the in-memory table
+	files  *FileOptions     // nil: memory only
+	failed bool             // a file write failed: the rest goes to memory
+	// failWrites makes file writes fail (tests).
+	failWrites bool
+	warned     map[string]bool // warnings already given
+	arch       archiveState
 
-	snap    atomic.Pointer[model]
-	version atomic.Uint64
+	// schemaMu keeps queries off the views while the writer changes what
+	// they read (archiving a day).
+	schemaMu sync.RWMutex
+	version  atomic.Uint64
 }
 
 // OpenMemory opens an engine holding everything in memory, for replays and
@@ -89,11 +85,6 @@ func OpenMemory(in config.Input, warn func(string)) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if e.mem, err = e.memPair(); err != nil {
-		e.closeDB()
-		return nil, err
-	}
-	e.pairFor = func(int) (*pair, error) { return e.mem, nil }
 	if err := e.rebuildViews(); err != nil {
 		e.closeDB()
 		return nil, err
@@ -102,6 +93,8 @@ func OpenMemory(in config.Input, warn func(string)) (*Engine, error) {
 	return e, nil
 }
 
+// open starts DuckDB with the in-memory tables, which also take a file
+// write that failed.
 func open(in config.Input, warn func(string)) (*Engine, error) {
 	c, err := duckdb.NewConnector("", nil)
 	if err != nil {
@@ -117,10 +110,23 @@ func open(in config.Input, warn func(string)) (*Engine, error) {
 	if warn == nil {
 		warn = func(string) {}
 	}
-	e := &Engine{connector: c, db: db, wc: wc, in: in, parser: adapter.New(in), warn: warn, vnames: newNamer(viewReserved...), viewsMade: map[string]bool{}, skipped: map[int]bool{}, warned: map[string]bool{}}
+	e := &Engine{connector: c, db: db, wc: wc, in: in, parser: adapter.New(in), warn: warn,
+		dest: map[string]*part{}, mem: map[string]*part{}, warned: map[string]bool{}}
 	e.cond = sync.NewCond(&e.mu)
 	e.maxQueue = MaxQueue
-	e.snap.Store(&model{})
+	for _, src := range []string{record.SourceLog, record.SourceOtel} {
+		p := &part{alias: "memory", source: src, writable: true}
+		if err := e.exec(tableDDL(p.ref())); err != nil {
+			e.closeDB()
+			return nil, err
+		}
+		e.mem[src], e.dest[src] = p, p
+		e.parts = append(e.parts, p)
+	}
+	if err := e.exec(fieldsDDL(e.mem[record.SourceLog].fieldsRef())); err != nil {
+		e.closeDB()
+		return nil, err
+	}
 	return e, nil
 }
 
@@ -129,21 +135,8 @@ func (e *Engine) start() {
 	go e.writer()
 }
 
-// memPair attaches the in-memory logs and traces catalogs.
-func (e *Engine) memPair() (*pair, error) {
-	l, err := e.attach("lmem", ":memory:", record.SourceLog, -1, true)
-	if err != nil {
-		return nil, err
-	}
-	t, err := e.attach("tmem", ":memory:", record.SourceOtel, -1, true)
-	if err != nil {
-		return nil, err
-	}
-	return &pair{logs: l, traces: t}, nil
-}
-
-// ReadLock keeps column types fixed while a query built from the current
-// model runs; call the returned func when done.
+// ReadLock keeps the views' tables in place while a query runs; call the
+// returned func when done.
 func (e *Engine) ReadLock() (unlock func()) {
 	e.schemaMu.RLock()
 	return e.schemaMu.RUnlock
@@ -186,7 +179,6 @@ func (e *Engine) add(r record.Record, wait bool) {
 			e.overflow = true
 			e.warn("loghorn: DuckDB writer is behind; skipping records for DuckDB (the text log keeps them)")
 		}
-		e.skipped[dayOf(r.Seq)] = true
 		return
 	}
 	e.queue = append(e.queue, item{r: r})
@@ -282,14 +274,10 @@ func (e *Engine) writer() {
 	}
 }
 
-// Close writes what is queued, stops the writer and closes DuckDB. before
-// runs in the writer's place after the last batch (nil: nothing), so day
-// files can be marked closed cleanly.
+// Close writes what is queued, stops the writer and closes DuckDB, after
+// checkpointing the database files.
 func (e *Engine) Close() error {
-	if e.days != nil {
-		return e.close(e.closeDays)
-	}
-	return e.close(nil)
+	return e.close(e.closeFiles)
 }
 
 func (e *Engine) close(before func() error) error {
@@ -322,6 +310,3 @@ func (e *Engine) closeDB() error {
 	}
 	return err
 }
-
-// dayOf is the day number in an _id.
-func dayOf(id int) int { return id >> 32 }
