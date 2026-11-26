@@ -76,6 +76,12 @@ type Engine struct {
 	// (tests).
 	failWrites, failArchive bool
 	warned                  map[string]bool // warnings already given
+
+	// modelMu guards the table model's views: WithModel replaces them
+	// holding it, and queries over them hold it for reading. model is the
+	// DDL last applied.
+	modelMu sync.RWMutex
+	model   string
 	arch                    archiveState
 	meta                    map[string]string // a reader's copy of the files' marks
 

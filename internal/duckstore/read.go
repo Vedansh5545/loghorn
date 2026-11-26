@@ -22,20 +22,28 @@ var bg = context.Background()
 // but not convertible ("bad"). Values are read from the attributes JSON and
 // converted per record as schema.Convert converts them.
 func (e *Engine) Relation(source, service, stream string, cols []schema.Field) (string, []any) {
+	var args []any
+	q := relation(source, service, stream, cols, func(v string) string {
+		args = append(args, v)
+		return "?"
+	})
+	return q, args
+}
+
+// relation is Relation with each compared value written by bind: a
+// parameter, or a literal for a view.
+func relation(source, service, stream string, cols []schema.Field, bind func(string) string) string {
 	base := "_id, _time, _time_inherited, _service, _source, _stream, _raw"
 	text := base + ", coalesce(try(decode(_raw)), CAST(_raw AS VARCHAR)) AS _text"
-	where := " WHERE _source = ?"
-	args := []any{source}
+	where := " WHERE _source = " + bind(source)
 	if service != "" && service != "*" {
-		where += " AND _service = ?"
-		args = append(args, service)
+		where += " AND _service = " + bind(service)
 	}
 	if stream != record.AllStreams {
-		where += " AND _stream = ?"
-		args = append(args, stream)
+		where += " AND _stream = " + bind(stream)
 	}
 	if len(cols) == 0 {
-		return "SELECT " + text + " FROM " + sessionSchema + "all_records" + where, args
+		return "SELECT " + text + " FROM " + sessionSchema + "all_records" + where
 	}
 	base += ", _text"
 	// One parse of attributes per record extracts every field.
@@ -51,7 +59,7 @@ func (e *Engine) Relation(source, service, stream string, cols []schema.Field) (
 	}
 	inner := "SELECT " + text + ", json_extract(attributes, [" + strings.Join(ptrs, ", ") + "]) AS js FROM " + sessionSchema + "all_records" + where
 	mid := "SELECT " + base + ", " + strings.Join(js, ", ") + " FROM (" + inner + ")"
-	return "SELECT " + base + ", " + strings.Join(out, ", ") + " FROM (" + mid + ")", args
+	return "SELECT " + base + ", " + strings.Join(out, ", ") + " FROM (" + mid + ")"
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
