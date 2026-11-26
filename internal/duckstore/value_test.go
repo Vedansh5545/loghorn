@@ -49,4 +49,3 @@ func TestSQLValue(t *testing.T) {
 		}
 	}
 }
-

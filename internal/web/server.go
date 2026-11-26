@@ -93,6 +93,7 @@ func New(o Options) http.Handler {
 	mux.HandleFunc("GET /api/schema", s.getSchema)
 	mux.HandleFunc("PUT /api/schema", s.putSchema)
 	mux.HandleFunc("POST /api/query", s.query)
+	mux.HandleFunc("POST /api/sql", s.sql)
 	mux.HandleFunc("GET /api/record", s.record)
 	mux.HandleFunc("GET /api/trace", s.trace)
 	mux.HandleFunc("GET /api/aggregate", s.aggregate)

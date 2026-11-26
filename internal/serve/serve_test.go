@@ -416,3 +416,20 @@ func TestServeKeepsRecordsInDuckDB(t *testing.T) {
 		t.Fatalf("after restart without text: %+v", recs)
 	}
 }
+
+func TestServeSQL(t *testing.T) {
+	o := testOpts(t)
+	s := start(t, o)
+	ship(s, "api", "r1", `{"labels":{"schema":"app"},"message":"one"}`, `{"labels":{"schema":"app"},"message":"two"}`)
+	waitFor(t, "two records", func() bool { return len(records(s)) == 2 })
+	body := strings.NewReader(`{"sql":"SELECT service, count(*) AS n, loghorn.this_run_id() AS run FROM logs.\"app\" GROUP BY ALL"}`)
+	resp, err := sock.Client(o.Socket).Post("http://loghorn/api/sql", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(b) != "service\tn\trun\napi\t2\tr1\n" {
+		t.Fatalf("%d %q", resp.StatusCode, b)
+	}
+}
