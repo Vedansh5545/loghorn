@@ -37,6 +37,7 @@ type opts struct {
 	limit    int
 	limitSet bool // -limit was given
 	toSQL    bool
+	sql      string // -sql: SQL text, @file or @-
 
 	args []string
 }

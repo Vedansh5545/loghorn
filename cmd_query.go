@@ -20,11 +20,23 @@ import (
 )
 
 const queryUsage = `Usage: loghorn query [flags] <url | @file | @->
+       loghorn query -sql <'SELECT …' | @file | @-> [flags]
 
 Print the data of the web view a page URL names, as TSV (default), CSV,
 Markdown, JSON, JSON lines, YAML or TOON, or its DuckDB SQL with -to-sql. The
 URL is a loghorn page URL (http://127.0.0.1:PORT/?q=…), a host-less /?q=…
 for the running serve, or @file / @- to read it from a file or stdin.
+
+With -sql, run one read-only DuckDB query over the running serve's records
+and print its rows (TSV by default; -format csv, md, json or jsonl; at most
+1000 rows unless -limit says more). Tables: logs."<stream>" for log records,
+spans."<stream>" for spans, and logs."*" / spans."*" for every stream. Each
+has seq, time (TIMESTAMPTZ), service, raw (the line) and one typed column per
+field ("http.status"). loghorn.this_run_start() and loghorn.this_run_id()
+name the latest run. Start with:
+  loghorn query -sql 'SHOW ALL TABLES'
+  loghorn query -sql 'DESCRIBE logs."app"'
+  loghorn query -sql 'SELECT severity, count(*) FROM logs."app" GROUP BY ALL'
 `
 
 func cmdQuery(args []string, env cliEnv) int {
@@ -34,6 +46,7 @@ func cmdQuery(args []string, env cliEnv) int {
 	fs.StringVar(&o.format, "format", "", "output format: csv, tsv, md, json, jsonl, yaml, toon or sql (default tsv, or -o's extension)")
 	fs.IntVar(&o.limit, "limit", 0, "rows: overrides the URL's limit (samples) or top (table, graph)")
 	fs.BoolVar(&o.toSQL, "to-sql", false, "print the DuckDB SQL of the URL's query instead of its data")
+	fs.StringVar(&o.sql, "sql", "", "run this read-only DuckDB query (or @file, @-) over serve's records instead of a URL")
 	pos, code, ok := parseCmd(fs, args, true)
 	if !ok {
 		return code
@@ -43,10 +56,15 @@ func cmdQuery(args []string, env cliEnv) int {
 			o.limitSet = true
 		}
 	})
-	if len(pos) != 1 {
-		return usageError(env, "query takes one URL (or @file, @-); run 'loghorn help query'")
+	switch {
+	case o.sql != "" && len(pos) > 0:
+		return usageError(env, "-sql takes no URL; run 'loghorn help query'")
+	case o.sql != "":
+	case len(pos) != 1:
+		return usageError(env, "query takes one URL (or @file, @-), or -sql; run 'loghorn help query'")
+	default:
+		o.url = pos[0]
 	}
-	o.url = pos[0]
 	return runQuery(o, queryEnv{stdin: env.stdin, stdout: env.stdout, stderr: env.stderr, socket: sock.DefaultPath()})
 }
 
@@ -93,6 +111,9 @@ func readURLArg(v string, stdin io.Reader) (string, error) {
 // or stdout. It never launches anything and reads stdin only for @-.
 // Exit codes: 2 for usage errors, 1 for a failed query, 0 otherwise.
 func runQuery(o opts, env queryEnv) int {
+	if o.sql != "" {
+		return runSQL(o, env)
+	}
 	usage := func(format string, a ...any) int {
 		fmt.Fprintf(env.stderr, "loghorn: "+format+"\n", a...)
 		return 2
@@ -176,6 +197,16 @@ func runQuery(o opts, env queryEnv) int {
 		endpoint, where = "http://"+u.Host+"/api/query", u.Host
 	}
 
+	return post(o, env, client, endpoint, where, body)
+}
+
+// post sends a query body to endpoint and writes the answer to -o or stdout,
+// and its note to stderr. Exit codes as runQuery's.
+func post(o opts, env queryEnv, client *http.Client, endpoint, where string, body []byte) int {
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(env.stderr, "loghorn: "+format+"\n", a...)
+		return 1
+	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fail("%v", err)
@@ -217,6 +248,62 @@ func runQuery(o opts, env queryEnv) int {
 		fmt.Fprintln(env.stderr, "loghorn:", note)
 	}
 	return 0
+}
+
+// runSQL sends -sql's query to the running serve's /api/sql and writes the
+// rows like runQuery. It talks only to serve's socket: SQL is not answered
+// over TCP.
+func runSQL(o opts, env queryEnv) int {
+	usage := func(format string, a ...any) int {
+		fmt.Fprintf(env.stderr, "loghorn: "+format+"\n", a...)
+		return 2
+	}
+	switch {
+	case o.url != "":
+		return usage("-sql takes no URL; run 'loghorn help query'")
+	case o.toSQL:
+		return usage("-to-sql prints a URL's SQL; it can't be combined with -sql")
+	case o.limitSet && o.limit < 1:
+		return usage("-limit must be at least 1")
+	}
+	text, err := readURLArg(o.sql, env.stdin)
+	if err != nil {
+		return usage("%s: %v", o.sql, err)
+	}
+	if text == "" {
+		return usage("%s: no SQL in it", o.sql)
+	}
+	f, err := queryFormat(o)
+	if err != nil {
+		return usage("%v", err)
+	}
+	switch f {
+	case export.TSV, export.CSV, export.MD, export.JSON, export.JSONL:
+	default:
+		return usage("-sql prints tsv, csv, md, json or jsonl, not %s", f)
+	}
+	req := struct {
+		SQL    string `json:"sql"`
+		Format string `json:"format"`
+		Limit  int    `json:"limit,omitempty"`
+	}{text, string(f), 0}
+	if o.limitSet {
+		req.Limit = o.limit
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		fmt.Fprintf(env.stderr, "loghorn: %v\n", err)
+		return 1
+	}
+	if _, err := sock.Probe(env.socket); err != nil {
+		if errors.Is(err, sock.ErrNotRunning) {
+			fmt.Fprintf(env.stderr, "loghorn: %s\n", notRunningMessage(env.socket))
+		} else {
+			fmt.Fprintf(env.stderr, "loghorn: %v\n", err)
+		}
+		return 1
+	}
+	return post(o, env, sock.Client(env.socket), "http://loghorn/api/sql", "serve on "+env.socket, body)
 }
 
 // decodeQ decodes the URL's q parameter as the page does: JSON, unknown
