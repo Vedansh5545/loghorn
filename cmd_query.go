@@ -34,8 +34,9 @@ a note on stderr says when rows were cut.
 
 Tables: logs."<stream>" for log records, spans."<stream>" for spans, and
 logs."*" / spans."*" for every stream at once. Each has seq (store order),
-"time" (TIMESTAMPTZ), service, raw (the original line), then one typed
-column per field, named by its path. Quote dotted names and keywords:
+"time" (TIMESTAMPTZ, printed in UTC), service, raw (the original line),
+then one typed column per field, named by its path. Quote dotted names and
+keywords:
 "http.route", "loghorn.run.id", "time". Streams have different fields; list
 every table with its columns, ready to paste:
   loghorn query -sql 'SELECT * FROM loghorn.tables'

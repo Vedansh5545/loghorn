@@ -98,6 +98,7 @@ func TestQueryUsageTeachesSQL(t *testing.T) {
 		`"loghorn.run.id" = loghorn.this_run_id()`,
 		`-sql @- <<'SQL'`, // quoting: SQL literals need single quotes
 		"a note on stderr says when rows were cut",
+		"printed in UTC",
 	} {
 		if !strings.Contains(queryUsage, want) {
 			t.Errorf("help lacks %q", want)

@@ -55,3 +55,11 @@ func TestCheckReadOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckReadOnlyPointsToTablesList(t *testing.T) {
+	g := newRig(t)
+	err := CheckReadOnly(context.Background(), g.e.DB(), `SELECT * FROM logs`)
+	if err == nil || !strings.Contains(err.Error(), "SELECT * FROM loghorn.tables") {
+		t.Fatalf("error %v", err)
+	}
+}

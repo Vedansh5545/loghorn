@@ -108,7 +108,7 @@ func checkRefs(x any, ctes map[string]bool) error {
 				if catalog != "" {
 					name = catalog + "." + name
 				}
-				return fmt.Errorf("table %q is not allowed: read logs.\"<stream>\" or spans.\"<stream>\" (SHOW ALL TABLES lists them)", name)
+				return fmt.Errorf("table %q is not allowed: read logs.\"<stream>\" or spans.\"<stream>\" (SELECT * FROM loghorn.tables lists them)", name)
 			}
 		}
 		for _, c := range v {
