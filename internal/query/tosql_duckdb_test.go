@@ -229,11 +229,47 @@ func TestToSQLDuckDB(t *testing.T) {
 	}
 	recs := duckRecords()
 	load := duckLoad(t, recs)
+	for _, c := range duckCases() {
+		t.Run(c.name, func(t *testing.T) {
+			s := duckLogSchema
+			if c.q.Source == record.SourceOtel {
+				s = duckSpanSchema
+			}
+			res, err := Run(recs, s, c.q, duckNow, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sql, err := ToSQL(c.q, s, &res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			duckCheck(t, c.q, res, duckRun(t, duck, load, sql), sql)
+		})
+	}
+}
+
+// duckCheck compares the rows of a query's SQL with its Run result.
+func duckCheck(t *testing.T, q Query, res Result, rows []map[string]any, sql string) {
+	t.Helper()
+	switch q.View {
+	case "table":
+		duckCheckTable(t, res, rows, sql)
+	case "graph":
+		duckCheckGraph(t, res, rows, sql)
+	case "heatmap":
+		duckCheckHeatmap(t, res, rows, sql)
+	}
+}
+
+type duckCase struct {
+	name string
+	q    Query
+}
+
+// duckCases are the queries the equivalence tests run.
+func duckCases() []duckCase {
 	all := Range{From: "all"}
-	cases := []struct {
-		name string
-		q    Query
-	}{
+	return []duckCase{
 		{"table by method", Query{Stream: "app", Range: all, View: "table", GroupBy: []string{"method"},
 			Aggregates: []Aggregate{{Op: "avg", Field: "duration_ms"}, {Op: "p95", Field: "duration_ms"}, {Op: "error_rate"}, {Op: "sum", Field: "latency"}, {Op: "sum", Field: "code"}},
 			Top:        10}},
@@ -259,31 +295,6 @@ func TestToSQLDuckDB(t *testing.T) {
 		{"heatmap auto", Query{Stream: "http.server", Source: record.SourceOtel, Range: all, View: "heatmap"}},
 		{"heatmap 1h filtered", Query{Stream: "http.server", Source: record.SourceOtel, Range: all, View: "heatmap", Bucket: "1h",
 			Filters: []Filter{{Field: "name", Op: "contains", Values: []string{"get"}}}}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			s := duckLogSchema
-			if c.q.Source == record.SourceOtel {
-				s = duckSpanSchema
-			}
-			res, err := Run(recs, s, c.q, duckNow, time.Time{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			sql, err := ToSQL(c.q, s, &res)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rows := duckRun(t, duck, load, sql)
-			switch c.q.View {
-			case "table":
-				duckCheckTable(t, res, rows, sql)
-			case "graph":
-				duckCheckGraph(t, res, rows, sql)
-			case "heatmap":
-				duckCheckHeatmap(t, res, rows, sql)
-			}
-		})
 	}
 }
 
