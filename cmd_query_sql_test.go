@@ -91,3 +91,19 @@ func TestQuerySQLErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryUsageTeachesSQL(t *testing.T) {
+	for _, want := range []string{
+		`SELECT * FROM loghorn.tables`, // discovery, not a stream that may not exist
+		`"loghorn.run.id" = loghorn.this_run_id()`,
+		`-sql @- <<'SQL'`, // quoting: SQL literals need single quotes
+		"a note on stderr says when rows were cut",
+	} {
+		if !strings.Contains(queryUsage, want) {
+			t.Errorf("help lacks %q", want)
+		}
+	}
+	if strings.Contains(queryUsage, `DESCRIBE logs."app"`) {
+		t.Error(`help still starts from logs."app", which may not exist`)
+	}
+}

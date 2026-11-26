@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/duckstore"
+	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/record"
 	"github.com/jimbeveridge/loghorn/internal/schema"
 )
@@ -66,6 +67,9 @@ func (s *Store) SQL(ctx context.Context, q string, max int) (SQLResult, error) {
 			}
 			for i, v := range vals {
 				vals[i] = duckstore.SQLValue(v)
+				if f, ok := vals[i].(float64); ok {
+					vals[i] = query.Round15(f) // as exports round computed numbers
+				}
 			}
 			res.Rows = append(res.Rows, vals)
 		}

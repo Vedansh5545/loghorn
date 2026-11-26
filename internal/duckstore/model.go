@@ -49,8 +49,22 @@ func ModelDDL(tables []ModelTable, runStart time.Time, runID string) []string {
 		}
 		ddl = append(ddl, "CREATE VIEW memory."+sch+"."+ident(t.Stream)+" AS "+modelSelect(t))
 	}
-	return ddl
+	return append(ddl, tablesView)
 }
+
+// tablesView lists the model's tables for discovery: name, ready to paste
+// (logs."app"), and columns, each as "name TYPE" with the name quoted
+// where SQL needs it.
+const tablesView = `CREATE VIEW memory.loghorn.tables AS
+SELECT c.schema_name || '."' || replace(c.table_name, '"', '""') || '"' AS name,
+  string_agg(CASE WHEN regexp_full_match(c.column_name, '[a-z_][a-z0-9_]*')
+      AND c.column_name NOT IN (SELECT keyword_name FROM duckdb_keywords() WHERE keyword_category <> 'unreserved')
+    THEN c.column_name ELSE '"' || replace(c.column_name, '"', '""') || '"' END
+    || ' ' || replace(c.data_type, 'TIMESTAMP WITH TIME ZONE', 'TIMESTAMPTZ'), ', ' ORDER BY c.column_index) AS columns
+FROM duckdb_columns() c
+WHERE c.database_name = 'memory' AND c.schema_name IN ('logs', 'spans')
+GROUP BY c.schema_name, c.table_name
+ORDER BY c.schema_name, c.table_name`
 
 // modelSelect is the body of t's view.
 func modelSelect(t ModelTable) string {

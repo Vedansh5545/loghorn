@@ -167,3 +167,27 @@ func TestLatestRun(t *testing.T) {
 }
 
 func str(v any) string { return fmt.Sprint(v) }
+
+func TestModelTablesView(t *testing.T) {
+	g := newRig(t)
+	withModel(t, g, "", func() {
+		rows, err := g.e.DB().Query(`SELECT name, columns FROM loghorn.tables`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var n, c string
+			rows.Scan(&n, &c)
+			got = append(got, n+" | "+c)
+		}
+		want := []string{
+			`logs."app" | seq BIGINT, "time" TIMESTAMPTZ, service VARCHAR, raw VARCHAR, code BIGINT, latency DOUBLE, "when" TIMESTAMPTZ, "http.method" VARCHAR`,
+			`spans."*" | seq BIGINT, "time" TIMESTAMPTZ, service VARCHAR, raw VARCHAR, duration_ms DOUBLE, name VARCHAR`,
+		}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("got\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}, appTable(), spanTable())
+}

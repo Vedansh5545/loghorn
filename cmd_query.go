@@ -28,15 +28,25 @@ URL is a loghorn page URL (http://127.0.0.1:PORT/?q=…), a host-less /?q=…
 for the running serve, or @file / @- to read it from a file or stdin.
 
 With -sql, run one read-only DuckDB query over the running serve's records
-and print its rows (TSV by default; -format csv, md, json or jsonl; at most
-1000 rows unless -limit says more). Tables: logs."<stream>" for log records,
-spans."<stream>" for spans, and logs."*" / spans."*" for every stream. Each
-has seq, time (TIMESTAMPTZ), service, raw (the line) and one typed column per
-field ("http.status"). loghorn.this_run_start() and loghorn.this_run_id()
-name the latest run. Start with:
-  loghorn query -sql 'SHOW ALL TABLES'
-  loghorn query -sql 'DESCRIBE logs."app"'
-  loghorn query -sql 'SELECT severity, count(*) FROM logs."app" GROUP BY ALL'
+and print its rows (TSV by default; -format csv, md, json or jsonl). At most
+1000 rows are printed unless -limit says more, and
+a note on stderr says when rows were cut.
+
+Tables: logs."<stream>" for log records, spans."<stream>" for spans, and
+logs."*" / spans."*" for every stream at once. Each has seq (store order),
+"time" (TIMESTAMPTZ), service, raw (the original line), then one typed
+column per field, named by its path. Quote dotted names and keywords:
+"http.route", "loghorn.run.id", "time". Streams have different fields; list
+every table with its columns, ready to paste:
+  loghorn query -sql 'SELECT * FROM loghorn.tables'
+Records from 'loghorn run' carry their run in "loghorn.run.id";
+loghorn.this_run_id() is the latest run and loghorn.this_run_start() the
+time of its first record:
+  loghorn query -sql 'SELECT service, count(*) AS n FROM logs."*" WHERE "loghorn.run.id" = loghorn.this_run_id() GROUP BY ALL'
+SQL string literals take single quotes, so pass such SQL on stdin:
+  loghorn query -sql @- <<'SQL'
+  SELECT "time", message FROM logs."*" WHERE level = 'error' ORDER BY seq DESC LIMIT 20
+  SQL
 `
 
 func cmdQuery(args []string, env cliEnv) int {

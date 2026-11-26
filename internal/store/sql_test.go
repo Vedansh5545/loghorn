@@ -130,3 +130,11 @@ func TestStoreSQLConcurrent(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestStoreSQLRoundsFloats(t *testing.T) {
+	s := sqlStore(t, 1)
+	res := sqlRows(t, s, `SELECT 0.1 + 0.2 AS x, CAST(2828.0499999999997 AS DOUBLE) AS y, 7.0 / 3 AS z`, 10)
+	if fmt.Sprint(res.Rows) != "[[0.3 2828.05 2.33333333333333]]" {
+		t.Fatalf("rows %v", res.Rows)
+	}
+}
