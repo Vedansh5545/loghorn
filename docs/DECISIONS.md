@@ -429,7 +429,36 @@ or has not yet answered.
   `traces-` archives) are ignored; the new file is filled from text once.
 - **Open:** the CLI query spec's SQL table model (schemas `logs` and
   `spans`, one table per stream with typed columns) is still to be
-  provided, as views over `records`.
+  provided, as views over `records`. *Provided by D-031.*
+
+---
+
+## D-031 `loghorn query -sql`: read-only SQL over the table model, through serve
+
+- **Date:** 2026-11-25 · **Status:** Decided on this branch, for Jim's
+  review · **Decided by:** the author asked for it; details are Claude's
+  calls, listed in `docs/superpowers/specs/2026-11-25-cli-sql-design.md`
+- **Decision:** The CLI query spec's table model exists as views in serve's
+  session database: `logs."<stream>"`, `spans."<stream>"` and `"*"` of
+  each, with `seq`, `time`, `service`, `raw` and one typed column per field
+  of the stream's schema over every service, converted as the web view
+  converts values (bad values NULL, durations in ms rounded to 15 digits).
+  The views are rebuilt from the schema inferred at query time; the DDL only
+  runs when its text changes. `loghorn query -sql` sends one query to
+  serve's new `POST /api/sql`, on serve's socket only. DuckDB's parser must
+  read it as one query whose tables are the model's or DuckDB's catalog
+  views and whose table functions read no files. At most 1,000 rows unless
+  `-limit`; 30 s timeout.
+- **Why:** Only serve may open the database (D-030), and agents run many
+  small queries in a row, so each must be bounded and fail with DuckDB's
+  own message. Views over `records` store nothing twice (D-030).
+- **Consequences:** `loghorn query -to-sql` output now runs unchanged:
+  Jim's equivalence cases pass over these views (`TestToSQLOverModel`).
+  `loghorn.this_run_id()` is the newest record's `loghorn.run.id` and
+  `this_run_start()` that run's first record time.
+- **Open:** under serve, the web view's `this-run` means "since serve
+  started", while the macros mean the latest wrapped run; the two should
+  agree.
 
 ---
 

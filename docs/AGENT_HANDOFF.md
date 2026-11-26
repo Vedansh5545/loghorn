@@ -47,6 +47,8 @@ must stay available so structure can be pulled out later.
 | Store façade and modes; first import from text | `internal/store/store.go`, `internal/store/open.go` |
 | Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |
 | Where the store opens and closes: `loghorn serve` owns the DuckDB files in the data folder | `internal/serve/serve.go` (`openStore`, `Close`) |
+| SQL table model views and macros; read-only guard; DuckDB values for export | `internal/duckstore/model.go`, `guard.go`, `value.go` |
+| `-sql`: `Store.SQL`, `POST /api/sql` (socket only), the CLI flag | `internal/store/sql.go`, `internal/web/sql.go`, `cmd_query.go` (`runSQL`) |
 
 ## Environment notes
 

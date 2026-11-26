@@ -54,6 +54,18 @@ Logs and spans now share one table, `records`, in `loghorn.duckdb`, and
 each closed day is one Parquet archive, `records-YYYY-MM-DD.parquet`. The
 measurements below were rerun on it. Files from that build are ignored: the new file starts again from text.
 
+### SQL from the command line (2026-11-25, D-031)
+
+`loghorn query -sql 'SELECT …'` (or `@file`, `@-`) runs one read-only
+query against the running serve and prints its rows (tsv by default; csv,
+md, json, jsonl; at most 1,000 unless `-limit`). It reads the CLI query
+spec's table model, now real as views over `records`: `logs."<stream>"`,
+`spans."<stream>"`, `"*"` of each, and the `loghorn.this_run_*` macros.
+`-to-sql` output runs unchanged: Jim's equivalence cases pass over the
+views (`TestToSQLOverModel`). Design and plan:
+`docs/superpowers/specs/2026-11-25-cli-sql-design.md`,
+`docs/superpowers/plans/2026-11-25-cli-sql.md`.
+
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 
 `LOGHORN_SPEED=1 LOGHORN_SPEED_DUCKDB_ONLY=1 go test -run SpeedAtScale -v -timeout 30m ./internal/store`.
@@ -133,11 +145,12 @@ Left as known limits: below.
 
 ### Next actions
 
-1. Wait for the author on the v2 spec (jimbeveridge/loghorn#2), especially
-   O-3.
-2. Decide with the user whether `duckdb-v2` replaces jimbeveridge/loghorn#3
-   or becomes a new PR.
-3. Try `-web` on a real project.
+1. Wait for the author's review of jimbeveridge/loghorn#4 (this branch)
+   and of the spec in jimbeveridge/loghorn#2. Merge only #4: #2's spec is
+   in it, and merging both conflicts in this file and `DECISIONS.md`.
+2. Ask the author about D-031's open point: `this-run` in the web view
+   under serve versus the `this_run_*` macros.
+3. Run `loghorn serve` and `loghorn query -sql` by hand on a real project.
 
 ## Environment note (user's Mac)
 
