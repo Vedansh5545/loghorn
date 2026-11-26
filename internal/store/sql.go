@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/duckstore"
@@ -41,39 +44,48 @@ func (s *Store) SQL(ctx context.Context, q string, max int) (SQLResult, error) {
 	}
 	var res SQLResult
 	err = s.e.WithModel(ctx, duckstore.ModelDDL(tables, start, runID), func() error {
-		if err := duckstore.CheckReadOnly(ctx, s.e.DB(), q); err != nil {
-			return err
-		}
-		rows, err := s.e.DB().QueryContext(ctx, q)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		if res.Columns, err = rows.Columns(); err != nil {
-			return err
-		}
-		for rows.Next() {
-			if len(res.Rows) == max {
-				res.Truncated = true
-				break
-			}
-			vals := make([]any, len(res.Columns))
-			ptrs := make([]any, len(vals))
-			for i := range vals {
-				ptrs[i] = &vals[i]
-			}
-			if err := rows.Scan(ptrs...); err != nil {
+		return s.e.ReadOnly(ctx, func(conn *sql.Conn) error {
+			if err := duckstore.CheckReadOnly(ctx, conn, q); err != nil {
 				return err
 			}
-			for i, v := range vals {
-				vals[i] = duckstore.SQLValue(v)
-				if f, ok := vals[i].(float64); ok {
-					vals[i] = query.Round15(f) // as exports round computed numbers
-				}
+			// DuckDB builds the whole answer before the first row is read,
+			// so the row cap goes into the query; text the wrapper cannot
+			// hold (a trailing ;) runs as it is.
+			run := q
+			if w := "SELECT * FROM (\n" + q + "\n) LIMIT " + strconv.Itoa(max+1); duckstore.CheckReadOnly(ctx, conn, w) == nil {
+				run = w
 			}
-			res.Rows = append(res.Rows, vals)
-		}
-		return rows.Err()
+			rows, err := conn.QueryContext(ctx, run)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			if res.Columns, err = rows.Columns(); err != nil {
+				return err
+			}
+			for rows.Next() {
+				if len(res.Rows) == max {
+					res.Truncated = true
+					break
+				}
+				vals := make([]any, len(res.Columns))
+				ptrs := make([]any, len(vals))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					return err
+				}
+				for i, v := range vals {
+					vals[i] = duckstore.SQLValue(v)
+					if f, ok := vals[i].(float64); ok {
+						vals[i] = query.Round15(f) // as exports round computed numbers
+					}
+				}
+				res.Rows = append(res.Rows, vals)
+			}
+			return rows.Err()
+		})
 	})
 	return res, err
 }
@@ -95,7 +107,14 @@ func (s *Store) modelTables() ([]duckstore.ModelTable, error) {
 			return nil, err
 		}
 	}
-	for _, c := range s.Streams() {
+	// Larger streams first: of streams whose names differ only in case, the
+	// model keeps the first.
+	streams := s.Streams()
+	sort.SliceStable(streams, func(i, j int) bool { return streams[i].Count > streams[j].Count })
+	for _, c := range streams {
+		if c.Name == record.AllStreams {
+			continue // the "*" table is every stream
+		}
 		if err := add(c.Source, c.Name); err != nil {
 			return nil, err
 		}

@@ -191,3 +191,36 @@ func TestModelTablesView(t *testing.T) {
 		}
 	}, appTable(), spanTable())
 }
+
+// TestModelNameClashes: streams whose names differ only in case, or a
+// stream named "*", must not break the model; for fields that differ only in
+// case, the one with the most values gets the column.
+func TestModelNameClashes(t *testing.T) {
+	g := newRig(t)
+	g.add(logRec(t, "api", "app", `,"code":200`), logRec(t, "api", "app", `,"code":300`), logRec(t, "api", "app", `,"Code":"x"`))
+	withModel(t, g, "", func() {
+		rows, err := g.e.DB().Query(`SELECT code FROM logs."app" ORDER BY seq`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var v any
+			rows.Scan(&v)
+			got = append(got, fmt.Sprint(v))
+		}
+		if strings.Join(got, ",") != "200,300,<nil>" {
+			t.Fatalf("code = %v", got)
+		}
+		if n := g.one(`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'logs'`); n != int64(2) {
+			t.Fatalf("%v log views, want app and *", n)
+		}
+	},
+		ModelTable{Source: record.SourceLog, Stream: "app", Fields: []schema.Field{
+			{Path: "Code", Type: schema.TString, Count: 1}, {Path: "code", Type: schema.TInt, Count: 2}}},
+		ModelTable{Source: record.SourceLog, Stream: "App"},
+		ModelTable{Source: record.SourceLog, Stream: record.AllStreams},
+		ModelTable{Source: record.SourceLog, Stream: record.AllStreams},
+	)
+}

@@ -57,6 +57,10 @@ func OpenFiles(in config.Input, warn func(string), o FileOptions) (*Engine, erro
 		e.closeDB()
 		return nil, err
 	}
+	if err := e.harden(); err != nil {
+		e.closeDB()
+		return nil, err
+	}
 	e.start()
 	return e, nil
 }

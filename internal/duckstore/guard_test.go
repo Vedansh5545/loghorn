@@ -2,6 +2,7 @@ package duckstore
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,65 @@ func TestCheckReadOnlyPointsToTablesList(t *testing.T) {
 	err := CheckReadOnly(context.Background(), g.e.DB(), `SELECT * FROM logs`)
 	if err == nil || !strings.Contains(err.Error(), "SELECT * FROM loghorn.tables") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+// TestCheckReadOnlyRefusesWritesInCTEs: DuckDB parses a data-modifying CTE
+// as a SELECT; the guard must refuse it, decoy CTE names or not.
+func TestCheckReadOnlyRefusesWritesInCTEs(t *testing.T) {
+	g := newRig(t)
+	for _, q := range []string{
+		`WITH d AS (DELETE FROM records RETURNING _id) SELECT count(*) FROM d`,
+		`WITH d AS (DELETE FROM records RETURNING _id) SELECT (WITH records AS (SELECT 1) SELECT 1), count(*) FROM d`,
+		`WITH u AS (UPDATE _fields SET n = 0 RETURNING 1) SELECT (WITH _fields AS (SELECT 1) SELECT 1), count(*) FROM u`,
+		`WITH i AS (INSERT INTO records DEFAULT VALUES RETURNING 1) SELECT * FROM i`,
+	} {
+		if err := CheckReadOnly(context.Background(), g.e.DB(), q); err == nil {
+			t.Errorf("allowed: %s", q)
+		}
+	}
+}
+
+// TestCheckReadOnlyRefusesFileNamedCTEs: a CTE named like a file must not
+// make a file read elsewhere in the query look like a CTE reference.
+func TestCheckReadOnlyRefusesFileNamedCTEs(t *testing.T) {
+	g := newRig(t)
+	q := `SELECT * FROM (SELECT (WITH "/abs/secret.csv" AS (SELECT 1 a) SELECT a FROM "/abs/secret.csv") AS x), '/abs/secret.csv'`
+	if err := CheckReadOnly(context.Background(), g.e.DB(), q); err == nil {
+		t.Fatal("allowed")
+	}
+	if err := CheckReadOnly(context.Background(), g.e.DB(), `WITH errs AS (SELECT 1 AS n) SELECT n FROM errs`); err != nil {
+		t.Fatalf("plain CTE refused: %v", err)
+	}
+}
+
+// TestEngineHasNoOutsideAccess: even a query the guard missed cannot read
+// files, reach the network or load extensions.
+func TestEngineHasNoOutsideAccess(t *testing.T) {
+	g := newRig(t)
+	if _, err := g.e.DB().Exec(`SELECT * FROM read_text('/etc/hosts')`); err == nil {
+		t.Error("read_text read /etc/hosts")
+	}
+	for _, s := range []string{"autoinstall_known_extensions", "autoload_known_extensions", "enable_external_access"} {
+		if v := g.one(`SELECT current_setting('` + s + `')`); v != false {
+			t.Errorf("%s = %v", s, v)
+		}
+	}
+}
+
+// TestReadOnlyQueryCannotWrite: the query runs in a read-only transaction,
+// so a write the guard missed fails and changes nothing.
+func TestReadOnlyQueryCannotWrite(t *testing.T) {
+	g := newRig(t)
+	g.add(logRec(t, "api", "app", ``))
+	err := g.e.ReadOnly(context.Background(), func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(context.Background(), `WITH d AS (DELETE FROM memory.main.records RETURNING _id) SELECT count(*) FROM d`)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("error %v", err)
+	}
+	if n := g.one(`SELECT count(*) FROM memory.main.records`); n != int64(1) {
+		t.Fatalf("records after the refused DELETE: %v", n)
 	}
 }

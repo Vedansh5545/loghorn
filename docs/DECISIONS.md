@@ -445,10 +445,17 @@ or has not yet answered.
   converts values (bad values NULL, durations in ms rounded to 15 digits).
   The views are rebuilt from the schema inferred at query time; the DDL only
   runs when its text changes. `loghorn query -sql` sends one query to
-  serve's new `POST /api/sql`, on serve's socket only. DuckDB's parser must
-  read it as one query whose tables are the model's or DuckDB's catalog
-  views and whose table functions read no files. At most 1,000 rows unless
-  `-limit`; 30 s timeout.
+  serve's new `POST /api/sql`, on serve's socket only. Three layers keep it
+  read-only: DuckDB's parser must read it as one query made only of
+  SELECT, set-operation and CTE nodes (a data-modifying CTE parses as a
+  SELECT), whose CTEs have plain names and whose tables are the model's or
+  DuckDB's catalog views; it runs in a `READ ONLY` transaction on a
+  connection of its own; and the engine, once its files are open, has
+  external access off except for the data folder, and extension
+  autoinstall and autoload off. The row cap is part of the query
+  (`SELECT * FROM (…) LIMIT n+1`), since DuckDB builds the whole answer
+  before the first row is read. At most 1,000 rows unless `-limit`; 30 s
+  timeout.
 - **Why:** Only serve may open the database (D-030), and agents run many
   small queries in a row, so each must be bounded and fail with DuckDB's
   own message. Views over `records` store nothing twice (D-030).

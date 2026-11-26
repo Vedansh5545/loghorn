@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,8 +103,34 @@ func OpenMemory(in config.Input, warn func(string)) (*Engine, error) {
 		e.closeDB()
 		return nil, err
 	}
+	if err := e.harden(); err != nil {
+		e.closeDB()
+		return nil, err
+	}
 	e.start()
 	return e, nil
+}
+
+// harden shuts the database off from everything outside its own files once
+// they are open: no file or network access outside the data folder (where
+// the archives are written and read, and DuckDB spills), and no extension
+// installed or loaded on demand. SQL from the command line then cannot reach
+// the machine even through a query the guard did not foresee.
+func (e *Engine) harden() error {
+	stmts := []string{"SET autoinstall_known_extensions = false", "SET autoload_known_extensions = false"}
+	if e.files != nil {
+		dir := filepath.Clean(e.files.Dir) + string(filepath.Separator)
+		stmts = append(stmts,
+			"SET allowed_directories = ["+lit(dir)+"]",
+			"SET temp_directory = "+lit(filepath.Join(dir, ".duckdb-tmp")))
+	}
+	stmts = append(stmts, "SET enable_external_access = false")
+	for _, st := range stmts {
+		if err := e.exec(st); err != nil {
+			return fmt.Errorf("duckdb: %s: %w", st, err)
+		}
+	}
+	return nil
 }
 
 // open starts DuckDB with the in-memory tables, which also take a file

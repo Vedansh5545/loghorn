@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -136,5 +138,62 @@ func TestStoreSQLRoundsFloats(t *testing.T) {
 	res := sqlRows(t, s, `SELECT 0.1 + 0.2 AS x, CAST(2828.0499999999997 AS DOUBLE) AS y, 7.0 / 3 AS z`, 10)
 	if fmt.Sprint(res.Rows) != "[[0.3 2828.05 2.33333333333333]]" {
 		t.Fatalf("rows %v", res.Rows)
+	}
+}
+
+func TestStoreSQLLimitKeepsOrder(t *testing.T) {
+	s := sqlStore(t, 6)
+	res := sqlRows(t, s, "SELECT seq FROM logs.\"app\" ORDER BY seq DESC;  -- newest first\n", 2)
+	if len(res.Rows) != 2 || !res.Truncated || res.Rows[0][0].(int64) < res.Rows[1][0].(int64) {
+		t.Fatalf("rows %v truncated %v", res.Rows, res.Truncated)
+	}
+	if res := sqlRows(t, s, `DESCRIBE logs."app"`, 3); len(res.Rows) != 3 || !res.Truncated {
+		t.Fatalf("DESCRIBE: %d rows", len(res.Rows))
+	}
+}
+
+func TestStoreSQLStreamsDifferingInCase(t *testing.T) {
+	s := New(ModeLive, t0)
+	for i, stream := range []string{"app", "app", "App"} {
+		s.Add(logRecord(t, strings.Replace(sqlLine(i, "api", ""), `"schema":"app"`, `"schema":"`+stream+`"`, 1)), time.Time{})
+	}
+	if n := sqlRows(t, s, `SELECT count(*) FROM logs."app"`, 10).Rows[0][0]; n != int64(2) {
+		t.Fatalf("logs.app has %v records, want the larger stream's 2", n)
+	}
+}
+
+// TestStoreSQLReviewAttacks: the review's exact inputs change nothing and
+// read no file.
+func TestStoreSQLReviewAttacks(t *testing.T) {
+	s := sqlStore(t, 4)
+	secret := filepath.Join(t.TempDir(), "secret.csv")
+	os.WriteFile(secret, []byte("key,value\nhunter2,x\n"), 0o600)
+	for _, q := range []string{
+		`WITH d AS (DELETE FROM records RETURNING _id) SELECT (WITH records AS (SELECT 1) SELECT 1), count(*) FROM d`,
+		`WITH u AS (UPDATE _fields SET n = 0 RETURNING 1) SELECT (WITH _fields AS (SELECT 1) SELECT 1), count(*) FROM u`,
+		`SELECT * FROM (SELECT (WITH "` + secret + `" AS (SELECT 1 a) SELECT a FROM "` + secret + `") AS x), '` + secret + `'`,
+		`SELECT * FROM read_csv('` + secret + `')`,
+	} {
+		res, err := s.SQL(context.Background(), q, 10)
+		if err == nil {
+			t.Errorf("answered %v: %s", res.Rows, q)
+		} else if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("error leaks the file: %v", err)
+		}
+	}
+	if n := sqlRows(t, s, `SELECT count(*) FROM logs."app"`, 10).Rows[0][0]; n != int64(4) {
+		t.Fatalf("records after the attacks: %v", n)
+	}
+}
+
+// TestStoreSQLCapStopsTheQuery: the cap is part of the query, so a huge
+// answer is not built before the first row is read.
+func TestStoreSQLCapStopsTheQuery(t *testing.T) {
+	s := sqlStore(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := s.SQL(ctx, `SELECT range AS n FROM range(10000000000)`, 3)
+	if err != nil || len(res.Rows) != 3 || !res.Truncated {
+		t.Fatalf("%v rows, truncated %v, err %v", len(res.Rows), res.Truncated, err)
 	}
 }

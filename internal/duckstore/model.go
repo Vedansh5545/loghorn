@@ -42,12 +42,18 @@ func ModelDDL(tables []ModelTable, runStart time.Time, runID string) []string {
 		"CREATE MACRO memory.loghorn.this_run_start() AS TIMESTAMPTZ " + lit(runStart.UTC().Format("2006-01-02 15:04:05.999999")+"+00"),
 		"CREATE MACRO memory.loghorn.this_run_id() AS " + id,
 	}
+	seen := map[string]bool{}
 	for _, t := range tables {
 		sch := "logs"
 		if t.Source == record.SourceOtel {
 			sch = "spans"
 		}
-		ddl = append(ddl, "CREATE VIEW memory."+sch+"."+ident(t.Stream)+" AS "+modelSelect(t))
+		// DuckDB names are case-insensitive: the first table of a name wins
+		// (the caller puts the larger stream first).
+		if k := sch + "." + strings.ToLower(t.Stream); !seen[k] {
+			seen[k] = true
+			ddl = append(ddl, "CREATE VIEW memory."+sch+"."+ident(t.Stream)+" AS "+modelSelect(t))
+		}
 	}
 	return append(ddl, tablesView)
 }
@@ -68,18 +74,23 @@ ORDER BY c.schema_name, c.table_name`
 
 // modelSelect is the body of t's view.
 func modelSelect(t ModelTable) string {
-	seen := map[string]bool{}
+	// DuckDB names are case-insensitive: of fields whose names differ only
+	// in case, the one with the most values gets the column.
+	best := map[string]schema.Field{}
+	for _, f := range t.Fields {
+		k := strings.ToLower(f.Path)
+		if b, ok := best[k]; !ok || f.Count > b.Count {
+			best[k] = f
+		}
+	}
 	for _, c := range modelColumns {
-		seen[c] = true
+		delete(best, c)
 	}
 	var cols []schema.Field
 	for _, f := range t.Fields {
-		k := strings.ToLower(f.Path)
-		if seen[k] {
-			continue // DuckDB names are case-insensitive: the first one wins
+		if b, ok := best[strings.ToLower(f.Path)]; ok && b.Path == f.Path {
+			cols = append(cols, f)
 		}
-		seen[k] = true
-		cols = append(cols, f)
 	}
 	out := []string{"_id AS seq", `CAST(timezone('UTC', _time) AS TIMESTAMPTZ) AS "time"`, "_service AS service", "_text AS raw"}
 	for i, f := range cols {
@@ -101,6 +112,21 @@ func modelValue(v string, t schema.Type) string {
 		return "TRY_CAST(" + v + " AS JSON)"
 	}
 	return v
+}
+
+// ReadOnly runs fn on a connection of its own inside a read-only
+// transaction, so nothing fn runs can write.
+func (e *Engine) ReadOnly(ctx context.Context, fn func(conn *sql.Conn) error) error {
+	conn, err := e.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN TRANSACTION READ ONLY"); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	return fn(conn)
 }
 
 // WithModel makes the table model of ddl (ModelDDL), unless it is what was

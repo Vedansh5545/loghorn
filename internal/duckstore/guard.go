@@ -6,8 +6,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// querier is a *sql.DB or *sql.Conn.
+type querier interface {
+	QueryRowContext(ctx context.Context, q string, args ...any) *sql.Row
+}
+
+// queryNodes are the query node types a read may contain: a data-modifying
+// CTE (DELETE_QUERY_NODE and the like) parses as a SELECT, so every other
+// node type is refused.
+var queryNodes = map[string]bool{
+	"SELECT_NODE": true, "SET_OPERATION_NODE": true, "RECURSIVE_CTE_NODE": true, "CTE_NODE": true,
+}
+
+// plainName is what a CTE may be called: a name that can never be read as
+// a file (a replacement scan), so a CTE cannot disguise a file read.
+var plainName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // allowedTableFunctions are the table functions SQL from the command line
 // may call besides the duckdb_* catalog functions: none of them reads or
@@ -27,7 +44,7 @@ var modelSchemas = map[string]bool{
 // operation of them) whose tables are the table model's or DuckDB's catalog
 // views and whose table functions read no files. Everything else, including
 // writes, ATTACH, INSTALL, SET, COPY and several statements, is refused.
-func CheckReadOnly(ctx context.Context, db *sql.DB, q string) error {
+func CheckReadOnly(ctx context.Context, db querier, q string) error {
 	var text string
 	if err := db.QueryRowContext(ctx, "SELECT CAST(json_serialize_sql(?) AS VARCHAR)", q).Scan(&text); err != nil {
 		return err
@@ -52,12 +69,15 @@ func CheckReadOnly(ctx context.Context, db *sql.DB, q string) error {
 		return err
 	}
 	ctes := map[string]bool{}
-	collectCTEs(node, ctes)
+	if err := collectCTEs(node, ctes); err != nil {
+		return err
+	}
 	return checkRefs(node, ctes)
 }
 
-// collectCTEs adds the name of every common table expression in x.
-func collectCTEs(x any, ctes map[string]bool) {
+// collectCTEs adds the name of every common table expression in x; a name
+// that is not plain is refused.
+func collectCTEs(x any, ctes map[string]bool) error {
 	switch v := x.(type) {
 	case map[string]any:
 		if m, ok := v["cte_map"].(map[string]any); ok {
@@ -65,6 +85,9 @@ func collectCTEs(x any, ctes map[string]bool) {
 				for _, e := range list {
 					if e, ok := e.(map[string]any); ok {
 						if k, ok := e["key"].(string); ok {
+							if !plainName.MatchString(k) {
+								return fmt.Errorf("WITH name %q is not allowed: use a plain name (letters, digits, _)", k)
+							}
 							ctes[strings.ToLower(k)] = true
 						}
 					}
@@ -72,19 +95,27 @@ func collectCTEs(x any, ctes map[string]bool) {
 			}
 		}
 		for _, c := range v {
-			collectCTEs(c, ctes)
+			if err := collectCTEs(c, ctes); err != nil {
+				return err
+			}
 		}
 	case []any:
 		for _, c := range v {
-			collectCTEs(c, ctes)
+			if err := collectCTEs(c, ctes); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // checkRefs refuses a table function or table q may not read.
 func checkRefs(x any, ctes map[string]bool) error {
 	switch v := x.(type) {
 	case map[string]any:
+		if typ, _ := v["type"].(string); strings.HasSuffix(typ, "_NODE") && !queryNodes[typ] {
+			return fmt.Errorf("%s is not allowed: -sql only reads", strings.TrimSuffix(strings.TrimSuffix(typ, "_NODE"), "_QUERY"))
+		}
 		switch v["type"] {
 		case "TABLE_FUNCTION":
 			f, _ := v["function"].(map[string]any)
