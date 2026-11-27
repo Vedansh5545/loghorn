@@ -272,6 +272,10 @@ func epoch(s, unit string) (time.Time, bool) {
 	return time.Unix(0, int64(ns)).UTC(), true
 }
 
+// Space is every character strings.TrimSpace trims (unicode.IsSpace), for
+// SQL that must trim as Convert does. It holds no quote.
+const Space = " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+
 // ParseDuration parses Go duration syntax ("0.003s", "12ms", "1m30s") or a
 // bare number, which means seconds.
 func ParseDuration(s string) (seconds float64, ok bool) {

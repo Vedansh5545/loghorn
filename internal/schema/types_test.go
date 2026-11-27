@@ -3,6 +3,7 @@ package schema
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,5 +105,16 @@ func TestSchemaField(t *testing.T) {
 func TestValidUnit(t *testing.T) {
 	if !ValidUnit(TTimestamp, "ns") || !ValidUnit(TDuration, "ms") || !ValidUnit(TInt, "") || ValidUnit(TInt, "ms") || ValidUnit(TTimestamp, "h") {
 		t.Error("ValidUnit")
+	}
+}
+
+// TestSpaceIsWhatTrimSpaceTrims: Space holds exactly the runes
+// strings.TrimSpace removes.
+func TestSpaceIsWhatTrimSpaceTrims(t *testing.T) {
+	for r := rune(0); r <= 0x10ffff; r++ {
+		trimmed := strings.TrimSpace(string(r)) == ""
+		if in := strings.ContainsRune(Space, r); in != trimmed {
+			t.Errorf("%U: in Space %v, trimmed by TrimSpace %v", r, in, trimmed)
+		}
 	}
 }

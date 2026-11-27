@@ -30,8 +30,10 @@ import (
 func parityLines() []string {
 	base := time.Date(2026, 3, 7, 20, 0, 0, 0, time.UTC)
 	var out []string
-	sevs := []string{"INFO", "WARNING", "ERROR", "error ", "DEBUG", "CRITICAL"}
-	durs := []string{`"12ms"`, `"1.5s"`, `"250us"`, `"2m"`}
+	sevs := []string{"INFO", "WARNING", "ERROR", "error ", "DEBUG", "CRITICAL", "ERROR\n", "\tfatal", "WARNING\u00a0"}
+	// Durations whose float64 seconds a per-unit factor rounds differently
+	// from Go's whole nanoseconds (review §2.5).
+	durs := []string{`"12ms"`, `"1.5s"`, `"250us"`, `"2m"`, `"5us"`, `"3ns"`, `"9ms"`, `"0.1s0.2s"`, `"1h2m3.5s"`}
 	for i := 0; i < 160; i++ {
 		svc := []string{"alpha", "beta"}[i%2]
 		stream := "api"
@@ -39,14 +41,16 @@ func parityLines() []string {
 			stream = "worker"
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, `{"severity":%q,"message":"msg %d %s","labels":{"schema":%q},"service":{"name":%q}`, sevs[i%len(sevs)], i%9, []string{"Alpha", "ünïcode", "Error here"}[i%3], stream, svc)
+		fmt.Fprintf(&b, `{"severity":%q,"message":"msg %d %s","labels":{"schema":%q},"service":{"name":%q}`, sevs[i%len(sevs)], i%9, []string{"Alpha", "ünïcode", "Error here", "İSTANBUL"}[i%4], stream, svc)
 		if i%17 != 5 && i != 0 {
 			fmt.Fprintf(&b, `,"timestamp":%q`, base.Add(time.Duration(i)*23*time.Minute+time.Duration(i%7)*time.Millisecond).Format(time.RFC3339Nano))
 		}
 		if i%11 != 0 {
 			fmt.Fprintf(&b, `,"n":%d`, i%7)
 		}
-		if svc == "alpha" {
+		if svc == "alpha" && i%37 == 2 {
+			fmt.Fprintf(&b, `,"f":1e400,"mixed":%d`, i%5) // not a float64: bad, as in Go (review §2.2)
+		} else if svc == "alpha" {
 			fmt.Fprintf(&b, `,"f":%v,"mixed":%d`, float64(i)*0.25+0.5, i%5)
 		} else {
 			fmt.Fprintf(&b, `,"f":%d,"mixed":"m%d"`, i%4, i%3)
@@ -603,6 +607,68 @@ func TestRunSQLTimestampUnitOverride(t *testing.T) {
 			if d := compareJSON(mustAny(got), mustAny(want), "$"); d != "" {
 				t.Errorf("unit %q query %s:\n%s", unit, mustJSON(q), d)
 			}
+		}
+	}
+}
+
+// TestErrorRateTrimsLikeGo: error_rate counts a severity with tabs,
+// newlines or Unicode spaces around it as Run does (strings.TrimSpace),
+// not only spaces (review §2.4). Ingest normalizes severity, so the
+// records here carry the text directly.
+func TestErrorRateTrimsLikeGo(t *testing.T) {
+	var recs []record.Record
+	for _, r := range parityRecords(t) {
+		if r.Key().Source == record.SourceLog && r.Stream == "api" && len(recs) < 4 {
+			r.Fields["severity"] = []string{"ERROR\n", "\tfatal", "ERROR ", "INFO"}[len(recs)]
+			recs = append(recs, r)
+		}
+	}
+	b := newBackend(t, recs)
+	sch := b.schema(t, "*", "log", "api")
+	q := query.Query{Stream: "api", Source: "log", View: "table", Aggregates: []query.Aggregate{{Op: "error_rate"}}}
+	now := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+	want, err := query.Run(recs, sch, q, now, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := query.RunSQL(context.Background(), b, sch, q, now, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := compareJSON(mustAny(got), mustAny(want), "$"); diff != "" {
+		t.Fatalf("error_rate differs from Run:\n%s", diff)
+	}
+}
+
+// TestSearchFoldsUnicodeCase: search matches case-insensitively by Unicode
+// rules (DuckDB's lower()), not only ASCII: "istanbul" finds "İSTANBUL" and
+// "ÜNÏCODE" finds "ünïcode". Run folds only ASCII for an ASCII term, so
+// these are written expected values, not Run's answers (D-032, review §2.3).
+func TestSearchFoldsUnicodeCase(t *testing.T) {
+	var recs []record.Record
+	for _, r := range parityRecords(t) {
+		if r.Key().Source == record.SourceLog && r.Stream == "api" {
+			recs = append(recs, r)
+		}
+	}
+	b := newBackend(t, recs)
+	sch := b.schema(t, "*", "log", "api")
+	now := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
+	count := func(search, text string) (got, want int) {
+		for _, r := range recs {
+			if strings.Contains(string(r.Raw), text) {
+				want++
+			}
+		}
+		res, err := query.RunSQL(context.Background(), b, sch, query.Query{Stream: "api", Source: "log", Search: search, Limit: 1000}, now, time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(res.Rows), want
+	}
+	for _, c := range []struct{ search, text string }{{"istanbul", "İSTANBUL"}, {"ÜNÏCODE", "ünïcode"}, {"ERROR HERE", "Error here"}} {
+		if got, want := count(c.search, c.text); got != want || want == 0 {
+			t.Errorf("search %q: %d records, want the %d holding %q", c.search, got, want, c.text)
 		}
 	}
 }

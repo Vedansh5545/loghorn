@@ -352,7 +352,9 @@ func (x *sqlRun) metricSQL(a Aggregate, col int) string {
 	case "count":
 		return "CAST(count(*) AS DOUBLE)"
 	case "error_rate":
-		return "CAST(count(*) FILTER (WHERE upper(trim(" + v(x.sev) + ")) IN ('ERROR','CRITICAL','ALERT','EMERGENCY','FATAL')) AS DOUBLE) / count(*)"
+		// isErrorSeverity trims with strings.TrimSpace: tabs, newlines and
+		// Unicode spaces too.
+		return "CAST(count(*) FILTER (WHERE upper(trim(" + v(x.sev) + ", '" + schema.Space + "')) IN ('ERROR','CRITICAL','ALERT','EMERGENCY','FATAL')) AS DOUBLE) / count(*)"
 	}
 	val := "CAST(" + v(col) + " AS DOUBLE)"
 	switch a.Op {

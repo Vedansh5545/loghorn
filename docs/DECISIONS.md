@@ -467,6 +467,22 @@ or has not yet answered.
   started", while the macros mean the latest wrapped run; the two should
   agree.
 
+## D-032 Search folds case by Unicode rules
+
+- **Date:** 2026-11-27 · **Status:** Decided on this branch, for Jim's
+  review · **Decided by:** Jim's review (§2.3) asked for a decision and
+  suggested Unicode; Claude made the call
+- **Decision:** A search matches case-insensitively by Unicode rules, as
+  DuckDB's `lower()` folds: `istanbul` finds `İSTANBUL`, and `ÜNÏCODE` finds
+  `ünïcode`. This is what the web view and `loghorn query` already do,
+  since both search through SQL.
+- **Why:** People search logs in their own language. Folding only ASCII
+  for an ASCII term (Go's `query.Run`) misses text a reader sees as the
+  same word.
+- **Consequences:** `query.Run`, kept only as a test reference (D-016),
+  differs here. `TestSearchFoldsUnicodeCase` holds written expected values
+  instead of comparing with it.
+
 ---
 
 ## Open questions

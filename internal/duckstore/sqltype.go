@@ -116,12 +116,9 @@ func rfc3339SQL(s string) string {
 	return "(" + local + " - to_seconds(" + secs + "))"
 }
 
-// goSpace is what strings.TrimSpace trims (unicode.IsSpace); DuckDB's
-// one-argument trim removes only ' '.
-const goSpace = " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-
-// trimSQL is strings.TrimSpace of c.
-func trimSQL(c string) string { return "trim(" + c + ", " + lit(goSpace) + ")" }
+// trimSQL is strings.TrimSpace of c. DuckDB's one-argument trim removes
+// only ' '.
+func trimSQL(c string) string { return "trim(" + c + ", " + lit(schema.Space) + ")" }
 
 // durationSQL parses Go duration syntax or a bare number (seconds), as
 // schema.ParseDuration does, to the same float64: time.ParseDuration's
