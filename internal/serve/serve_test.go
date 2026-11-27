@@ -433,3 +433,21 @@ func TestServeSQL(t *testing.T) {
 		t.Fatalf("%d %q", resp.StatusCode, b)
 	}
 }
+
+type orderCloser struct {
+	name  string
+	order *[]string
+}
+
+func (c orderCloser) Close() error { *c.order = append(*c.order, c.name); return nil }
+
+// TestStoreClosesBeforeTheFolderLock: the store drains and checkpoints
+// while the data folder is still locked, so a serve restarted meanwhile
+// can't take the folder and find loghorn.duckdb still open (review §1.2).
+func TestStoreClosesBeforeTheFolderLock(t *testing.T) {
+	var order []string
+	closeOwned(orderCloser{"store", &order}, orderCloser{"logs", &order})
+	if strings.Join(order, ",") != "store,logs" {
+		t.Fatalf("close order %v, want the store first", order)
+	}
+}

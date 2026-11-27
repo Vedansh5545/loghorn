@@ -201,9 +201,17 @@ func (s *Server) Close() error {
 		if s.spans != nil {
 			s.spans.Close()
 		}
-		s.closeErr = errors.Join(s.logs.Close(), s.st.Close())
+		s.closeErr = closeOwned(s.st, s.logs)
 	})
 	return s.closeErr
+}
+
+// closeOwned closes the store, then the log writer. The writer holds the
+// data folder's lock, so it goes last: the store drains its queue and
+// checkpoints loghorn.duckdb while no other serve can take the folder.
+func closeOwned(st, logs io.Closer) error {
+	err := st.Close()
+	return errors.Join(err, logs.Close())
 }
 
 func (s *Server) serveSocket(ln net.Listener) {
