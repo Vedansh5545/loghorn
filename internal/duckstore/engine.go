@@ -76,7 +76,8 @@ type Engine struct {
 	// failWrites and failArchive make file writes and archive checks fail
 	// (tests).
 	failWrites, failArchive bool
-	warned                  map[string]bool // warnings already given
+	rejectRow               func(record.Record) bool // tests: rows to refuse as bad data
+	warned                  map[string]bool          // warnings already given
 
 	// modelMu guards the table model's views: WithModel replaces them
 	// holding it, and queries over them hold it for reading. model is the

@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	duckdb "github.com/duckdb/duckdb-go/v2"
 
@@ -16,28 +18,58 @@ import (
 )
 
 // write stores one batch, logs and spans alike, with its tallies in one
-// transaction. A file that fails sends the batch, and the rest of the
-// session, to memory.
+// transaction. When the batch fails, memory tells the cause apart: if memory
+// takes it, the file is at fault and the rest of the session goes to memory;
+// if memory refuses it too, a record's data is at fault, so the batch is
+// stored row by row and only the refused records are skipped (they stay in
+// the text log).
 func (e *Engine) write(batch []record.Record) {
 	defer e.archiveAtMidnight(batch)
 	p := e.dest
 	if err := e.writeTx(p, batch); err != nil {
 		if p.file {
-			e.fileFailed(err)
-			err = e.writeTx(e.dest, batch)
+			if e.writeTx(e.mem, batch) == nil {
+				e.fileFailed(err)
+				err = nil
+			}
 		}
 		if err != nil {
-			e.warnOnce("loghorn: DuckDB write failed: " + err.Error())
+			e.writeRows(p, batch)
 		}
 	}
 	e.ownerOnly()
 	e.version.Add(1)
 }
 
+// writeRows stores batch one record at a time, skipping and counting the
+// records p refuses.
+func (e *Engine) writeRows(p *part, batch []record.Record) {
+	skipped := 0
+	var first error
+	for _, r := range batch {
+		if err := e.writeTx(p, []record.Record{r}); err != nil {
+			skipped++
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	if skipped > 0 {
+		e.warn(fmt.Sprintf("loghorn: DuckDB skipped %d record(s) it could not store (%v); the text log keeps them", skipped, firstLine(first)))
+	}
+}
+
 // writeTx appends recs to p and adds their tallies, all or nothing.
 func (e *Engine) writeTx(p *part, recs []record.Record) error {
 	if p.file && e.failWrites {
 		return errors.New("write refused (test)")
+	}
+	if e.rejectRow != nil {
+		for _, r := range recs {
+			if e.rejectRow(r) {
+				return errors.New("row refused (test)")
+			}
+		}
 	}
 	if err := e.exec("BEGIN TRANSACTION"); err != nil {
 		return err
@@ -101,10 +133,17 @@ func nullStr(s string) any {
 	return s
 }
 
+// minTime and maxTime bound what _time (TIMESTAMP_NS) can hold. A time
+// outside them is stored as NULL, as a missing time is; _raw keeps it.
+var (
+	minTime = time.Unix(0, math.MinInt64+1).UTC()
+	maxTime = time.Unix(0, math.MaxInt64).UTC()
+)
+
 // row is a record's values in column order.
 func row(r record.Record) []driver.Value {
 	var tm any
-	if !r.Time.IsZero() {
+	if !r.Time.IsZero() && !r.Time.Before(minTime) && !r.Time.After(maxTime) {
 		tm = r.Time.UTC()
 	}
 	src := r.Key().Source

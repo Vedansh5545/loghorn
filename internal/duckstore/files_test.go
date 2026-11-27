@@ -214,3 +214,47 @@ func TestSkippedRecordsUnmarkImport(t *testing.T) {
 		t.Error("files with skipped records still marked imported")
 	}
 }
+
+// TestOutOfRangeTimeKeepsTheBatch: a time DuckDB can't hold (TIMESTAMP_NS
+// covers 1677 to 2262) is stored as NULL, so neither the record nor the rest
+// of its batch is lost and the files stay in use (review §1.1).
+func TestOutOfRangeTimeKeepsTheBatch(t *testing.T) {
+	var warns []string
+	e := openFiles(t, t.TempDir(), true, func(m string) { warns = append(warns, m) })
+	defer e.Close()
+	far := logRec(t, "api", "s", ``)
+	far.Time = time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)
+	old := logRec(t, "api", "s", ``)
+	old.Time = time.Date(1600, 1, 1, 0, 0, 0, 0, time.UTC)
+	addSync(t, e, withSeq(logRec(t, "api", "s", ``), 1), withSeq(far, 2), withSeq(old, 3))
+	if e.failed || len(warns) != 0 {
+		t.Fatalf("files failed %v, warnings %q", e.failed, warns)
+	}
+	var n, nulls int
+	if err := e.DB().QueryRow("SELECT count(*), count(*) FILTER (WHERE _time IS NULL) FROM loghorn_db.main.records").Scan(&n, &nulls); err != nil || n != 3 || nulls != 2 {
+		t.Fatalf("file holds %d records, %d without a time (%v); want 3 and 2", n, nulls, err)
+	}
+}
+
+// TestBadRowSkipsOnlyItself: a row DuckDB refuses for its data, in memory
+// as well as in the file, is skipped with a warning; the rest of the batch
+// is stored and the files stay in use (review §1.1).
+func TestBadRowSkipsOnlyItself(t *testing.T) {
+	var warns []string
+	e := openFiles(t, t.TempDir(), true, func(m string) { warns = append(warns, m) })
+	defer e.Close()
+	e.wmu.Lock()
+	e.rejectRow = func(r record.Record) bool { return r.Seq == 2 }
+	e.wmu.Unlock()
+	addSync(t, e, withSeq(logRec(t, "api", "s", ``), 1), withSeq(logRec(t, "api", "s", ``), 2), withSeq(logRec(t, "api", "s", ``), 3))
+	if e.failed {
+		t.Fatal("a bad row sent the session to memory")
+	}
+	var n int
+	if err := e.DB().QueryRow("SELECT count(*) FROM loghorn_db.main.records").Scan(&n); err != nil || n != 2 {
+		t.Fatalf("file holds %d records (%v), want 2", n, err)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "skipped") {
+		t.Errorf("warnings %q", warns)
+	}
+}
