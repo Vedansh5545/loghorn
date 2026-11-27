@@ -52,6 +52,8 @@ type Options struct {
 	// minutes.
 	AdoptEvery       time.Duration
 	SocketCheckEvery time.Duration
+
+	storeOpened func() // tests: runs once the store is open, before binding
 }
 
 // PortError is a listener that could not be bound. Which is "web" or
@@ -119,8 +121,25 @@ func Start(o Options) (*Server, error) {
 		return nil, err
 	}
 	s.logs = logs
+
+	// Open the store before binding anything: a first start, or one after
+	// a crash, imports days of text (about 20 s for 770k records). Until
+	// then nothing is bound, so run and status find serve not running at
+	// once, rather than a socket that accepts and never answers.
+	if w, err := logs.Companion(logfile.SpansBase, logfile.SpansSuffix); err != nil {
+		s.logf("span file: %v; spans are kept in memory only", err)
+	} else {
+		s.spans = w
+	}
+	s.openStore()
+	if o.storeOpened != nil {
+		o.storeOpened()
+	}
 	undo := func() {
-		logs.Close()
+		if s.spans != nil {
+			s.spans.Close()
+		}
+		closeOwned(s.st, logs)
 	}
 
 	sockLn, err := sock.Listen(o.Socket)
@@ -128,9 +147,10 @@ func Start(o Options) (*Server, error) {
 		undo()
 		return nil, err
 	}
+	closeFiles := undo
 	undo = func() {
 		sockLn.Close()
-		logs.Close()
+		closeFiles()
 	}
 	webLn, err := web.Listen(o.WebPort)
 	if err != nil {
@@ -143,13 +163,6 @@ func Start(o Options) (*Server, error) {
 		undo()
 		return nil, &PortError{Addr: addr(o.OTLPPort), Which: "otlp-http", Err: err}
 	}
-
-	if w, err := logs.Companion(logfile.SpansBase, logfile.SpansSuffix); err != nil {
-		s.logf("span file: %v; spans are kept in memory only", err)
-	} else {
-		s.spans = w
-	}
-	s.openStore()
 
 	s.sink, s.spanFn = s.logSink(), s.spanSink()
 	s.router = newRouter(s.sink, s.st, o.Config.Input, o.Now)

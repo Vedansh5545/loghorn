@@ -22,6 +22,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/duckstore"
 	"github.com/jimbeveridge/loghorn/internal/incoming"
 	"github.com/jimbeveridge/loghorn/internal/logfile"
 	"github.com/jimbeveridge/loghorn/internal/record"
@@ -467,5 +468,53 @@ func TestFallbackStoreUsesTheInputConfig(t *testing.T) {
 	waitFor(t, "the record", func() bool { return len(records(s)) == 1 })
 	if sev := records(s)[0].Fields["severity"]; sev != "DEFAULT" {
 		t.Errorf("severity %v; with severity = numeric the text ERROR is DEFAULT", sev)
+	}
+}
+
+// TestNothingBoundWhileTheStoreOpens: opening the store can import days of
+// text (about 20 s for 770k records). Meanwhile the socket and ports are
+// not bound, so a probe finds serve not running at once instead of hanging
+// on a bound socket nobody serves (review §4, silent ports).
+func TestNothingBoundWhileTheStoreOpens(t *testing.T) {
+	o := testOpts(t)
+	var probeErr error
+	var webErr error
+	o.storeOpened = func() {
+		_, probeErr = sock.Probe(o.Socket)
+		if o.WebPort != 0 {
+			_, webErr = net.DialTimeout("tcp", addr(o.WebPort), time.Second)
+		}
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.WebPort = ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	start(t, o)
+	if !errors.Is(probeErr, sock.ErrNotRunning) {
+		t.Errorf("probe while the store opened: %v, want ErrNotRunning", probeErr)
+	}
+	if webErr == nil {
+		t.Error("the web port accepted connections while the store opened")
+	}
+}
+
+// TestFailedStartClosesTheStore: a port that can't be bound undoes the
+// store too: its files are closed cleanly, which marks them imported, so the
+// next serve needn't import the text again.
+func TestFailedStartClosesTheStore(t *testing.T) {
+	o := testOpts(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	o.OTLPPort = ln.Addr().(*net.TCPAddr).Port
+	if _, err := Start(o); err == nil {
+		t.Fatal("Start bound a port in use")
+	}
+	if _, err := os.Stat(filepath.Join(o.DataDir, duckstore.ImportedFile)); err != nil {
+		t.Errorf("the store wasn't closed cleanly: %v", err)
 	}
 }
