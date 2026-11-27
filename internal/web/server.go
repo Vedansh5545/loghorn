@@ -251,7 +251,11 @@ type sessionJSON struct {
 }
 
 func (s *server) session(w http.ResponseWriter, r *http.Request) {
-	in := s.o.Store.Info()
+	in, err := s.o.Store.Info()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, sessionJSON{
 		Mode: in.Mode, RunStart: timePtr(in.RunStart), Earliest: timePtr(in.Earliest),
 		Latest: timePtr(in.Latest), Count: in.Count, ConfigBase: s.o.ConfigBase,
@@ -267,8 +271,13 @@ type streamJSON struct {
 }
 
 func (s *server) streams(w http.ResponseWriter, r *http.Request) {
+	streams, err := s.o.Store.Streams()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	out := []streamJSON{}
-	for _, sc := range s.o.Store.Streams() {
+	for _, sc := range streams {
 		out = append(out, streamJSON{sc.Name, sc.Source, sc.Count})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -292,12 +301,16 @@ func (s *server) kinds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rng := query.Range{From: r.URL.Query().Get("from"), To: r.URL.Query().Get("to")}
-	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.Info().RunStart)
+	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.RunStart())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	kc, sc := s.o.Store.Kinds(src, serviceParam(r), from, to)
+	kc, sc, err := s.o.Store.Kinds(src, serviceParam(r), from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	out := struct {
 		Kinds    []countJSON        `json:"kinds"`
 		Services []serviceCountJSON `json:"services"`
@@ -493,7 +506,9 @@ func (s *server) query(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.o.Store.Query(r.Context(), sch, q, s.o.Now())
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		// Validate has refused what the request got wrong; what fails
+		// here is the engine.
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	switch format {
@@ -557,12 +572,22 @@ func (s *server) trace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if traceID == "" {
-		if traceID = trace.Find(s.o.Store.SpanRecords(spanID), spanID); traceID == "" {
+		recs, err := s.o.Store.SpanRecords(spanID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if traceID = trace.Find(recs, spanID); traceID == "" {
 			writeError(w, http.StatusNotFound, "no record with that span id")
 			return
 		}
 	}
-	t, ok := trace.Build(s.o.Store.TraceRecords(traceID), traceID, trace.Limit)
+	recs, err := s.o.Store.TraceRecords(traceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	t, ok := trace.Build(recs, traceID, trace.Limit)
 	if !ok {
 		writeError(w, http.StatusNotFound, "no spans or logs with that trace id")
 		return
@@ -585,12 +610,17 @@ func (s *server) aggregate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rng := query.Range{From: q.Get("from"), To: q.Get("to")}
-	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.Info().RunStart)
+	from, to, err := rng.Resolve(s.o.Now(), s.o.Store.RunStart())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	op, ok := trace.Aggregate(s.o.Store.AggregateRecords(name), trace.AggOptions{Name: name, Service: q.Get("service"), From: from, To: to})
+	recs, err := s.o.Store.AggregateRecords(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	op, ok := trace.Aggregate(recs, trace.AggOptions{Name: name, Service: q.Get("service"), From: from, To: to})
 	if !ok {
 		writeError(w, http.StatusNotFound, "no root spans with that name in range")
 		return
@@ -607,7 +637,11 @@ func (s *server) record(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "seq must be a positive integer")
 		return
 	}
-	found, ok := s.o.Store.Record(seq)
+	found, ok, err := s.o.Store.Record(seq)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "no record with that seq")
 		return

@@ -210,34 +210,42 @@ func (s *Store) Records() []record.Record {
 }
 
 // Info returns the session summary. Earliest/Latest ignore zero times.
-func (s *Store) Info() Info {
+func (s *Store) Info() (Info, error) {
 	defer s.read()()
 	in := Info{Mode: s.mode, RunStart: s.runStart}
 	var n int64
 	var lo, hi *time.Time
-	if err := s.e.DB().QueryRow("SELECT count(*), min(_time), max(_time) FROM all_records").Scan(&n, &lo, &hi); err == nil {
-		in.Count = int(n)
-		if lo != nil {
-			in.Earliest, in.Latest = *lo, *hi
-		}
+	if err := s.e.DB().QueryRow("SELECT count(*), min(_time), max(_time) FROM all_records").Scan(&n, &lo, &hi); err != nil {
+		return in, err
 	}
-	return in
+	in.Count = int(n)
+	if lo != nil {
+		in.Earliest, in.Latest = *lo, *hi
+	}
+	return in, nil
 }
 
+// RunStart is when this run began (zero for stored days); it reads nothing.
+func (s *Store) RunStart() time.Time { return s.runStart }
+
 // Streams returns per-stream counts sorted by name, then source.
-func (s *Store) Streams() []StreamCount {
+func (s *Store) Streams() ([]StreamCount, error) {
 	defer s.read()()
 	out := []StreamCount{}
 	rows, err := s.e.DB().Query("SELECT _stream, _source, count(*) FROM all_records GROUP BY 1, 2")
 	if err != nil {
-		return out
+		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c StreamCount
-		if rows.Scan(&c.Name, &c.Source, &c.Count) == nil {
-			out = append(out, c)
+		if err := rows.Scan(&c.Name, &c.Source, &c.Count); err != nil {
+			return []StreamCount{}, err
 		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return []StreamCount{}, err
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -245,7 +253,7 @@ func (s *Store) Streams() []StreamCount {
 		}
 		return out[i].Source < out[j].Source
 	})
-	return out
+	return out, nil
 }
 
 // Preload reads stored log or span files into s, in order, with no received
@@ -283,7 +291,7 @@ type Count struct {
 // from is zero. services counts per service, ignoring service; kinds counts
 // per Stream, limited to service unless it is "*". Both sort by count
 // descending, then name, and are never nil.
-func (s *Store) Kinds(source, service string, from, to time.Time) (kinds, services []Count) {
+func (s *Store) Kinds(source, service string, from, to time.Time) (kinds, services []Count, err error) {
 	kinds, services = []Count{}, []Count{}
 	src, ok := record.ParseSource(source)
 	if !ok {
@@ -302,22 +310,25 @@ func (s *Store) Kinds(source, service string, from, to time.Time) (kinds, servic
 	}
 	rows, err := s.e.DB().Query("SELECT _service, _stream, count(*) FROM all_records WHERE "+cond+" GROUP BY 1, 2", args...)
 	if err != nil {
-		return
+		return kinds, services, err
 	}
 	defer rows.Close()
 	kc, sc := map[string]int{}, map[string]int{}
 	for rows.Next() {
 		var svc, stream string
 		var n int
-		if rows.Scan(&svc, &stream, &n) != nil {
-			continue
+		if err := rows.Scan(&svc, &stream, &n); err != nil {
+			return []Count{}, []Count{}, err
 		}
 		sc[svc] += n
 		if service == "*" || svc == service {
 			kc[stream] += n
 		}
 	}
-	return sortedCounts(kc), sortedCounts(sc)
+	if err := rows.Err(); err != nil {
+		return []Count{}, []Count{}, err
+	}
+	return sortedCounts(kc), sortedCounts(sc), nil
 }
 
 func sortedCounts(m map[string]int) []Count {
@@ -368,45 +379,42 @@ func (s *Store) Query(ctx context.Context, sch schema.Schema, q query.Query, now
 	return query.RunSQL(ctx, s.e, sch, q, now, s.runStart)
 }
 
-// Record returns the record with id seq.
-func (s *Store) Record(seq int) (record.Record, bool) {
+// Record returns the record with id seq; found is false when there is none.
+func (s *Store) Record(seq int) (r record.Record, found bool, err error) {
 	defer s.read()()
 	recs, err := s.e.Records(context.Background(), "_id = "+strconv.Itoa(seq))
 	if err != nil || len(recs) == 0 {
-		return record.Record{}, false
+		return record.Record{}, false, err
 	}
-	return recs[0], true
+	return recs[0], true, nil
 }
 
 // SpanRecords returns the records whose span id is spanID (normalized).
-func (s *Store) SpanRecords(spanID string) []record.Record {
+func (s *Store) SpanRecords(spanID string) ([]record.Record, error) {
 	id := record.NormalizeSpanID(spanID)
 	if id == "" {
-		return nil
+		return nil, nil
 	}
 	defer s.read()()
-	recs, _ := s.e.Records(context.Background(), "span_id = ?", id)
-	return recs
+	return s.e.Records(context.Background(), "span_id = ?", id)
 }
 
 // TraceRecords returns the records of one trace (normalized trace id).
-func (s *Store) TraceRecords(traceID string) []record.Record {
+func (s *Store) TraceRecords(traceID string) ([]record.Record, error) {
 	id := record.NormalizeTraceID(traceID)
 	if id == "" {
-		return nil
+		return nil, nil
 	}
 	defer s.read()()
-	recs, _ := s.e.Records(context.Background(), "trace_id = ?", id)
-	return recs
+	return s.e.Records(context.Background(), "trace_id = ?", id)
 }
 
 // AggregateRecords returns what trace.Aggregate needs for operation name:
 // the spans of every trace holding a span with that name, and the spans
 // those spans name as parents.
-func (s *Store) AggregateRecords(name string) []record.Record {
+func (s *Store) AggregateRecords(name string) ([]record.Record, error) {
 	defer s.read()()
-	recs, _ := s.e.Records(context.Background(),
+	return s.e.Records(context.Background(),
 		"_source = 'otel' AND (trace_id IN (SELECT trace_id FROM all_records WHERE _source = 'otel' AND message = ? AND span_id IS NOT NULL AND trace_id IS NOT NULL)"+
 			" OR span_id IN (SELECT parent_span_id FROM all_records WHERE _source = 'otel' AND message = ? AND parent_span_id IS NOT NULL))", name, name)
-	return recs
 }

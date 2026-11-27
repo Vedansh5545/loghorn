@@ -66,7 +66,8 @@ func openStore(t *testing.T, dir string, mode Mode) *opened {
 
 func total(s *Store) int {
 	n := 0
-	for _, c := range s.Streams() {
+	streams, _ := s.Streams()
+	for _, c := range streams {
 		n += c.Count
 	}
 	return n

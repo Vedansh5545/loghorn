@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -60,7 +61,7 @@ func main() {
 		os.Exit(1)
 	}
 	srv := &http.Server{Handler: web.New(web.Options{Store: st, ConfigBase: base}), ReadHeaderTimeout: 10 * time.Second}
-	fmt.Printf("loghorn demo: http://%s/ (%d records)\n", l.Addr(), st.Info().Count)
+	fmt.Printf("loghorn demo: http://%s/ (%d records)\n", l.Addr(), info(st).Count)
 	go func() {
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, os.Interrupt)
@@ -88,4 +89,12 @@ func loadSpans(st *store.Store, path string) error {
 		}
 	}
 	return sc.Err()
+}
+
+func info(st *store.Store) store.Info {
+	in, err := st.Info()
+	if err != nil {
+		log.Fatal(err)
+	}
+	return in
 }

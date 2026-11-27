@@ -79,7 +79,7 @@ func TestSpeedAtScale(t *testing.T) {
 	if compare {
 		all = s.Records()
 	}
-	if got := s.Info().Count; got != n {
+	if got := mustInfo(t, s).Count; got != n {
 		t.Fatalf("stored %d, want %d", got, n)
 	}
 	now := start.Add(24 * time.Hour)
@@ -155,7 +155,7 @@ func TestSpeedAtScale(t *testing.T) {
 	defer s.Close()
 	t.Logf("next day's open, archiving the day to Parquet: %v", d.Round(time.Millisecond))
 	sizes("after archiving")
-	if got := s.Info().Count; got != n {
+	if got := mustInfo(t, s).Count; got != n {
 		t.Fatalf("after archiving: %d records, want %d", got, n)
 	}
 	queries(s, "parquet", false)

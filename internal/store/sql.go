@@ -109,7 +109,10 @@ func (s *Store) modelTables() ([]duckstore.ModelTable, error) {
 	}
 	// Larger streams first: of streams whose names differ only in case, the
 	// model keeps the first.
-	streams := s.Streams()
+	streams, err := s.Streams()
+	if err != nil {
+		return nil, err
+	}
 	sort.SliceStable(streams, func(i, j int) bool { return streams[i].Count > streams[j].Count })
 	for _, c := range streams {
 		if c.Name == record.AllStreams {

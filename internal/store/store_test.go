@@ -57,7 +57,7 @@ func TestBackfillLeading(t *testing.T) {
 	s := New(ModeHistorical, time.Time{})
 	s.Add(rec("a", time.Time{}), time.Time{})
 	s.Add(rec("a", time.Time{}), time.Time{})
-	if in := s.Info(); !in.Earliest.IsZero() || !in.Latest.IsZero() {
+	if in := mustInfo(t, s); !in.Earliest.IsZero() || !in.Latest.IsZero() {
 		t.Fatalf("bounds with no real time: %+v", in)
 	}
 	s.Add(rec("a", t0), time.Time{})
@@ -77,7 +77,7 @@ func TestStreamsSorted(t *testing.T) {
 	for _, n := range []string{"db", "api", "db", "server"} {
 		s.Add(rec(n, t0), time.Time{})
 	}
-	got := s.Streams()
+	got := mustStreams(t, s)
 	want := []StreamCount{{Name: "api", Source: "log", Count: 1}, {Name: "db", Source: "log", Count: 2}, {Name: "server", Source: "log", Count: 1}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -90,7 +90,7 @@ func TestInfoBounds(t *testing.T) {
 	s.Add(rec("a", time.Time{}), time.Time{})
 	s.Add(rec("a", t0.Add(time.Second)), time.Time{})
 	s.Add(rec("a", t0.Add(9*time.Second)), time.Time{})
-	in := s.Info()
+	in := mustInfo(t, s)
 	if in.Mode != ModeLive || !in.RunStart.Equal(t0) || in.Count != 4 ||
 		!in.Earliest.Equal(t0.Add(time.Second)) || !in.Latest.Equal(t0.Add(9*time.Second)) {
 		t.Fatalf("%+v", in)
@@ -105,7 +105,7 @@ func TestPreloadReadsFixtures(t *testing.T) {
 	// pino.log: 3 db, 2 api, 2 server records (one server line untimed); the
 	// npm banner line has no stream label and is dropped.
 	want := []StreamCount{{Name: "api", Source: "log", Count: 2}, {Name: "db", Source: "log", Count: 3}, {Name: "server", Source: "log", Count: 2}}
-	if got := s.Streams(); fmt.Sprint(got) != fmt.Sprint(want) {
+	if got := mustStreams(t, s); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 	recs := s.Records()
@@ -145,7 +145,7 @@ func TestConcurrentAddAndRead(t *testing.T) {
 	close(done)
 	wg.Wait()
 	s.Flush()
-	if s.Info().Count != 10000 {
+	if mustInfo(t, s).Count != 10000 {
 		t.Fatal("lost records")
 	}
 }
@@ -161,7 +161,7 @@ func TestStreamsBySource(t *testing.T) {
 		r.Time, r.Fields = t0, map[string]any{}
 		s.Add(r, time.Time{})
 	}
-	got := s.Streams()
+	got := mustStreams(t, s)
 	want := []StreamCount{{Name: "api", Source: "log", Count: 1}, {Name: "db", Source: "log", Count: 1}, {Name: "db", Source: "otel", Count: 2}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -178,11 +178,11 @@ func TestKindsRangeEdges(t *testing.T) {
 	s.Add(svcRec("a", "db", t10), time.Time{})
 	s.Add(svcRec("a", "db", t10.Add(5*time.Minute)), time.Time{})
 	s.Add(svcRec("a", "x", t10.Add(10*time.Minute)), time.Time{})
-	k, _ := s.Kinds("otel", "a", t10, t10.Add(10*time.Minute))
+	k, _, _ := s.Kinds("otel", "a", t10, t10.Add(10*time.Minute))
 	if !reflect.DeepEqual(k, []Count{{"db", 2}}) {
 		t.Fatalf("bounded: %v", k)
 	}
-	k, _ = s.Kinds("otel", "a", time.Time{}, time.Time{})
+	k, _, _ = s.Kinds("otel", "a", time.Time{}, time.Time{})
 	if !reflect.DeepEqual(k, []Count{{"db", 2}, {"x", 1}}) {
 		t.Fatalf("unbounded: %v", k)
 	}
@@ -191,10 +191,10 @@ func TestKindsRangeEdges(t *testing.T) {
 func TestKindsZeroTime(t *testing.T) {
 	s := New(ModeHistorical, time.Time{})
 	s.Add(svcRec("a", "db", time.Time{}), time.Time{})
-	if k, _ := s.Kinds("otel", "a", time.Time{}, time.Time{}); len(k) != 1 {
+	if k, _, _ := s.Kinds("otel", "a", time.Time{}, time.Time{}); len(k) != 1 {
 		t.Fatalf("zero from should count: %v", k)
 	}
-	if k, _ := s.Kinds("otel", "a", t0, time.Time{}); len(k) != 0 {
+	if k, _, _ := s.Kinds("otel", "a", t0, time.Time{}); len(k) != 0 {
 		t.Fatalf("bounded from should skip: %v", k)
 	}
 }
@@ -205,34 +205,34 @@ func TestKindsServiceAll(t *testing.T) {
 	s.Add(svcRec("a", "db", t0), time.Time{})
 	s.Add(svcRec("a", "rpc", t0), time.Time{})
 	s.Add(svcRec("b", "http.server", t0), time.Time{})
-	k, sv := s.Kinds("otel", "*", time.Time{}, time.Time{})
+	k, sv, _ := s.Kinds("otel", "*", time.Time{}, time.Time{})
 	if !reflect.DeepEqual(k, []Count{{"db", 2}, {"http.server", 1}, {"rpc", 1}}) {
 		t.Fatalf("kinds: %v", k)
 	}
 	if !reflect.DeepEqual(sv, []Count{{"a", 3}, {"b", 1}}) {
 		t.Fatalf("services: %v", sv)
 	}
-	k, sv = s.Kinds("otel", "b", time.Time{}, time.Time{})
+	k, sv, _ = s.Kinds("otel", "b", time.Time{}, time.Time{})
 	if !reflect.DeepEqual(k, []Count{{"http.server", 1}}) || len(sv) != 2 {
 		t.Fatalf("b: %v %v", k, sv)
 	}
-	if k, _ := s.Kinds("", "*", time.Time{}, time.Time{}); len(k) != 0 {
+	if k, _, _ := s.Kinds("", "*", time.Time{}, time.Time{}); len(k) != 0 {
 		t.Fatalf("log source should be empty: %v", k)
 	}
 }
 
 func TestKindsEmpty(t *testing.T) {
 	s := New(ModeHistorical, time.Time{})
-	k, sv := s.Kinds("otel", "*", time.Time{}, time.Time{})
+	k, sv, _ := s.Kinds("otel", "*", time.Time{}, time.Time{})
 	if k == nil || sv == nil || len(k) != 0 || len(sv) != 0 {
 		t.Fatalf("empty store: %#v %#v", k, sv)
 	}
 	s.Add(svcRec("a", "db", t0), time.Time{})
-	k, sv = s.Kinds("otel", "nope", time.Time{}, time.Time{})
+	k, sv, _ = s.Kinds("otel", "nope", time.Time{}, time.Time{})
 	if k == nil || len(k) != 0 || len(sv) != 1 {
 		t.Fatalf("unknown service: %#v %#v", k, sv)
 	}
-	k, sv = s.Kinds("bogus", "*", time.Time{}, time.Time{})
+	k, sv, _ = s.Kinds("bogus", "*", time.Time{}, time.Time{})
 	if k == nil || sv == nil {
 		t.Fatalf("bogus source: %#v %#v", k, sv)
 	}
@@ -282,7 +282,7 @@ func TestKindsConcurrentAdd(t *testing.T) {
 		s.Kinds("otel", "*", time.Time{}, time.Time{})
 		select {
 		case <-done:
-			if k, _ := s.Kinds("otel", "*", time.Time{}, time.Time{}); k[0].Count != 10000 {
+			if k, _, _ := s.Kinds("otel", "*", time.Time{}, time.Time{}); k[0].Count != 10000 {
 				t.Fatalf("final count %v", k)
 			}
 			return
@@ -300,7 +300,7 @@ func TestReplayNeverSkips(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		s.Add(rec("a", t0.Add(time.Duration(i)*time.Millisecond)), time.Time{})
 	}
-	if n := s.Info().Count; n != 2000 {
+	if n := mustInfo(t, s).Count; n != 2000 {
 		t.Fatalf("stored %d of 2000", n)
 	}
 }
@@ -321,4 +321,22 @@ func TestReadsWaitOnceWhileWriterIsBehind(t *testing.T) {
 	if el := time.Since(start); el > readWait+readWait/2 {
 		t.Errorf("two reads took %v", el)
 	}
+}
+
+func mustInfo(t testing.TB, s *Store) Info {
+	t.Helper()
+	in, err := s.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+func mustStreams(t testing.TB, s *Store) []StreamCount {
+	t.Helper()
+	out, err := s.Streams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
