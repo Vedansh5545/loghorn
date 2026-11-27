@@ -65,7 +65,7 @@ func (w *webServer) close() {
 // socket: only serve is found that way, and query reaches this view by its
 // full URL. A config base or listen failure exits; open launches nothing, so
 // there is nothing to clean up.
-func startView(port int, cwd string, mode store.Mode) *webServer {
+func startView(port int, cwd string, mode store.Mode, in config.Input) *webServer {
 	base, err := svcconf.BaseFromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loghorn: config dir:", err)
@@ -74,7 +74,9 @@ func startView(port int, cwd string, mode store.Mode) *webServer {
 	if msg := repoConfigNotice(cwd, base); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
 	}
-	st := store.New(mode, time.Time{})
+	// Lines are rebuilt for display with the input config they were
+	// normalized with.
+	st := store.NewWithInput(mode, time.Time{}, in)
 	ln, err := web.Listen(port)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loghorn:", err)

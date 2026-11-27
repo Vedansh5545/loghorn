@@ -272,7 +272,7 @@ func (s *Server) openStore() {
 		return
 	}
 	s.logf("DuckDB: %v; records are kept in memory only", err)
-	s.st = store.New(store.ModeLive, s.o.Now())
+	s.st = store.NewWithInput(store.ModeLive, s.o.Now(), s.o.Config.Input)
 	s.preload()
 }
 

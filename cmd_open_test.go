@@ -10,6 +10,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jimbeveridge/loghorn/internal/adapter"
+	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/record"
+	"github.com/jimbeveridge/loghorn/internal/store"
 )
 
 func TestOpenSource(t *testing.T) {
@@ -123,5 +128,25 @@ func TestOpenFileServesViewWithoutSocket(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "web view at") {
 		t.Fatal(out.String())
+	}
+}
+
+// TestOpenViewUsesTheInputConfig: loghorn open's store rebuilds lines for
+// display with the input config the recorder normalized them with, so a
+// shown record matches its stored fields (review §5.3).
+func TestOpenViewUsesTheInputConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	in := config.Input{Severity: config.SeverityNumeric}
+	ws := startView(0, t.TempDir(), store.ModeHistorical, in)
+	defer ws.srv.Close()
+	line := []byte(`{"labels":{"schema":"web"},"severity":"ERROR","message":"m"}`)
+	r, ok := record.Normalize(adapter.New(in).ParseLine(line), in)
+	if !ok {
+		t.Fatal("not a record")
+	}
+	ws.st.Add(r, time.Time{})
+	recs := ws.st.Records()
+	if len(recs) != 1 || recs[0].Fields["severity"] != "DEFAULT" {
+		t.Fatalf("records %v; with severity = numeric the text ERROR is DEFAULT", recs)
 	}
 }

@@ -126,7 +126,7 @@ func openLog(src openSrc, filter, view bool, webPort int, cfg config.Config, cwd
 	// Listen before reading, so a port in use fails before the work is done.
 	var ws *webServer
 	if view {
-		ws = startView(webPort, cwd, mode)
+		ws = startView(webPort, cwd, mode, cfg.Input)
 		defer ws.close()
 	}
 	rec := recorder.New(recorder.Options{Store: ws.store(), Input: cfg.Input})

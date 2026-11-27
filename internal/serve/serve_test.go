@@ -451,3 +451,21 @@ func TestStoreClosesBeforeTheFolderLock(t *testing.T) {
 		t.Fatalf("close order %v, want the store first", order)
 	}
 }
+
+// TestFallbackStoreUsesTheInputConfig: when loghorn.duckdb can't be
+// opened, serve keeps records in memory, and that store rebuilds lines with
+// the configured input, as they were normalized, so a shown record matches
+// its stored fields (review §5.3).
+func TestFallbackStoreUsesTheInputConfig(t *testing.T) {
+	o := testOpts(t)
+	o.Config.Input.Severity = config.SeverityNumeric
+	if err := os.WriteFile(filepath.Join(o.DataDir, "loghorn.duckdb"), []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := start(t, o)
+	ship(s, "api", "r1", `{"labels":{"schema":"web"},"severity":"ERROR","message":"m"}`)
+	waitFor(t, "the record", func() bool { return len(records(s)) == 1 })
+	if sev := records(s)[0].Fields["severity"]; sev != "DEFAULT" {
+		t.Errorf("severity %v; with severity = numeric the text ERROR is DEFAULT", sev)
+	}
+}
