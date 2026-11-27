@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -352,4 +354,26 @@ func expect(v schema.Value, t schema.Type) any {
 		return v.Time.UTC()
 	}
 	return v.Str
+}
+
+// TestMemoryEngineSpillsToItsOwnTempDir: an in-memory engine (loghorn
+// open, serve's fallback) spills large sorts to a folder of its own under
+// the system temp folder, not to .tmp in whatever directory the process
+// started in; Close removes it (review §4).
+func TestMemoryEngineSpillsToItsOwnTempDir(t *testing.T) {
+	e, err := OpenMemory(config.Input{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dir string
+	if err := e.DB().QueryRow("SELECT current_setting('temp_directory')").Scan(&dir); err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(dir) || !strings.HasPrefix(dir, filepath.Clean(os.TempDir())) {
+		t.Fatalf("temp_directory %q, want a folder under %s", dir, os.TempDir())
+	}
+	e.Close()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("temp folder left after Close: %v", err)
+	}
 }

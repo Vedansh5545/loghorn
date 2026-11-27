@@ -202,3 +202,42 @@ func TestArchiveMergesRowsLeftHot(t *testing.T) {
 		t.Errorf("after: %d records (want 4), hot %d", n, hotCount(t, e))
 	}
 }
+
+// TestArchiveBumpsVersion: archiving deletes rows and expires tallies, so
+// it counts as a change: a schema cached between a write and the midnight
+// archive is not kept past it (review §4).
+func TestArchiveBumpsVersion(t *testing.T) {
+	e := openFiles(t, t.TempDir(), nil)
+	defer e.Close()
+	twoDays(t, e)
+	v := e.Version()
+	if err := e.Archive(archDay + 3); err != nil {
+		t.Fatal(err)
+	}
+	if e.Version() == v {
+		t.Error("archiving left the version unchanged")
+	}
+}
+
+// TestUnknownHotDaysCountNothingTwice: if the hot days can't be read,
+// every archive is read as possibly overlapping the hot rows, so a row
+// left hot after a crash is not counted twice (review §4).
+func TestUnknownHotDaysCountNothingTwice(t *testing.T) {
+	e := openFiles(t, t.TempDir(), nil)
+	defer e.Close()
+	twoDays(t, e)
+	e.Archive(archDay)
+	addSync(t, e, withSeq(logRec(t, "s", "api", ``), (archDay-1)<<32+1)) // a row the archive also has
+	e.wmu.Lock()
+	e.failHotDays = true
+	e.schemaMu.Lock()
+	err := e.rebuildViews()
+	e.schemaMu.Unlock()
+	e.wmu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := e.Count(); n != 3 {
+		t.Errorf("%d records, want 3", n)
+	}
+}

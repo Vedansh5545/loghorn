@@ -87,9 +87,9 @@ func archiveSelect(paths []string) string {
 // them) leaves out the rows it shares with them, so nothing is read twice.
 func (e *Engine) archiveSelects() []string {
 	var out, plain, overlap []string
-	hot := e.hotDays()
+	hot, known := e.hotDays()
 	for _, f := range e.arch.files {
-		if hot[f.day] {
+		if hot[f.day] || !known { // unknown: any archive may overlap
 			overlap = append(overlap, f.path)
 		} else {
 			plain = append(plain, f.path)
@@ -113,21 +113,26 @@ func (e *Engine) hotIDs() string {
 	return strings.Join(q, " UNION ALL ")
 }
 
-// hotDays are the days with rows in a table.
-func (e *Engine) hotDays() map[int]bool {
+// hotDays are the days with rows in a table; ok is false when they can't be
+// read.
+func (e *Engine) hotDays() (days map[int]bool, ok bool) {
 	out := map[int]bool{}
+	if e.failHotDays {
+		return out, false
+	}
 	rows, err := e.wc.QueryContext(bg, "SELECT DISTINCT _id >> 32 FROM ("+e.hotIDs()+")")
 	if err != nil {
-		return out
+		return out, false
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var d int
-		if rows.Scan(&d) == nil {
-			out[d] = true
+		if rows.Scan(&d) != nil {
+			return out, false
 		}
+		out[d] = true
 	}
-	return out
+	return out, rows.Err() == nil
 }
 
 // Archive moves every closed day (before today) from the database file to
@@ -182,6 +187,9 @@ func (e *Engine) archive(today int) error {
 	if err := e.rebuildViews(); err != nil {
 		errs = append(errs, err)
 	}
+	// Rows moved and tallies expired: a schema cached since the last write
+	// is out of date.
+	e.version.Add(1)
 	return errors.Join(errs...)
 }
 

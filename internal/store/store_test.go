@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"reflect"
 	"sync"
@@ -8,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jimbeveridge/loghorn/internal/config"
+	"github.com/jimbeveridge/loghorn/internal/query"
 	"github.com/jimbeveridge/loghorn/internal/record"
+	"github.com/jimbeveridge/loghorn/internal/schema"
 )
 
 var t0 = time.Date(2026, 11, 17, 17, 0, 0, 0, time.UTC)
@@ -339,4 +343,54 @@ func mustStreams(t testing.TB, s *Store) []StreamCount {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// afterFirst runs fn once, after the first statement a query sends.
+type afterFirst struct {
+	query.Backend
+	fn   func()
+	done bool
+}
+
+func (a *afterFirst) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	rows, err := a.Backend.QueryContext(ctx, q, args...)
+	if !a.done {
+		a.done = true
+		a.fn() // DuckDB has built this answer already
+	}
+	return rows, err
+}
+
+// TestQueryIsOneSnapshot: a query's statements (counts, then the page) see
+// the same records, even when records are written between them: the count
+// and the rows shown agree (review §4).
+func TestQueryIsOneSnapshot(t *testing.T) {
+	s := New(ModeLive, time.Time{})
+	defer s.Close()
+	for i := 0; i < 3; i++ {
+		s.Add(logRecord(t, logLine(i, dayNow)), dayNow)
+	}
+	s.e.Sync(5 * time.Second)
+	queryBackend = func(b query.Backend) query.Backend {
+		return &afterFirst{Backend: b, fn: func() {
+			for i := 3; i < 8; i++ {
+				s.e.Add(withDay(logRecord(t, logLine(i, dayNow)), i))
+			}
+			s.e.Sync(5 * time.Second)
+		}}
+	}
+	defer func() { queryBackend = func(b query.Backend) query.Backend { return b } }()
+	tl, _ := s.e.Tallies("log", "*", "api")
+	res, err := s.Query(context.Background(), schema.FromTallies("log", "api", tl), query.Query{Stream: "api", Source: "log", Limit: 100}, dayNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Matched != len(res.Rows) {
+		t.Errorf("matched %d, but %d rows shown", res.Matched, len(res.Rows))
+	}
+}
+
+func withDay(r record.Record, n int) record.Record {
+	r.Seq = DayNumber(dayNow)<<32 + 100 + n
+	return r
 }

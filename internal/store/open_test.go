@@ -253,3 +253,31 @@ func TestImportedMarkClearedWhileOpen(t *testing.T) {
 		t.Errorf("after the failed open: %d records, want the 7 in the text", n)
 	}
 }
+
+// TestIDsAfterTheClockStepsBack: records stored for a later day while the
+// clock was ahead keep their ids when the clock comes back and reaches that
+// day again: the day's sequence continues from the stored ids (review §4).
+func TestIDsAfterTheClockStepsBack(t *testing.T) {
+	dir := t.TempDir()
+	ahead := dayNow.AddDate(0, 0, 1)
+	now := ahead
+	open := func() *Store {
+		s, err := Open(Options{Mode: ModeLive, Dir: dir, Now: func() time.Time { return now }, Warn: func(string) {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	s := open()
+	s.Add(logRecord(t, logLine(1, ahead)), ahead)
+	s.Close()
+	now = dayNow // the clock was ahead and is set back
+	s = open()
+	defer s.Close()
+	now = ahead
+	s.Add(logRecord(t, logLine(2, ahead)), ahead)
+	got := seqs(s)
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("ids %v, want two distinct", got)
+	}
+}

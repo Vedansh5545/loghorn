@@ -6,6 +6,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"sort"
@@ -144,6 +145,11 @@ func (s *Store) add(r record.Record, received time.Time, day int, wait bool) {
 	if day == liveDay {
 		day = max(DayNumber(s.now()), s.liveDay) // never back: the clock can step
 		s.liveDay = day
+	}
+	if _, ok := s.seq[day]; !ok {
+		// A day first seen here may hold ids from an earlier run (a clock
+		// that was ahead): continue after them.
+		s.seq[day] = s.e.MaxSeq(day)
 	}
 	s.seq[day]++
 	r.Seq = day<<32 + s.seq[day]
@@ -374,10 +380,29 @@ func (s *Store) Schema(service, source, stream string) (schema.Schema, error) {
 }
 
 // Query answers q over the store with the effective schema sch.
-func (s *Store) Query(ctx context.Context, sch schema.Schema, q query.Query, now time.Time) (query.Result, error) {
+// Its statements (counts, then the page or groups) run in one read-only
+// transaction, so records written meanwhile don't make them disagree.
+func (s *Store) Query(ctx context.Context, sch schema.Schema, q query.Query, now time.Time) (res query.Result, err error) {
 	defer s.read()()
-	return query.RunSQL(ctx, s.e, sch, q, now, s.runStart)
+	err = s.e.ReadOnly(ctx, func(conn *sql.Conn) error {
+		res, err = query.RunSQL(ctx, queryBackend(onConn{s.e, conn}), sch, q, now, s.runStart)
+		return err
+	})
+	return res, err
 }
+
+// onConn is the engine with its queries sent on conn.
+type onConn struct {
+	*duckstore.Engine
+	conn *sql.Conn
+}
+
+func (b onConn) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	return b.conn.QueryContext(ctx, q, args...)
+}
+
+// queryBackend lets tests see the statements a query sends.
+var queryBackend = func(b query.Backend) query.Backend { return b }
 
 // Record returns the record with id seq; found is false when there is none.
 func (s *Store) Record(seq int) (r record.Record, found bool, err error) {

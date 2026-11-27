@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,8 @@ type Engine struct {
 	// (tests).
 	failWrites, failArchive bool
 	rejectRow               func(record.Record) bool // tests: rows to refuse as bad data
+	tmpDir                  string                   // an in-memory engine's spill folder, removed at Close
+	failHotDays             bool                     // tests: the hot days can't be read
 	warned                  map[string]bool          // warnings already given
 
 	// modelMu guards the table model's views: WithModel replaces them
@@ -119,12 +122,24 @@ func OpenMemory(in config.Input, warn func(string)) (*Engine, error) {
 // the machine even through a query the guard did not foresee.
 func (e *Engine) harden() error {
 	stmts := []string{"SET autoinstall_known_extensions = false", "SET autoload_known_extensions = false"}
+	var dir, tmp string
 	if e.files != nil {
-		dir := filepath.Clean(e.files.Dir) + string(filepath.Separator)
-		stmts = append(stmts,
-			"SET allowed_directories = ["+lit(dir)+"]",
-			"SET temp_directory = "+lit(filepath.Join(dir, ".duckdb-tmp")))
+		dir = filepath.Clean(e.files.Dir) + string(filepath.Separator)
+		tmp = filepath.Join(dir, ".duckdb-tmp")
+	} else {
+		// In memory there is no data folder: spill to a folder of this
+		// engine's own, removed at Close, not to .tmp in the working
+		// directory.
+		t, err := os.MkdirTemp("", "loghorn-duckdb-")
+		if err != nil {
+			return fmt.Errorf("duckdb: temp folder: %w", err)
+		}
+		e.tmpDir = t
+		dir, tmp = t+string(filepath.Separator), t
 	}
+	stmts = append(stmts,
+		"SET allowed_directories = ["+lit(dir)+"]",
+		"SET temp_directory = "+lit(tmp))
 	stmts = append(stmts, "SET enable_external_access = false")
 	for _, st := range stmts {
 		if err := e.exec(st); err != nil {
@@ -348,6 +363,9 @@ func (e *Engine) closeDB() error {
 	err := e.db.Close()
 	if cerr := e.connector.Close(); err == nil {
 		err = cerr
+	}
+	if e.tmpDir != "" {
+		os.RemoveAll(e.tmpDir)
 	}
 	return err
 }
