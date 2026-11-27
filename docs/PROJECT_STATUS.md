@@ -1,6 +1,6 @@
 # Project status: DuckDB storage for loghorn
 
-Last updated: 2026-11-25 · Branch `duckdb-v2` (v2 design), built on
+Last updated: 2026-11-27 · Branch `duckdb-v2` (v2 design), built on
 `duckdb-storage`
 
 **Status values:** Planned · In progress · Completed (verified) · Failed ·
@@ -11,8 +11,13 @@ run and passed.
 
 Spec: `docs/superpowers/specs/2026-11-23-duckdb-storage-design.md` (v2,
 in review on jimbeveridge/loghorn#2). Plan:
-`docs/superpowers/plans/2026-11-24-duckdb-storage-v2.md`. Decisions
-D-025 to D-029 are proposed until the author reviews the spec.
+`docs/superpowers/plans/2026-11-24-duckdb-storage-v2.md` (superseded in
+part by D-030; its note says where). Storage now follows D-030: one
+`records` table in one file, `loghorn.duckdb`, in serve's data folder,
+written only by `loghorn serve`. D-027 to D-029 were adopted under it
+(first import from text, closed days to `duckdb-archive/`, `_raw` as
+BLOB). D-031 adds `loghorn query -sql`; D-032 decides search case
+folding. D-025 and D-026 are superseded.
 
 ### Completed
 
@@ -20,7 +25,7 @@ D-025 to D-029 are proposed until the author reviews the spec.
 |---|---|---|---|
 | v2 spec on the spec PR | 2026-11-24 | Pushed to the fork's `duckdb-storage-spec` | `19b583d` |
 | Plan for v2 | 2026-11-24 | Self-review against the spec | `ef02aa6` |
-| Tasks 1–4: fixed tables with JSON attributes, raw BLOB, two files, first import, `-db-dir` | 2026-11-24 | New tests failed first; `go test ./...`; all 8055 parity queries (`PARITY_FULL=1`) | `8c36168`, D-025–D-027, D-029 |
+| Tasks 1–4: fixed tables with JSON attributes, raw BLOB, two files, first import, `-db-dir` (as built then; one file and no `-db-dir` since D-030) | 2026-11-24 | New tests failed first; `go test ./...`; all 8055 parity queries (`PARITY_FULL=1`) | `8c36168`, D-025–D-027, D-029 |
 | Task 5: closed days to Parquet | 2026-11-24 | Archive tests failed first; `-race` on duckstore, store | `47d97d0`, D-028 |
 | Task 6: measurements at 770k records | 2026-11-24 | `LOGHORN_SPEED=1` runs below | `cedf198` |
 | Verification | 2026-11-24 | `go vet ./...`; `go test ./...`; `-race` on duckstore, store, web, query, main | `cedf198` |
@@ -46,13 +51,16 @@ D-025 to D-029 are proposed until the author reviews the spec.
   with `Round15`.
 - Upstream's multiline detection is kept in the tallies as a `Lines` bit
   in `schema.KindSet`.
-- `store.Options.DBDir` and `DeferImport` have no caller now.
+- `store.Options.DBDir` and `DeferImport` had no caller after the merge.
+  They went with the read-only path in `15b6542` (review §4).
 
 ### One `records` table (2026-11-25, D-030)
 
 Logs and spans now share one table, `records`, in `loghorn.duckdb`, and
-each closed day is one Parquet archive, `records-YYYY-MM-DD.parquet`. The
-measurements below were rerun on it. Files from that build are ignored: the new file starts again from text.
+each closed day is one Parquet archive,
+`duckdb-archive/records-YYYY-MM-DD.parquet`. The measurements below were
+rerun on it. Files from the two-file build are ignored: the new file
+starts again from text.
 
 ### SQL from the command line (2026-11-25, D-031)
 
@@ -65,6 +73,44 @@ spec's table model, now real as views over `records`: `logs."<stream>"`,
 views (`TestToSQLOverModel`). Design and plan:
 `docs/superpowers/specs/2026-11-25-cli-sql-design.md`,
 `docs/superpowers/plans/2026-11-25-cli-sql.md`.
+
+### Review fixes (2026-11-27)
+
+Jim's review of this branch, fixed by section. Each commit names the
+tests that failed before its fix.
+
+- §1.1 (`ac7a073`): a record DuckDB refuses, such as a time outside
+  1677–2262, no longer sends the session to memory. Such a time is
+  stored as NULL (`_raw` keeps it); a failed batch is tried in memory to
+  find the cause, then stored row by row, skipping only refused records
+  with one warning.
+- §1.2 (`0c50f0d`): serve closes the store before it releases the data
+  folder's lock, so a quick restart no longer falls back to memory.
+- §1.3 (`cc0df89`): the imported mark is the file
+  `loghorn.duckdb.imported`, removed when serve opens the files and
+  written again only by a clean close of complete files. A crash or a
+  session kept in memory makes the next start import the text again.
+  The `_meta` table is no longer used.
+- §2.1, §2.2 (`521a039`): durations convert exactly as Go's
+  `ParseDuration` does, and a number too large for a float (`1e400`) is
+  NULL and bad, as `schema.Convert` has it.
+- §2.3, §2.4, §2.5 (`b7db2a1`): `error_rate` trims severity as
+  `strings.TrimSpace` does; search folds case by Unicode rules (D-032);
+  the parity data gains the edge cases the review listed.
+- §3 (`b3289df`): DuckDB errors reach the client as 500s, not as 404s,
+  zeros or empty lists.
+- §4 (`15b6542`): the read-only path nothing called is removed
+  (`DBDir`, `DeferImport`, the readers' copy).
+- §4 (`ef6583b`): serve opens the store, which may import text, before it
+  binds its socket and ports, so a probe meanwhile finds serve not
+  running.
+- §4 (`ef75169`): one snapshot per query; ids stay unique after a clock
+  step; archiving invalidates the schema cache; unreadable hot days no
+  longer count rows twice; an in-memory engine spills to its own temp
+  folder.
+- §5.3 (`24f5fd6`): `loghorn open` and serve's fallback rebuild lines
+  with the configured input.
+- §6: these doc updates.
 
 ### Measurements (about 770k records in one day; MacBook, arm64, 8 CPUs, 16 GB)
 
@@ -102,6 +148,9 @@ numbers from 2026-11-24 are in the last column for comparison.
 
 ### Review findings (2026-11-24, independent review of `duckdb-storage..duckdb-v2`)
 
+As found before D-030. The historical readers (Important 1 and 2), `-web`
+and the `_meta` mark are gone since: see "Review fixes (2026-11-27)".
+
 No Critical findings. Fixed:
 - Important 1: a historical reader broke when the writer later deleted an
   archive it read. Readers now copy archives into memory too
@@ -127,26 +176,30 @@ Left as known limits: below.
 
 ### Known limits and gaps
 
-- DuckDB files don't shrink: after archiving, `logs.duckdb` keeps its
+- DuckDB files don't shrink: after archiving, `loghorn.duckdb` keeps its
   size (about the largest day) and reuses the space. Compaction is
   deferred, as the spec allows.
-- A crash loses the queued batch from DuckDB (the text keeps it). A run
-  that can't open the files leaves its records in text only. Neither is
-  brought back automatically (D-027).
+- After a crash, or a serve that couldn't open the files and kept its
+  session in memory, the next start imports the retained days' text
+  again (D-027): about 20 s at 770k records. Nothing is lost, but that
+  start is slower.
 - Known value differences: numbers read as text take DuckDB's canonical
   spelling, and arrays read as text keep `<`, `>`, `&` unescaped (D-025).
 - DuckDB's file lock is per process, so a second writer is kept out only
   across processes; tests can't check that in-process.
 - DuckDB creates a `.wal` with the process umask; loghorn makes it 0600
-  after each batch. In a `-db-dir` that others can read, a new WAL is
-  readable by them until then. Use an owner-only directory.
+  after each batch. In a data folder that others can read, a new WAL is
+  readable by them until then. serve creates the folder owner-only (0700).
 - A string that isn't valid UTF-8 is queried with U+FFFD in place of the
   bad bytes (D-025).
+- Search folds case by Unicode rules; `query.Run`, kept as the test
+  reference, folds only ASCII (D-032).
 
 ### Next actions
 
-1. Wait for the author's review of jimbeveridge/loghorn#4 (this branch)
-   and of the spec in jimbeveridge/loghorn#2. Merge only #4: #2's spec is
+1. Wait for the author's re-review of jimbeveridge/loghorn#4 (this
+   branch; his review's §1 to §6 are fixed, see above) and of the spec
+   in jimbeveridge/loghorn#2. Merge only #4: #2's spec is
    in it, and merging both conflicts in this file and `DECISIONS.md`.
 2. Ask the author about D-031's open point: `this-run` in the web view
    under serve versus the `this_run_*` macros.
@@ -163,6 +216,11 @@ the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
 
 
 ## First design (branch `duckdb-storage`, jimbeveridge/loghorn#3)
+
+Historical record. The first design (per-day files, a table per stream,
+the lock holder as writer, `-web` as reader) was replaced by v2 and then
+D-030. `-web` and the lock-holder ownership no longer exist; items below
+that name them are kept as they were, and the open items are closed.
 
 ### Completed
 
@@ -198,7 +256,7 @@ the tools are updated. Anaconda's older `ld` is also ahead of Apple's on
 
 | Work | Started | State |
 |---|---|---|
-| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Review done: its 4 Important findings, the Critical (`go.sum`) and all 10 Minors fixed; left: try `-web` on a real project |
+| Task 6: speed check, docs, whole-branch review | 2026-11-23 | Speed measured (below). Review done: its 4 Important findings, the Critical (`go.sum`) and all 10 Minors fixed; left: try `-web` on a real project. Closed: overtaken by v2 and D-030 (see v2 Next actions) |
 
 ### Speed at about 770k records (one day, 2-vCPU cloud sandbox)
 
@@ -255,9 +313,9 @@ Minor (all fixed 2026-11-24, see Completed):
 
 ### Planned (in order)
 
-1. Try `-web` on a real project.
-2. After the author answers the spec PR (#2): a PR for the code, from the
-   user's fork.
+1. ~~Try `-web` on a real project.~~ Overtaken: `-web` is gone (D-030).
+2. ~~After the author answers the spec PR (#2): a PR for the code, from
+   the user's fork.~~ Done as #4 (v2).
 
 ### Blocked
 
@@ -279,5 +337,4 @@ None.
 
 ### Next actions
 
-1. Wait for the author on the spec PR (jimbeveridge/loghorn#2).
-2. Try `-web` on a real project.
+None: see the v2 section's Next actions.

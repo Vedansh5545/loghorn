@@ -1,8 +1,19 @@
 # DuckDB storage v2 Implementation Plan
 
+> **Superseded in part (2026-11-27 note).** This plan was built as written on 2026-11-24, then changed by D-030 (2026-11-25) and the review fixes of 2026-11-27. Where it differs from the code, the code and `docs/DECISIONS.md` are right:
+>
+> - **Two files and two tables** (`logs.duckdb` with `logs`, `traces.duckdb` with `spans`) became **one `records` table in one file, `loghorn.duckdb`**; `_source` tells logs from spans (D-030).
+> - **Parquet per signal** (`archive/<logs|traces>-YYYY-MM-DD.parquet`) became **one file per closed day for all records**, `duckdb-archive/records-YYYY-MM-DD.parquet` (D-028, D-030).
+> - **`-db-dir` and `store.Options.DBDir`** are gone. The file lives in serve's data folder.
+> - **The `loghorn.lock` holder as owner, read-only and historical readers** became **`loghorn serve` as the only process that opens the file** (D-030). `store.Open` opens only the writer; `FileOptions.Write`, `DeferImport` and the readers' copy were removed (commit `15b6542`).
+> - **`wrapper.go`, `replay.go` and `-web`** were removed upstream. serve's `openStore` (`internal/serve/serve.go`) opens the store, before it binds its socket and ports (commit `ef6583b`).
+> - **The `imported` row in a `_meta` table** (`Meta`/`SetMeta`) became **the file `loghorn.duckdb.imported`** beside the database: removed when serve opens the files, written again only by a clean Close of complete files (D-027, commit `cc0df89`). `_meta` is no longer used.
+>
+> Stale passages below are marked *(superseded: …)*.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the per-stream, per-day DuckDB layout with the v2 design: one fixed table per signal in `logs.duckdb` and `traces.duckdb`, JSON attributes, raw records kept, and closed days archived to Parquet.
+**Goal:** Replace the per-stream, per-day DuckDB layout with the v2 design: one fixed table per signal in `logs.duckdb` and `traces.duckdb` *(superseded: one `records` table in `loghorn.duckdb`, D-030)*, JSON attributes, raw records kept, and closed days archived to Parquet.
 
 **Architecture:** Built on the `duckdb-storage` branch, keeping its seams: `query.RunSQL` reads through `query.Backend` (`Relation`, `QueryContext`, `Rebuild`), and the web view reads through the `store.Store` façade. Only `internal/duckstore` is rewritten underneath, together with the store's open path. Custom fields are extracted from JSON and converted at query time with the existing `conv` SQL, so new attributes and type settings need no table changes.
 
@@ -14,7 +25,7 @@
 
 - Build and test on macOS with `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk`.
 - Keep the web UI and REST contracts; `query.Run` stays the reference, and the parity test (`PARITY_FULL=1`) must pass or each difference must be documented.
-- Fixed fields in both tables: `_id` BIGINT, `_time` TIMESTAMP_NS (UTC), `_time_inherited` BOOLEAN, `_source`, `_service`, `_stream`, `trace_id`, `span_id`, `parent_span_id`, `severity`, `message` VARCHAR, `duration_ms` DOUBLE, `attributes` JSON, `_raw` (lossless). `_id` keeps the existing encoding `day<<32 | seq` (day = `store.DayNumber`), so `_id >> 32` is a record's archive period and no extra column is needed.
+- Fixed fields in both tables *(superseded: in the one `records` table)*: `_id` BIGINT, `_time` TIMESTAMP_NS (UTC), `_time_inherited` BOOLEAN, `_source`, `_service`, `_stream`, `trace_id`, `span_id`, `parent_span_id`, `severity`, `message` VARCHAR, `duration_ms` DOUBLE, `attributes` JSON, `_raw` (lossless). `_id` keeps the existing encoding `day<<32 | seq` (day = `store.DayNumber`), so `_id >> 32` is a record's archive period and no extra column is needed.
 - No tables per stream, no columns added at run time, no type-widening rewrites.
 - Do not delete text logs or change the text writer, `internal/ingest`, `internal/otlp` or `internal/recorder`.
 - Nothing may `os.Exit` after the child process starts. Tests never write to the repo's `.loghorn/`.
@@ -41,7 +52,7 @@
 
 **Interfaces:**
 - Produces: `OpenMemory(in config.Input, warn func(string)) (*Engine, error)`; `(*Engine) Add(r record.Record)`, `AddWait`, `Sync(time.Duration) bool`, `Close() error`, `ReadLock() func()`, `DB() *sql.DB`, `QueryContext`, `Version() uint64`, `SetTime`, `SetMaxQueue`; `Records(ctx, where string, args ...any) ([]record.Record, error)` with `where` over `all_records` columns; `Rebuild(id int64, t time.Time, inherited bool, service, source, stream, raw string) record.Record`.
-- Tables: `logs` and `spans`, each with the fixed fields. The view `memory.main.all_records` is `logs UNION ALL spans` (plus archives, Task 5).
+- Tables: `logs` and `spans`, each with the fixed fields. The view `memory.main.all_records` is `logs UNION ALL spans` (plus archives, Task 5). *(superseded: one table, `records`, D-030.)*
 - `attributes` is `record.Fields` encoded as one flat JSON object (dotted path keys), using `json.Encoder` with `SetEscapeHTML(false)`; `json.Number` stays a JSON number.
 - Common fields: `trace_id`/`span_id` from `record.TraceRef`; `parent_span_id` (normalized) and `message` = span `name` for spans; for logs `severity` = `Fields["severity"]`, `message` = `Fields["message"]`; `duration_ms` = span `duration_ms` field when numeric.
 
@@ -73,55 +84,59 @@
   - `TestMixedKindsConvertPerRecord`: path `n` is `json.Number("5")` in one record and `"5"` in another; as `int` both are 5; as `bool` the number is bad and `"true"` is true.
   - `TestTalliesCountPerKind`: tallies of two batches add up per path and kind set.
 - [ ] **Step 2: Run them to see them fail.**
-- [ ] **Step 3: Implement** `Relation` over `logs`/`spans` filtered by `_source`, `_service` and `_stream`, and the tally upsert.
+- [ ] **Step 3: Implement** `Relation` over `logs`/`spans` *(superseded: over `records`)* filtered by `_source`, `_service` and `_stream`, and the tally upsert.
 - [ ] **Step 4: Run** `go test ./internal/duckstore ./internal/store ./internal/query` and `PARITY_FULL=1 go test ./internal/query -run Parity` — Expected: PASS, or each remaining difference written down in `docs/DECISIONS.md` (as a proposed entry) with its test case.
 - [ ] **Step 5: Commit** `feat(duckstore): query custom fields from JSON attributes`
 
 ### Task 3: Two database files, persistence and failure
+
+*(superseded: one file, `loghorn.duckdb`, opened only for writing by serve; no read-only open, no `_meta` table. See the note at the top.)*
 
 **Files:**
 - Create: `internal/duckstore/files.go`
 - Test: `internal/duckstore/files_test.go`
 
 **Interfaces:**
-- Produces: `type FileOptions struct { Dir string; Write bool; KeepDays int; Now func() time.Time }`; `OpenFiles(in config.Input, warn func(string), o FileOptions) (*Engine, error)` attaching `Dir/logs.duckdb` and `Dir/traces.duckdb` (created when `Write`, chmod 0600 with their WAL; read-only otherwise; an error if a read-only file is missing or locked); `(*Engine) MaxSeq(day int) int` (highest stored seq of a day, hot or archived); `(*Engine) Meta(key string) (string, bool)` and `SetMeta(key, value string) error` (table `_meta` in `logs.duckdb`).
+- Produces: `type FileOptions struct { Dir string; Write bool; KeepDays int; Now func() time.Time }`; `OpenFiles(in config.Input, warn func(string), o FileOptions) (*Engine, error)` attaching `Dir/logs.duckdb` and `Dir/traces.duckdb` (created when `Write`, chmod 0600 with their WAL; read-only otherwise; an error if a read-only file is missing or locked); `(*Engine) MaxSeq(day int) int` (highest stored seq of a day, hot or archived); `(*Engine) Meta(key string) (string, bool)` and `SetMeta(key, value string) error` (table `_meta` in `logs.duckdb`). *(superseded: `FileOptions{Dir, KeepDays}`; one file, `loghorn.duckdb`, always written; `Meta`/`SetMeta` and `_meta` replaced by the mark file `loghorn.duckdb.imported`.)*
 - On the first failed file write: warn once, and send the rest of the session to the memory tables (the `all_records` view covers both).
 
 - [ ] **Step 1: Write the failing tests**
   - `TestFilesPersistAcrossReopen`: write two records, close, reopen; `Records` returns them with the same ids, and `MaxSeq(day)` is 2.
-  - `TestReadOnlyOpenNeedsFiles`: `OpenFiles` with `Write: false` on an empty dir fails; after a writer closes, it opens and reads.
+  - `TestReadOnlyOpenNeedsFiles`: `OpenFiles` with `Write: false` on an empty dir fails; after a writer closes, it opens and reads. *(superseded: no read-only open.)*
   - `TestWriteFailureFallsBackToMemory`: after the files are made unwritable mid-session (detach under the writer), later records are still returned and exactly one warning was given.
   - `TestFilesAreOwnerOnly`: both files have mode 0600.
 - [ ] **Step 2: Run them to see them fail.**
-- [ ] **Step 3: Implement** `files.go`; tallies and meta tables live in `logs.duckdb`.
+- [ ] **Step 3: Implement** `files.go`; tallies and meta tables live in `logs.duckdb`. *(superseded: tallies live in `loghorn.duckdb`; the mark is the file `loghorn.duckdb.imported`.)*
 - [ ] **Step 4: Run** `go test ./internal/duckstore` — Expected: PASS.
-- [ ] **Step 5: Commit** `feat(duckstore): logs.duckdb and traces.duckdb that persist across runs`
+- [ ] **Step 5: Commit** `feat(duckstore): logs.duckdb and traces.duckdb that persist across runs` *(as built then; see the note at the top)*
 
 ### Task 4: Store open, first import and the storage directory
 
+*(superseded: `wrapper.go`, `replay.go`, `-web` and `-db-dir` are gone; serve opens the store in its data folder, as its only writer. There is no live reader from text and no historical read of the files. See the note at the top.)*
+
 **Files:**
 - Rewrite: `internal/store/days.go` → `internal/store/open.go`
-- Modify: `wrapper.go`, `replay.go`, `main.go` (flag `-db-dir`)
+- Modify: `wrapper.go`, `replay.go`, `main.go` (flag `-db-dir`) *(superseded: removed)*
 - Test: `internal/store/open_test.go` (replaces `days_test.go`), `main_test.go`
 
 **Interfaces:**
 - Consumes: `OpenFiles`, `MaxSeq`, `Meta`/`SetMeta`.
-- Produces: `store.Options{Mode, RunStart, Input, Dir, DBDir, Write, Now, Warn}` (`DeferBuild` removed; `DBDir == ""` means `Dir`); `store.Open(Options) (*Store, error)`.
-  - `Write`: open the files for writing. If meta `imported` is not `"1"`, the files are new or a first import was interrupted: delete them, recreate, import the retained days' text (`KeepDays` = 3 and today) with their own days, then `SetMeta("imported", "1")`. Ids continue per day from `MaxSeq(day)`.
-  - Not `Write`, live: memory engine with the retained days read from text (as on `main`).
-  - Historical: open the files read-only; if that fails (missing or locked by a live writer), read the text into memory and warn.
-- Flag: `-db-dir DIR`, "directory for loghorn's DuckDB and Parquet files (default: the .loghorn directory)".
+- Produces: `store.Options{Mode, RunStart, Input, Dir, DBDir, Write, Now, Warn}` (`DeferBuild` removed; `DBDir == ""` means `Dir`); `store.Open(Options) (*Store, error)`. *(superseded: `store.Options{Mode, RunStart, Input, Dir, Now, Warn}`; `Open` always opens the writer.)*
+  - `Write`: open the files for writing. If meta `imported` is not `"1"`, the files are new or a first import was interrupted: delete them, recreate, import the retained days' text (`KeepDays` = 3 and today) with their own days, then `SetMeta("imported", "1")`. Ids continue per day from `MaxSeq(day)`. *(superseded: the mark is the file `loghorn.duckdb.imported`, removed before the files open and written by a clean Close of complete files.)*
+  - Not `Write`, live: memory engine with the retained days read from text (as on `main`). *(superseded: removed; only serve's fallback, when the files can't open, reads text into memory.)*
+  - Historical: open the files read-only; if that fails (missing or locked by a live writer), read the text into memory and warn. *(superseded: removed.)*
+- Flag *(superseded: removed)*: `-db-dir DIR`, "directory for loghorn's DuckDB and Parquet files (default: the .loghorn directory)".
 
 - [ ] **Step 1: Write the failing tests**
   - `TestFirstOpenImportsTextOnce`: text for yesterday and today; first `Open` imports all records; a second `Open` imports nothing more (count unchanged) and keeps ids.
   - `TestInterruptedImportIsRedone`: files exist without `imported`; `Open` rebuilds them and the count matches the text.
   - `TestRecordsPersistWithoutText`: records added in one session are present after reopening even when the text files are deleted.
-  - `TestHistoricalFallsBackToText`: with the files held open by a writer, a historical `Open` reads the text and warns.
-  - `TestDBDirSeparateFromTextDir`: with `DBDir` set, the `.duckdb` files are created there and none in `Dir`.
+  - `TestHistoricalFallsBackToText`: with the files held open by a writer, a historical `Open` reads the text and warns. *(superseded: removed.)*
+  - `TestDBDirSeparateFromTextDir`: with `DBDir` set, the `.duckdb` files are created there and none in `Dir`. *(superseded: removed with `-db-dir`.)*
 - [ ] **Step 2: Run them to see them fail.**
 - [ ] **Step 3: Implement** `open.go` and the wrapper, replay and flag changes.
 - [ ] **Step 4: Run** `go test ./...` — Expected: PASS.
-- [ ] **Step 5: Commit** `feat(store): open the two DuckDB files, import text once, -db-dir`
+- [ ] **Step 5: Commit** `feat(store): open the two DuckDB files, import text once, -db-dir` *(as built then; see the note at the top)*
 
 ### Task 5: Parquet archive of closed days
 
@@ -131,14 +146,14 @@
 - Test: `internal/duckstore/archive_test.go`, `internal/store/open_test.go`
 
 **Interfaces:**
-- Produces: `(*Engine) Archive(today int) error` (writer only): for each signal and each day (`_id >> 32`) before `today` present in the hot table, export to `Dir/archive/<logs|traces>-YYYY-MM-DD.parquet.tmp` (ZSTD), validate, rename to `.parquet`, then delete that day's hot rows; finally delete archives and `_fields` rows with day `< today - KeepDays`. The view adds `read_parquet([...], union_by_name = true)` per signal when archives exist.
+- Produces: `(*Engine) Archive(today int) error` (writer only): for each signal and each day (`_id >> 32`) before `today` present in the hot table, export to `Dir/archive/<logs|traces>-YYYY-MM-DD.parquet.tmp` *(superseded: one file per day for all records, `Dir/duckdb-archive/records-YYYY-MM-DD.parquet.tmp`)* (ZSTD), validate, rename to `.parquet`, then delete that day's hot rows; finally delete archives and `_fields` rows with day `< today - KeepDays`. The view adds `read_parquet([...], union_by_name = true)` per signal *(superseded: one list for all records)* when archives exist.
   - Validation: row count, `min/max/sum(_id)`, and `md5(_raw)` aggregate equal between the hot day and the file.
   - Failure (export, validation or rename): remove the `.tmp`, keep the hot rows, warn once; the next `Archive` tries again.
   - An archive file for a day that still has hot rows is skipped by the view until the hot rows are gone, so nothing is read twice.
 - Midnight: the writer calls `Archive` when a batch carries a later day than the last one it wrote.
 
 - [ ] **Step 1: Write the failing tests**
-  - `TestArchiveMovesClosedDays`: records on days d−1 and d; `Archive(d)` writes `logs-<d−1>.parquet` and `traces-<d−1>.parquet`; hot tables keep only day d; `Records` returns every record once with its id and raw.
+  - `TestArchiveMovesClosedDays`: records on days d−1 and d; `Archive(d)` writes `logs-<d−1>.parquet` and `traces-<d−1>.parquet` *(superseded: `records-<d−1>.parquet`)*; hot tables keep only day d; `Records` returns every record once with its id and raw.
   - `TestArchivedRawReprocesses`: a record read back from Parquet rebuilds (`Rebuild`) to the same `Fields` as before.
   - `TestFailedArchiveKeepsHotRows`: with validation forced to fail (a test hook), no `.parquet` exists, hot rows remain, one warning.
   - `TestArchiveExpiresOldDays`: archives and tallies older than `today − KeepDays` are removed.

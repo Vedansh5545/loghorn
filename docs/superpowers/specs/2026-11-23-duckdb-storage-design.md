@@ -2,7 +2,7 @@
 
 Date: 2026-11-23 | Revised: 2026-11-24 (v2)
 
-Status: Revised first-pass proposal for Jim’s review. Supersedes the earlier proposal for this implementation slice; changes to `docs/DECISIONS.md` require review.
+Status: Decided (2026-11-25) and built on branch `duckdb-v2`. Jim's review of this v2 proposal settled its layout and owner: one `records` table in one file, `loghorn.duckdb`, in serve's data folder, written only by `loghorn serve` (`docs/DECISIONS.md` D-030). The first import from text is D-027, the Parquet archive of closed days D-028. This revision supersedes the earlier proposal for this implementation slice. The text below is the proposal as reviewed; where it still says "proposed" or "open", the resolutions under "Decisions and open questions" apply.
 
 ## Intent
 
@@ -90,4 +90,12 @@ Verify restart persistence, raw preservation, schema reinterpretation, archive r
 
 Confirm with Jim: exact storage directory and owner model; the need for separate original text files after recovery testing; retention and archive boundaries; and numerical/query-latency expectations. Reconcile the earlier decisions on dynamic tables, per-repository storage, permanent text persistence and exact parity in `docs/DECISIONS.md` after review. Driver choice, batching, and exact SQL are left to the builder.
 
-Basis: original DuckDB storage design (2026-11-23), Jim’s review comments, and `docs/superpowers/specs/2026-11-19-architecture-working-notes.md` in Loghorn. The revised design is a proposal, not an implementation or benchmark result.
+Resolved (2026-11-25 to 2026-11-27):
+
+- **Storage directory and owner model:** resolved by D-030. `loghorn.duckdb` lives in serve's data folder, and `loghorn serve` is its only writer; other processes send it OpenTelemetry.
+- **Separate original text files:** kept for now. serve still writes the text logs, and they are what the database is filled from when it is new or was not closed cleanly (D-007, D-027). The mark is the file `loghorn.duckdb.imported`, removed when serve opens the database and written again only by a clean close of complete files. Whether text files can go later stays open (O-3).
+- **Retention and archive boundaries:** resolved by D-028 and D-030. Each closed day goes to one Parquet file for all records, `duckdb-archive/records-YYYY-MM-DD.parquet`; archives older than 3 days before today are deleted, as the text is.
+- **Numerical and latency expectations:** the known value differences are recorded in D-025 and D-032. Every representative request measured under the ~500 ms target at 770k records (`docs/PROJECT_STATUS.md`, Measurements).
+- **Earlier decisions:** reconciled. D-001 to D-006, D-014, D-017, D-018, D-021, D-022 and D-024 are marked superseded in `docs/DECISIONS.md`.
+
+Basis: original DuckDB storage design (2026-11-23), Jim’s review comments, and `docs/superpowers/specs/2026-11-19-architecture-working-notes.md` in Loghorn. The revised design is a proposal, not an implementation or benchmark result. *(Since built; see the status line.)*

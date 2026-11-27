@@ -4,9 +4,10 @@ Read this first, then `docs/PROJECT_STATUS.md` and `docs/DECISIONS.md`.
 
 ## The goal
 
-Make loghorn's web view (`loghorn -web`) faster to filter and query, in
-the spirit of Meta's Scuba, by storing OpenTelemetry logs and traces in
-DuckDB instead of an in-memory list. Metrics are out of scope. Raw lines
+Make loghorn's web view (served by `loghorn serve`, opened with
+`loghorn ui`) faster to filter and query, in the spirit of Meta's Scuba,
+by storing OpenTelemetry logs and traces in DuckDB instead of an
+in-memory list. Metrics are out of scope. Raw lines
 must stay available so structure can be pulled out later.
 
 ## How to work
@@ -27,8 +28,23 @@ must stay available so structure can be pulled out later.
   2026-11-24) with plan `docs/superpowers/plans/2026-11-24-duckdb-storage-v2.md`.
   It is built on `duckdb-storage` (PR jimbeveridge/loghorn#3, the first
   design) and keeps its store façade, `query.RunSQL` and parity test; the
-  engine underneath is new. Its choices are D-025 to D-029, all
-  *proposed* until the author reviews the v2 spec (O-3).
+  engine underneath is new. The plan is superseded in part; its note at
+  the top says where.
+- Storage follows **D-030**, from the author's review: one `records`
+  table (logs and spans, told apart by `_source`) in one file,
+  `loghorn.duckdb`, in serve's data folder. `loghorn serve` is its only
+  writer and opens it before binding its socket and ports; other
+  processes send serve OpenTelemetry. D-027 to D-029 were adopted under
+  it: the file is filled from text once, marked by
+  `loghorn.duckdb.imported` (removed at open, written at a clean close of
+  complete files); closed days go to
+  `duckdb-archive/records-YYYY-MM-DD.parquet`; `_raw` is BLOB. D-025 and
+  D-026 are superseded.
+- **D-031** adds `loghorn query -sql`: read-only SQL through serve over
+  views in the CLI query spec's table model. **D-032**: search folds case
+  by Unicode rules.
+- The author's review of this branch is fixed for §1 to §6;
+  `docs/PROJECT_STATUS.md` lists the commits by section.
 - `query.Run` and `schema.Infer` stay as the test oracle (D-016). The
   parity test (`internal/query/parity_test.go`) compares 1 in 10 of 8055
   queries by default; `PARITY_FULL=1` runs all (about 2 minutes).
@@ -42,11 +58,11 @@ must stay available so structure can be pulled out later.
 | Fixed tables, views, attributes JSON | `internal/duckstore/tables.go` |
 | Engine, queue, writer goroutine | `internal/duckstore/engine.go`, `writer.go` |
 | Reads: `Relation` (JSON → typed per record), records, tallies | `internal/duckstore/read.go`, `sqltype.go` |
-| `loghorn.duckdb` (the `records` table, tallies, marks), readers' copy | `internal/duckstore/files.go` |
-| Parquet archive of closed days | `internal/duckstore/archive.go` |
+| `loghorn.duckdb` (the `records` table, tallies) and the mark file `loghorn.duckdb.imported` | `internal/duckstore/files.go` |
+| Parquet archive of closed days, in `duckdb-archive/` | `internal/duckstore/archive.go` |
 | Store façade and modes; first import from text | `internal/store/store.go`, `internal/store/open.go` |
 | Query → SQL with today's semantics | `internal/query/sqlrun.go` (`RunSQL`) |
-| Where the store opens and closes: `loghorn serve` owns the DuckDB files in the data folder | `internal/serve/serve.go` (`openStore`, `Close`) |
+| Where the store opens and closes: `loghorn serve` owns the DuckDB files in the data folder, opens them before binding, closes them before releasing the folder's lock | `internal/serve/serve.go` (`openStore`, `Close`) |
 | SQL table model views and macros; read-only guard; DuckDB values for export | `internal/duckstore/model.go`, `guard.go`, `value.go` |
 | `-sql`: `Store.SQL`, `POST /api/sql` (socket only), the CLI flag | `internal/store/sql.go`, `internal/web/sql.go`, `cmd_query.go` (`runSQL`) |
 

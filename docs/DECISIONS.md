@@ -18,9 +18,9 @@ or has not yet answered.
 
 ---
 
-## D-001 Store logs and traces in DuckDB, in two files
+## D-001 Store logs and traces in DuckDB, in two files (superseded by D-030)
 
-- **Date:** 2026-11-19, confirmed 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** user
+- **Date:** 2026-11-19, confirmed 2026-11-23 · **Status:** Superseded by D-030 (one file, `loghorn.duckdb`, for both signals; DuckDB stays the engine); accepted by D-011 before that · **Decided by:** user
 - **Decision:** Replace the web view's in-memory record list with DuckDB:
   one file for logs, one for traces. Metrics stay discarded.
 - **Why:** Faster filters and queries in the web view. The author already
@@ -31,9 +31,9 @@ or has not yet answered.
 - **Consequences:** cgo builds. DuckDB lets one process write a file, so
   one loghorn process owns both files.
 
-## D-002 Layout B: a schema per service, a table per stream, typed columns
+## D-002 Layout B: a schema per service, a table per stream, typed columns (superseded by D-025, D-030)
 
-- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** user (picked from A/B/C)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (fixed columns, other fields in JSON), then D-030 (one `records` table); accepted by D-011 before that · **Decided by:** user (picked from A/B/C)
 - **Decision:** Inside each file, a schema per service key and a table per
   stream, with one typed column per field, named by its dotted path.
 - **Why:** It matches notes #16 ("database = service") and is the layout
@@ -45,9 +45,9 @@ or has not yet answered.
   Cross-stream reads need generated views (D-004). Type changes need rules
   (D-005).
 
-## D-003 Span tables by span type; the span name is a column
+## D-003 Span tables by span type; the span name is a column (superseded by D-025)
 
-- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** Claude
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (no table per span type; the displayed kind is `_stream`, a span's name is `message`); accepted by D-011 before that · **Decided by:** Claude
 - **Decision:** In the traces file, one table per span type (`db`,
   `http.server`, …, and catch-all `span`). The displayed kind (the span
   name, for unclassified spans) is a `stream` column.
@@ -58,9 +58,9 @@ or has not yet answered.
   2026-11-19 proposal, see D-009).
 - **Consequences:** The web view's kind list reads the `stream` column.
 
-## D-004 The shared format is a set of generated views
+## D-004 The shared format is a set of generated views (superseded by D-025)
 
-- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** Claude
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (`all_records` is a plain `UNION ALL` of the table and the archives; no view per stream). D-031 later adds views per stream over `records`, for SQL. Accepted by D-011 before that · **Decided by:** Claude
 - **Decision:** loghorn generates `all_records` (the columns every
   `record.Record` has) and one view per stream over both files. The web
   view reads only views.
@@ -71,9 +71,9 @@ or has not yet answered.
   the data); merging in Go after separate queries.
 - **Consequences:** Views must be rebuilt when a table or column appears.
 
-## D-005 Schema evolution and bad values
+## D-005 Schema evolution and bad values (superseded by D-025)
 
-- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** author (notes #19, #21)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (no columns added or widened; fields are converted from JSON at query time). Its rule that a bad value is NULL and stays visible in `_raw` still holds. Accepted by D-011 before that · **Decided by:** author (notes #19, #21)
 - **Decision:** A new field adds a column. A changed type widens the column
   (integer → decimal → text). A value that doesn't fit is empty (NULL) in
   that column and stays visible in `_raw`.
@@ -81,9 +81,9 @@ or has not yet answered.
 - **Consequences:** Every table keeps `_raw`. Long text columns are
   compressed with zstd (spike 2).
 
-## D-006 Per-repo, per-day files in `.loghorn/`
+## D-006 Per-repo, per-day files in `.loghorn/` (superseded by D-030)
 
-- **Date:** 2026-11-23 · **Status:** Accepted (provisional) · **Decided by:** Claude
+- **Date:** 2026-11-23 · **Status:** Superseded by D-030, by way of D-026: one file, `loghorn.duckdb`, in serve's data folder, written only by `loghorn serve`; closed days go to Parquet (D-028). Accepted by D-011 before that · **Decided by:** Claude
 - **Decision:** `.loghorn/logs-YYYY-MM-DD.duckdb` and
   `.loghorn/traces-YYYY-MM-DD.duckdb`, written by the run that holds
   `loghorn.lock`, rotated at midnight, kept 3 days like the text files.
@@ -177,9 +177,9 @@ or has not yet answered.
   `go.sum` can't be completed here. **Before merging, run `go mod tidy` on a
   normal machine** and run the tests without the build tag.
 
-## D-014 Durations stored as DOUBLE seconds
+## D-014 Durations stored as DOUBLE seconds (superseded by D-025)
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (refines the design's duration row)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (durations are converted from JSON at query time); accepted before that · **Decided by:** Claude (refines the design's duration row)
 - **Decision:** A duration column is `DOUBLE` holding
   `schema.Convert(v, duration).Num`, in seconds.
 - **Why:** The design kept durations as text because "the saved unit can
@@ -211,9 +211,9 @@ or has not yet answered.
   the oracle would leave future SQL changes unchecked. Deleting it is a
   one-commit follow-up once the author agrees.
 
-## D-017 Trace columns shared; JSON stored as text
+## D-017 Trace columns shared; JSON stored as text (superseded by D-025)
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (refines `all_records`)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 (columns `trace_id`, `span_id`, `parent_span_id`; a span's name is `message`; `attributes` is DuckDB `JSON`); accepted before that · **Decided by:** Claude (refines `all_records`)
 - **Decision:** Every table gets shared columns `_trace_id`, `_span_id`,
   `_parent_span_id` (normalized with `record.TraceRef` and
   `NormalizeSpanID`) and `_name` (a span's name). `all_records` carries them
@@ -224,9 +224,9 @@ or has not yet answered.
   trace and aggregate lookups one indexed-style WHERE. `VARCHAR` keeps the
   JSON text exactly as today's cells show it.
 
-## D-018 Days in doubt are rebuilt at startup, synchronously
+## D-018 Days in doubt are rebuilt at startup, synchronously (superseded by D-027)
 
-- **Date:** 2026-11-23 · **Status:** Accepted; narrowed by D-024 (runs without `-web`) · **Decided by:** Claude (simplifies the design's background rebuild)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-027 (the file is filled from text once, not rebuilt per day); accepted before that, and narrowed by D-024 (runs without `-web`) · **Decided by:** Claude (simplifies the design's background rebuild)
 - **Decision:** At startup the lock holder rebuilds each retained day whose
   pair is missing or in doubt, before records flow, into a temporary file
   then renamed. Other processes load such days from text into memory.
@@ -256,9 +256,9 @@ or has not yet answered.
 - **Why:** A stored `_time` never changes after it is written. Today such
   records show with no time until backfilled; live runs never have them.
 
-## D-021 A per-day record index backs `all_records`
+## D-021 A per-day record index backs `all_records` (superseded by D-025, D-030)
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (found while building)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 and D-030 (one `records` table, no tables per stream or day to index); accepted before that · **Decided by:** Claude (found while building)
 - **Decision:** Each day database keeps `_loghorn._records`: every record's
   shared columns (not `_bad` or `_raw`) and its table's position.
   `all_records` reads these indexes, not every stream table. Lookups that
@@ -272,9 +272,9 @@ or has not yet answered.
   still read every stream table of the source, so they slow down as tables
   multiply.
 
-## D-022 Queries read day tables directly
+## D-022 Queries read day tables directly (superseded by D-025, D-030)
 
-- **Date:** 2026-11-23 · **Status:** Accepted · **Decided by:** Claude (found while building)
+- **Date:** 2026-11-23 · **Status:** Superseded by D-025 and D-030 (queries read `records` and the Parquet archives); accepted before that · **Decided by:** Claude (found while building)
 - **Decision:** The relation a query reads is built from the same model as
   the views, but selects from each day table directly, converting each
   column straight to the effective type. The views stay for people and
@@ -295,9 +295,9 @@ or has not yet answered.
   leading records of a session.
 - **Supersedes:** D-020.
 
-## D-024 A writer without `-web` defers rebuilds (narrows D-018)
+## D-024 A writer without `-web` defers rebuilds (narrows D-018) (superseded by D-027, D-030)
 
-- **Date:** 2026-11-24 · **Status:** Accepted · **Decided by:** Claude (review minor 10; correct if wrong)
+- **Date:** 2026-11-24 · **Status:** Superseded by D-027 and D-030 (no `-web` flag; `loghorn serve` always imports); accepted before that · **Decided by:** Claude (review minor 10; correct if wrong)
 - **Decision:** A lock holder running without `-web` rebuilds no day at
   startup. It still writes today's records to today's pair, and marks
   today dirty, so the next writer with `-web` rebuilds it from text.
@@ -316,7 +316,7 @@ or has not yet answered.
 
 ## D-025 v2: one fixed table per signal, every field in JSON (superseded by D-030)
 
-- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending the author's review · **Decided by:** user (v2 spec); details Claude
+- **Date:** 2026-11-24 · **Status:** Superseded in part by D-030: its two tables became one, `records`; its columns, JSON attributes and conversion at query time were adopted with D-030. Was Proposed (v2) · **Decided by:** user (v2 spec); details Claude
 - **Decision:** `logs` and `spans` tables with fixed columns: `_id`,
   `_time`, `_time_inherited`, `_source`, `_service`, `_stream`,
   `trace_id`, `span_id`, `parent_span_id`, `severity`, `message`,
@@ -345,7 +345,7 @@ or has not yet answered.
 
 ## D-026 v2: `logs.duckdb` and `traces.duckdb`, owned by the lock holder (superseded by D-030)
 
-- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** user (v2 spec); details Claude
+- **Date:** 2026-11-24 · **Status:** Superseded by D-030. Was Proposed (v2) · **Decided by:** user (v2 spec); details Claude
 - **Decision:** Two files, in `.loghorn/` by default or in `-db-dir`. The
   process holding `loghorn.lock` owns them. A live run without the lock
   reads the retained days' text into memory. A historical run copies the
@@ -361,49 +361,62 @@ or has not yet answered.
 - **Would supersede:** D-006. The default stays in `.loghorn/` until the
   user-local location is decided (spec open question).
 
-## D-027 v2: the files hold the records after a one-time import (proposed)
+## D-027 v2: the files hold the records after a one-time import (adopted under D-030)
 
-- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
-- **Decision:** A writer whose files lack the `imported` mark clears them
-  (and the archive), imports the retained days' text, and sets the mark.
-  After that the files are read, never rebuilt. A writer without `-web`
-  skips the import (as D-024): records go to the files, and the next
-  writer with `-web` starts them again from text. Text files are still
-  written and kept (D-007).
+- **Date:** 2026-11-24, mark updated 2026-11-27 · **Status:** Accepted: adopted with D-030 on this branch (2026-11-25), for Jim's review. Was Proposed (v2) · **Decided by:** Claude
+- **Decision:** When `loghorn serve` opens files that lack the `imported`
+  mark, it clears them (and the archive), imports the retained days'
+  text, and marks them. After that the files are read, never rebuilt.
+  Text files are still written and kept (D-007). The mark is a file
+  beside the database, `loghorn.duckdb.imported`: serve removes it when it
+  opens the files and writes it again only at a clean Close of files that
+  hold every record.
 - **Why:** The v2 spec wants startup to reuse persisted records rather
   than reparse text. Clearing before an import is safe because, until the
   mark is set, everything in the files came from text that still has it.
-- **Would supersede:** D-018, D-024 (adapted).
-- **Consequences / known gaps:** The mark is set only when every text file
-  was read. A run that skips records (a full queue) or fails a file write
-  clears it at Close, with a warning, so the next `-web` writer imports
-  those records again from text. Not covered: a crash loses the queued
-  batch from DuckDB (the text keeps it) and leaves the mark set; a run
-  that can't open the files (another process holds them past the retry)
-  leaves its records in text only. Whether to keep permanent text files is
-  the spec's open question.
+  A mark cleared at open and set only at a clean close means anything
+  short of that (a crash, a failed write, a session kept in memory) makes
+  the next start import the text again.
+- **Supersedes:** D-018, D-024 (adapted).
+- **Consequences / known gaps:** The mark is written only when every text
+  file was read and no record was skipped (a full queue) or failed to
+  write; skipped records are also warned about at Close. Records DuckDB
+  refuses for their own data are skipped with a warning and don't stop the
+  mark: importing the same text again can't store them either. A start
+  after a crash imports the text again (about 20 s for 770k records).
+  Whether to keep permanent text files is the spec's open question.
+- **History:** As first proposed, the mark was a row in a `_meta` table in
+  the database, set at import and cleared only by a clean Close that saw
+  skips or failures; a writer without `-web` skipped the import (as
+  D-024), leaving it to the next writer with `-web`. So a crash lost the
+  queued batch from DuckDB and left the mark set, and a run that couldn't
+  open the files left its records in text only. The sidecar file replaced
+  the row on 2026-11-27 (review §1.3); `-web` went with D-030, and serve
+  always imports. The `_meta` table is no longer created or read.
 
-## D-028 v2: closed days archived to Parquet (proposed)
+## D-028 v2: closed days archived to Parquet (adopted under D-030)
 
-- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
+- **Date:** 2026-11-24 · **Status:** Accepted: adopted with D-030 on this branch (2026-11-25), for Jim's review; D-030 made it one file per day. Was Proposed (v2) · **Decided by:** Claude
 - **Decision:** At open, and at the first record of a new day, each day
   before today moves to `duckdb-archive/<logs|traces>-YYYY-MM-DD.parquet`
-  (ZSTD). The export is written to `.tmp`, checked against its rows
-  (count, min/max/sum of `_id`, XOR of hashes of `_raw` and
-  `attributes`), synced, renamed (and the directory synced), and only then
-  deleted from the file.
+  (ZSTD). *(Since D-030: one file per day for all records,
+  `duckdb-archive/records-YYYY-MM-DD.parquet`.)* The export is written
+  to `.tmp`, checked against its rows (count, min/max/sum of `_id`, XOR
+  of hashes of `_raw` and `attributes`), synced, renamed (and the
+  directory synced), and only then deleted from the file.
   Archives and tallies older than 3 days before today (the text's
   retention) are deleted.
 - **Why:** The v2 spec's basic archival. One file per signal per day
-  avoids many small files. Days match the text files' retention.
+  (one per day since D-030) avoids many small files. Days match the text
+  files' retention.
 - **Consequences:** A failure keeps the rows hot, warns once and retries
   at the next open or midnight. Rows left hot for an archived day are
   merged into it, and the view leaves out rows an archive shares with the
   tables.
 
-## D-029 v2: `_raw` is BLOB; search reads it decoded (proposed)
+## D-029 v2: `_raw` is BLOB; search reads it decoded (adopted under D-030)
 
-- **Date:** 2026-11-24 · **Status:** Proposed (v2), pending review · **Decided by:** Claude
+- **Date:** 2026-11-24 · **Status:** Accepted: adopted with D-030 on this branch (2026-11-25), for Jim's review. Was Proposed (v2) · **Decided by:** Claude
 - **Decision:** `_raw` stores the captured bytes. `Relation` adds `_text`
   (the bytes decoded as UTF-8, escaped where invalid) for search.
 - **Why:** The spec asks for lossless raw records; DuckDB `VARCHAR`
@@ -492,10 +505,17 @@ or has not yet answered.
   this design covers storage plus views, and a second design moves the web
   view's queries to SQL. Option two: both in one design. Claude recommends
   the split. The speed gain needs the SQL part (notes #35).
-- **O-2 Author review.** D-001 to D-008 haven't been reviewed by the loghorn
-  author. They follow his notes except D-001's two-files-by-signal split.
-- **O-3 v2 open questions** (from the v2 spec, for the author): the fixed
-  table layout; the storage directory and owner model (here: `.loghorn/`
+- **O-2 Author review.** *Overtaken 2026-11-25: the author reviewed the
+  v2 spec (D-030), and D-001 to D-006 are superseded.* D-001 to D-008
+  haven't been reviewed by the loghorn author. They follow his notes
+  except D-001's two-files-by-signal split.
+- **O-3 v2 open questions** — *Mostly resolved 2026-11-25: the table
+  layout, storage directory and owner by D-030 (one `records` table in
+  `loghorn.duckdb` in serve's data folder, serve the only writer);
+  retention and archive boundaries by D-028 (days, 3 kept). Still open:
+  whether text files stay. Latency measured under the target
+  (`docs/PROJECT_STATUS.md`).* Asked 2026-11-24, from the v2 spec, for
+  the author: the fixed table layout; the storage directory and owner model (here: `.loghorn/`
   or `-db-dir`, the lock holder); whether text files stay after recovery
   testing; retention and archive boundaries (here: days, 3 kept); query
   latency expectations (target about 500 ms). D-025 to D-029 record what

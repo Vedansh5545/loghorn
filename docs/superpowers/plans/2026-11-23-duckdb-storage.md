@@ -1,5 +1,7 @@
 # DuckDB storage and SQL queries — implementation plan
 
+> **Superseded (2026-11-27 note).** This plan built the first design on branch `duckdb-storage`: per-day `logs-`/`traces-` files in `.loghorn/`, a schema per service and a table per stream, written by the `loghorn.lock` holder, read by `-web` (D-001 to D-006, D-014, D-017, D-018, D-021, D-022, D-024). All of that was replaced, first by the v2 design (D-025 to D-029, plan `2026-11-24-duckdb-storage-v2.md`) and then by D-030: one `records` table in one file, `loghorn.duckdb`, in serve's data folder, written only by `loghorn serve`, with closed days archived to `duckdb-archive/`. The `-web` flag is gone. This file is kept as a record; do not follow it.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Store logs and spans in per-day DuckDB files (a schema per service, a table per stream, typed columns) and answer every `/api/*` request of `-web` with SQL, with the same JSON as today.
