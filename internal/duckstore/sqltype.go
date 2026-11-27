@@ -54,6 +54,10 @@ const (
 func conv(c string, from schema.Type, to schema.Field) string {
 	from, t := norm(from), norm(to.Type)
 	if from == t {
+		if t == schema.TFloat || t == schema.TDuration {
+			// JSON's 1e400 reads as infinity; schema.Convert finds it bad.
+			return "(CASE WHEN isfinite(" + c + ") THEN " + c + " END)"
+		}
 		return c
 	}
 	num := from == schema.TInt || from == schema.TFloat
@@ -84,7 +88,7 @@ func conv(c string, from schema.Type, to schema.Field) string {
 	case schema.TDuration:
 		switch {
 		case num:
-			return "CAST(" + c + " AS DOUBLE)"
+			return "(CASE WHEN isfinite(CAST(" + c + " AS DOUBLE)) THEN CAST(" + c + " AS DOUBLE) END)"
 		case from == schema.TString:
 			return durationSQL(trimSQL(c))
 		}
@@ -120,12 +124,30 @@ const goSpace = " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u20
 func trimSQL(c string) string { return "trim(" + c + ", " + lit(goSpace) + ")" }
 
 // durationSQL parses Go duration syntax or a bare number (seconds), as
-// schema.ParseDuration does.
+// schema.ParseDuration does, to the same float64: time.ParseDuration's
+// whole nanoseconds, then Duration.Seconds(). Each part is its integer
+// times its unit, plus its fraction as Go adds it (the fraction's first 18
+// or 19 digits, float64(f) * (float64(unit) / scale), truncated); the sum
+// must fit an int64. Past that Go falls back to strconv.ParseFloat, which
+// takes no unit.
 func durationSQL(s string) string {
-	units := "CASE regexp_extract(x, '[a-zµμ]+$') WHEN 'ns' THEN 1e-9 WHEN 'us' THEN 1e-6 WHEN 'µs' THEN 1e-6 WHEN 'μs' THEN 1e-6 WHEN 'ms' THEN 1e-3 WHEN 's' THEN 1.0 WHEN 'm' THEN 60.0 WHEN 'h' THEN 3600.0 END"
-	sum := "list_sum(list_transform(regexp_extract_all(" + s + ", " + lit(durPart) + ", 0), lambda x: CAST(regexp_extract(x, '^[0-9.]+') AS DOUBLE) * (" + units + ")))"
-	return "(CASE WHEN isfinite(TRY_CAST(" + s + " AS DOUBLE)) THEN TRY_CAST(" + s + " AS DOUBLE)" +
-		" WHEN regexp_full_match(" + s + ", " + lit(`[-+]?(`+durPart+`)+`) + ") THEN (CASE WHEN starts_with(" + s + ", '-') THEN -1.0 ELSE 1.0 END) * " + sum + " END)"
+	unit := "(CASE regexp_extract(x, '[a-zµμ]+$') WHEN 'ns' THEN 1 WHEN 'us' THEN 1000 WHEN 'µs' THEN 1000 WHEN 'μs' THEN 1000" +
+		" WHEN 'ms' THEN 1000000 WHEN 's' THEN 1000000000 WHEN 'm' THEN 60000000000 WHEN 'h' THEN 3600000000000 END)"
+	whole := "ltrim(regexp_extract(x, '^[0-9]*'), '0')"
+	frac := "regexp_extract(x, '\\.([0-9]*)', 1)"
+	digits := "(CASE WHEN length(" + frac + ") >= 19 AND TRY_CAST(left(" + frac + ", 19) AS HUGEINT) <= 9223372036854775807" +
+		" THEN left(" + frac + ", 19) ELSE left(" + frac + ", 18) END)"
+	fracNs := "(CASE WHEN " + digits + " = '' THEN 0 ELSE CAST(trunc(CAST(" + digits + " AS DOUBLE) * (CAST(" + unit + " AS DOUBLE) / CAST('1e' || length(" + digits + ") AS DOUBLE))) AS HUGEINT) END)"
+	part := "(CASE WHEN length(" + whole + ") <= 20 THEN CAST(coalesce(nullif(" + whole + ", ''), '0') AS HUGEINT) * " + unit + " + " + fracNs + " END)"
+	parts := "list_transform(regexp_extract_all(" + s + ", " + lit(durPart) + ", 0), lambda x: " + part + ")"
+	limit := "(CASE WHEN starts_with(" + s + ", '-') THEN CAST(9223372036854775808 AS HUGEINT) ELSE CAST(9223372036854775807 AS HUGEINT) END)"
+	secs := "(CAST(d // 1000000000 AS DOUBLE) + CAST(d % 1000000000 AS DOUBLE) / CAST(1e9 AS DOUBLE))"
+	dur := "list_transform([" + parts + "], lambda p: list_transform([list_sum(p)], lambda d:" +
+		" CASE WHEN len(list_filter(p, lambda v: v IS NULL)) = 0 AND d <= " + limit +
+		" THEN (CASE WHEN starts_with(" + s + ", '-') THEN CAST(0 AS DOUBLE) - " + secs + " ELSE " + secs + " END) END)[1])[1]"
+	return "(CASE WHEN " + s + " IN ('0', '+0', '-0') THEN CAST(0 AS DOUBLE)" +
+		" WHEN regexp_full_match(" + s + ", " + lit(`[-+]?(`+durPart+`)+`) + ") THEN " + dur +
+		" WHEN isfinite(TRY_CAST(" + s + " AS DOUBLE)) THEN TRY_CAST(" + s + " AS DOUBLE) END)"
 }
 
 // epochIntSQL is schema's epoch() for an integer in unit (default ms).
@@ -151,7 +173,7 @@ func epochFloatSQL(c, unit string) string {
 	case schema.UnitUs:
 		per = "1e3"
 	case schema.UnitNs:
-		per = "1.0"
+		per = "1e0"
 	}
 	ns := "(" + c + " * " + per + ")"
 	return "(CASE WHEN abs(" + ns + ") < 9.2e18 THEN make_timestamp_ns(CAST(trunc(" + ns + ") AS BIGINT)) END)"

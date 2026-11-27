@@ -282,6 +282,8 @@ func TestRelationConvertsLikeConvert(t *testing.T) {
 		"tsns": `"2026-11-23T10:00:00.123456789Z"`, "tsoff": `"2026-11-23T12:00:00.123456789+02:00"`,
 		"big": `18446744073709551615`, "exp": `1e3`, "zeros": `1.50`, "null": `null`, "empty": `""`,
 		"obj": `[{"a":"<b>"}]`, "false": `false`,
+		// Too large for a float: Go marks it bad, DuckDB reads infinity.
+		"huge": `1e400`, "nhuge": `-1e400`, "hugestr": `"1e400"`,
 	}
 	for svc, v := range stored {
 		g.add(logRec(t, svc, "conv", `,"f":`+v))
