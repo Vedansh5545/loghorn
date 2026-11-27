@@ -205,14 +205,50 @@ func TestPartialImportIsNotMarked(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := openStore(t, dir, ModeLive)
-	if v, _ := w.s.e.Meta("imported"); v == "1" {
+	w.s.Close()
+	if _, err := os.Stat(filepath.Join(dir, duckstore.ImportedFile)); err == nil {
 		t.Error("a partial import was marked complete")
 	}
-	w.s.Close()
 	os.Chmod(y, 0o600)
 	again := openStore(t, dir, ModeLive)
 	defer again.s.Close()
 	if n := total(again.s); n != 6 {
 		t.Errorf("after the retry: %d records, want 6", n)
+	}
+}
+
+// TestImportedMarkClearedWhileOpen: the mark is cleared when the files are
+// opened and set again only by a clean Close. A crash leaves it cleared,
+// and so does an open that fails, after which serve keeps that session's
+// records in memory and text only: the next open imports them from the
+// text (review §1.3).
+func TestImportedMarkClearedWhileOpen(t *testing.T) {
+	dir := textDir(t)
+	mark := filepath.Join(dir, duckstore.ImportedFile)
+	w := openStore(t, dir, ModeLive)
+	if _, err := os.Stat(mark); err == nil {
+		t.Error("files marked complete while open")
+	}
+	w.s.Close()
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("a clean close left no mark: %v", err)
+	}
+	db := filepath.Join(dir, duckstore.FileName)
+	if err := os.Chmod(db, 0); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(Options{Mode: ModeLive, Dir: dir, Now: func() time.Time { return dayNow }, Warn: func(string) {}}); err == nil {
+		s.Close()
+		t.Fatal("opened an unreadable database file")
+	}
+	if _, err := os.Stat(mark); err == nil {
+		t.Error("a failed open left the mark")
+	}
+	os.Chmod(db, 0o600)
+	writeText(t, dir, "loghorn.log", dayNow.Add(-time.Minute), logLine(6, dayNow)) // written during the session in memory
+	again := openStore(t, dir, ModeLive)
+	defer again.s.Close()
+	if n := total(again.s); n != 7 {
+		t.Errorf("after the failed open: %d records, want the 7 in the text", n)
 	}
 }

@@ -58,19 +58,16 @@ func newStore(e *duckstore.Engine, o Options) *Store {
 }
 
 // openWriter opens the files for writing, importing the text first if they
-// haven't been filled from it yet.
+// aren't marked as holding it (see duckstore.TakeImported). The mark is
+// cleared before the files are opened, so an open that fails leaves it
+// cleared too.
 func openWriter(o Options, today int) (*Store, error) {
+	imported := duckstore.TakeImported(o.Dir)
 	e, err := duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o))
 	if err != nil {
 		return nil, err
 	}
-	v, err := e.Meta(duckstore.ImportedKey)
-	if err != nil {
-		// Unreadable marks must not look like files to start again.
-		e.Close()
-		return nil, err
-	}
-	if v != "1" {
+	if !imported {
 		if e.Count() > 0 || archived(o.Dir) {
 			// Whatever is there came from text, which still has it.
 			e.Close()
@@ -82,9 +79,7 @@ func openWriter(o Options, today int) (*Store, error) {
 		s := newStore(e, o)
 		n, complete := s.importText(o, today)
 		if complete && !e.Failed() {
-			if err := e.SetMeta(duckstore.ImportedKey, "1"); err != nil {
-				o.Warn("loghorn: DuckDB: " + firstLine(err))
-			}
+			e.MarkComplete()
 		}
 		if n > 0 {
 			o.Warn(fmt.Sprintf("loghorn: imported %d records from the text logs into DuckDB", n))
@@ -92,6 +87,7 @@ func openWriter(o Options, today int) (*Store, error) {
 		e.Archive(today)
 		return s.ready(today), nil
 	}
+	e.MarkComplete()
 	e.Archive(today) // failures are warned about and retried next time
 	return newStore(e, o).ready(today), nil
 }

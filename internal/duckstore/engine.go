@@ -66,13 +66,14 @@ type Engine struct {
 	skipped   int  // records skipped for DuckDB this run
 
 	// Writer state: touched with wmu held (the writer goroutine, Archive,
-	// SetMeta, Failed), or before the writer starts and after it stops.
-	wmu    sync.Mutex
-	parts  []*part      // every records table: memory, then the file's
-	dest   *part        // the table new records go to
-	mem    *part        // the in-memory table
-	files  *FileOptions // nil: memory only
-	failed bool         // a file write failed: the rest goes to memory
+	// MarkComplete, Failed), or before the writer starts and after it stops.
+	wmu      sync.Mutex
+	parts    []*part      // every records table: memory, then the file's
+	dest     *part        // the table new records go to
+	mem      *part        // the in-memory table
+	files    *FileOptions // nil: memory only
+	failed   bool         // a file write failed: the rest goes to memory
+	complete bool         // the files hold every record from text (MarkComplete)
 	// failWrites and failArchive make file writes and archive checks fail
 	// (tests).
 	failWrites, failArchive bool

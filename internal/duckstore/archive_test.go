@@ -202,4 +202,3 @@ func TestArchiveMergesRowsLeftHot(t *testing.T) {
 		t.Errorf("after: %d records (want 4), hot %d", n, hotCount(t, e))
 	}
 }
-

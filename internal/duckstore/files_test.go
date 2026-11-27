@@ -61,8 +61,8 @@ func TestFilesPersistAcrossReopen(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if strings.Join(tables, ",") != "_fields,_meta,records" {
-		t.Errorf("tables %v, want _fields, _meta, records", tables)
+	if strings.Join(tables, ",") != "_fields,records" {
+		t.Errorf("tables %v, want _fields, records", tables)
 	}
 	var sources int
 	if err := e.DB().QueryRow("SELECT count(DISTINCT _source) FROM loghorn_db.main.records").Scan(&sources); err != nil || sources != 2 {
@@ -127,48 +127,6 @@ func TestFilesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestMetaPersists(t *testing.T) {
-	dir := t.TempDir()
-	e := openFiles(t, dir, nil)
-	if v, err := e.Meta("imported"); err != nil || v != "" {
-		t.Errorf("meta in new files: %q, %v", v, err)
-	}
-	if err := e.SetMeta("imported", "1"); err != nil {
-		t.Fatal(err)
-	}
-	e.Close()
-	e = openFiles(t, dir, nil)
-	defer e.Close()
-	if v, err := e.Meta("imported"); err != nil || v != "1" {
-		t.Errorf("meta after reopen = %q, %v", v, err)
-	}
-}
-
-// TestSkippedRecordsUnmarkImport: records skipped for a full queue are
-// counted, and the files lose their imported mark so the next import
-// brings them back from text (review: Important 5).
-func TestSkippedRecordsUnmarkImport(t *testing.T) {
-	dir := t.TempDir()
-	var warns []string
-	e := openFiles(t, dir, func(m string) { warns = append(warns, m) })
-	e.SetMeta("imported", "1")
-	e.SetMaxQueue(1)
-	e.wmu.Lock() // the writer stalls, as during a long archive
-	for i := 1; i <= 3; i++ {
-		e.Add(withSeq(logRec(t, "s", "api", ``), i))
-	}
-	e.wmu.Unlock()
-	e.Close()
-	if !strings.Contains(strings.Join(warns, "\n"), "skipped") {
-		t.Errorf("warnings %q", warns)
-	}
-	r := openFiles(t, dir, nil)
-	defer r.Close()
-	if v, _ := r.Meta("imported"); v == "1" {
-		t.Error("files with skipped records still marked imported")
-	}
-}
-
 // TestOutOfRangeTimeKeepsTheBatch: a time DuckDB can't hold (TIMESTAMP_NS
 // covers 1677 to 2262) is stored as NULL, so neither the record nor the rest
 // of its batch is lost and the files stay in use (review §1.1).
@@ -210,5 +168,63 @@ func TestBadRowSkipsOnlyItself(t *testing.T) {
 	}
 	if len(warns) != 1 || !strings.Contains(warns[0], "skipped") {
 		t.Errorf("warnings %q", warns)
+	}
+}
+
+func marked(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ImportedFile))
+	return err == nil
+}
+
+// TestImportedMark: a clean Close of complete files marks them, beside the
+// database file; records kept out of the file this run (a full queue, a
+// failed write) leave them unmarked, and TakeImported clears the mark
+// (review §1.3).
+func TestImportedMark(t *testing.T) {
+	dir := t.TempDir()
+	e := openFiles(t, dir, nil)
+	e.Close()
+	if marked(dir) {
+		t.Error("files never marked complete were marked at Close")
+	}
+	e = openFiles(t, dir, nil)
+	e.MarkComplete()
+	e.Close()
+	if !marked(dir) {
+		t.Fatal("a clean Close of complete files left no mark")
+	}
+	if !TakeImported(dir) || marked(dir) {
+		t.Fatal("TakeImported didn't report and clear the mark")
+	}
+	if TakeImported(dir) {
+		t.Error("TakeImported reported a mark it had cleared")
+	}
+
+	var warns []string
+	e = openFiles(t, dir, func(m string) { warns = append(warns, m) })
+	e.MarkComplete()
+	e.SetMaxQueue(1)
+	e.wmu.Lock() // the writer stalls, as during a long archive
+	for i := 1; i <= 3; i++ {
+		e.Add(withSeq(logRec(t, "api", "s", ``), i))
+	}
+	e.wmu.Unlock()
+	e.Close()
+	if marked(dir) {
+		t.Error("files with skipped records were marked complete")
+	}
+	if !strings.Contains(strings.Join(warns, "\n"), "skipped") {
+		t.Errorf("warnings %q", warns)
+	}
+
+	e = openFiles(t, dir, func(string) {})
+	e.MarkComplete()
+	e.wmu.Lock()
+	e.failWrites = true
+	e.wmu.Unlock()
+	addSync(t, e, withSeq(logRec(t, "api", "s", ``), 9))
+	e.Close()
+	if marked(dir) {
+		t.Error("files whose write failed were marked complete")
 	}
 }

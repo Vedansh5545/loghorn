@@ -1,7 +1,6 @@
 package duckstore
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -64,8 +63,7 @@ func (e *Engine) attachFiles() error {
 	}
 	p := &part{alias: fileAlias, writable: true, file: true}
 	os.Chmod(path, 0o600)
-	for _, ddl := range []string{tableDDL(p.ref()), fieldsDDL(p.fieldsRef()),
-		"CREATE TABLE IF NOT EXISTS " + e.metaRef() + " (key VARCHAR PRIMARY KEY, value VARCHAR)"} {
+	for _, ddl := range []string{tableDDL(p.ref()), fieldsDDL(p.fieldsRef())} {
 		if err := e.exec(ddl); err != nil {
 			return err
 		}
@@ -75,44 +73,35 @@ func (e *Engine) attachFiles() error {
 	return nil
 }
 
-func (e *Engine) metaRef() string { return ident(fileAlias) + ".main._meta" }
+// ImportedFile, beside the database file, marks files that hold every
+// record the retained days' text holds. It is a file of its own, not a row
+// in loghorn.duckdb, so it can be cleared when that file can't be written.
+const ImportedFile = FileName + ".imported"
 
-// Meta reads a value the files keep about themselves; "" when unset.
-func (e *Engine) Meta(key string) (string, error) {
-	if e.files == nil {
-		return "", nil
+// TakeImported reports whether dir's files are marked as holding every
+// record, and clears the mark. Until a clean Close sets it again, a crash,
+// a failed write or a session kept in memory leaves it cleared, so the next
+// open imports the text again. A mark that can't be cleared counts as unset.
+func TakeImported(dir string) bool {
+	path := filepath.Join(dir, ImportedFile)
+	if _, err := os.Stat(path); err != nil {
+		return false
 	}
-	var v string
-	err := e.db.QueryRow("SELECT value FROM "+e.metaRef()+" WHERE key = ?", key).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return v, err
+	return os.Remove(path) == nil
 }
 
-// SetMeta stores a value in the files.
-func (e *Engine) SetMeta(key, value string) error {
-	if e.files == nil {
-		return errors.New("duckstore: SetMeta needs the files")
-	}
+// MarkComplete says the files hold every record from text, so a clean Close
+// marks them (see TakeImported).
+func (e *Engine) MarkComplete() {
 	e.wmu.Lock()
-	defer e.wmu.Unlock()
-	return e.setMeta(key, value)
+	e.complete = true
+	e.wmu.Unlock()
 }
-
-func (e *Engine) setMeta(key, value string) error {
-	return e.exec("INSERT OR REPLACE INTO "+e.metaRef()+" VALUES (?, ?)", key, value)
-}
-
-// ImportedKey marks files whose records all came in: from text once, then
-// from runs that wrote every record. Skipped or failed writes clear it at
-// Close, so the next import brings those records back from text.
-const ImportedKey = "imported"
 
 // closeFiles checkpoints the database file at Close, so the next open
-// needn't replay their write-ahead logs. Records this run kept out of the
-// files (a full queue, a failed write) clear the imported mark, so the
-// next import brings them back from text.
+// needn't replay its write-ahead log, and marks complete files as imported.
+// Records this run kept out of the file (a full queue, a failed write)
+// leave them unmarked, so the next open imports them again from text.
 func (e *Engine) closeFiles() error {
 	if e.files == nil {
 		return nil
@@ -121,16 +110,16 @@ func (e *Engine) closeFiles() error {
 	e.mu.Lock()
 	skipped := e.skipped
 	e.mu.Unlock()
-	if skipped > 0 || e.failed {
-		if skipped > 0 {
-			e.warn(fmt.Sprintf("loghorn: DuckDB skipped %d records this run; loghorn serve imports them again from the text logs when it next starts", skipped))
-		}
-		errs = append(errs, e.setMeta(ImportedKey, "0"))
+	if skipped > 0 {
+		e.warn(fmt.Sprintf("loghorn: DuckDB skipped %d records this run; loghorn serve imports them again from the text logs when it next starts", skipped))
 	}
 	for _, p := range e.parts {
 		if p.file {
 			errs = append(errs, e.exec("CHECKPOINT "+ident(p.alias)))
 		}
+	}
+	if e.complete && skipped == 0 && !e.failed && errors.Join(errs...) == nil {
+		errs = append(errs, os.WriteFile(filepath.Join(e.files.Dir, ImportedFile), nil, 0o600))
 	}
 	return errors.Join(errs...)
 }
