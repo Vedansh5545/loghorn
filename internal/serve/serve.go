@@ -264,7 +264,7 @@ func (s *Server) checkSocket() {
 func (s *Server) openStore() {
 	st, err := store.Open(store.Options{
 		Mode: store.ModeLive, RunStart: s.o.Now(), Input: s.o.Config.Input,
-		Dir: s.o.DataDir, Write: true, Now: s.o.Now,
+		Dir: s.o.DataDir, Now: s.o.Now,
 		Warn: func(m string) { fmt.Fprintln(s.o.Log, m) },
 	})
 	if err == nil {

@@ -38,7 +38,7 @@ func TestSpeedAtScale(t *testing.T) {
 	}
 	dir := t.TempDir()
 	start := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
-	s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{}, Now: func() time.Time { return start.Add(20 * time.Hour) }, Warn: func(m string) { t.Log(m) }})
+	s, err := Open(Options{Mode: ModeLive, Dir: dir, Input: config.Input{}, Now: func() time.Time { return start.Add(20 * time.Hour) }, Warn: func(m string) { t.Log(m) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestSpeedAtScale(t *testing.T) {
 	s.Close()
 	reopen := func(at time.Time) (*Store, time.Duration) {
 		st := time.Now()
-		s, err := Open(Options{Mode: ModeLive, Dir: dir, Write: true, Input: config.Input{}, Now: func() time.Time { return at }, Warn: func(m string) { t.Log(m) }})
+		s, err := Open(Options{Mode: ModeLive, Dir: dir, Input: config.Input{}, Now: func() time.Time { return at }, Warn: func(m string) { t.Log(m) }})
 		if err != nil {
 			t.Fatal(err)
 		}

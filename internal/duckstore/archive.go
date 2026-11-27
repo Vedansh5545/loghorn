@@ -54,7 +54,7 @@ func (e *Engine) loadArchives() error {
 	e.arch.files = nil
 	for _, en := range entries {
 		name := en.Name()
-		if strings.HasSuffix(name, ".parquet.tmp") && e.files.Write {
+		if strings.HasSuffix(name, ".parquet.tmp") {
 			os.Remove(filepath.Join(e.archiveDir(), name))
 			continue
 		}
@@ -135,7 +135,7 @@ func (e *Engine) hotDays() map[int]bool {
 // A day whose export fails or doesn't validate stays in the files, with a
 // warning, and is tried again next time.
 func (e *Engine) Archive(today int) error {
-	if e.files == nil || !e.files.Write {
+	if e.files == nil {
 		return nil
 	}
 	e.wmu.Lock()
@@ -146,7 +146,7 @@ func (e *Engine) Archive(today int) error {
 // archiveAtMidnight archives the closed days when batch reaches a later day
 // than any written before. Writer side, after the batch is written.
 func (e *Engine) archiveAtMidnight(batch []record.Record) {
-	if e.files == nil || !e.files.Write || e.arch.lastDay == 0 {
+	if e.files == nil || e.arch.lastDay == 0 {
 		return
 	}
 	d := 0

@@ -85,7 +85,6 @@ type Engine struct {
 	modelMu sync.RWMutex
 	model   string
 	arch    archiveState
-	meta    map[string]string // a reader's copy of the files' marks
 
 	// schemaMu keeps queries off the views while the writer changes what
 	// they read (archiving a day).

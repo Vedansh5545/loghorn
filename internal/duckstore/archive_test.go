@@ -41,7 +41,7 @@ func twoDays(t *testing.T, e *Engine) []record.Record {
 
 func TestArchiveMovesClosedDays(t *testing.T) {
 	dir := t.TempDir()
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	defer e.Close()
 	in := twoDays(t, e)
 	if err := e.Archive(archDay); err != nil {
@@ -71,7 +71,7 @@ func TestArchiveMovesClosedDays(t *testing.T) {
 	}
 	// Reopening reads the archives again.
 	e.Close()
-	e = openFiles(t, dir, true, nil)
+	e = openFiles(t, dir, nil)
 	if n := e.Count(); n != 3 {
 		t.Errorf("after reopen: %d records", n)
 	}
@@ -80,7 +80,7 @@ func TestArchiveMovesClosedDays(t *testing.T) {
 func TestFailedArchiveKeepsHotRows(t *testing.T) {
 	dir := t.TempDir()
 	var warns []string
-	e := openFiles(t, dir, true, func(m string) { warns = append(warns, m) })
+	e := openFiles(t, dir, func(m string) { warns = append(warns, m) })
 	defer e.Close()
 	twoDays(t, e)
 	e.wmu.Lock()
@@ -110,7 +110,7 @@ func TestFailedArchiveKeepsHotRows(t *testing.T) {
 
 func TestArchiveExpiresOldDays(t *testing.T) {
 	dir := t.TempDir()
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	defer e.Close()
 	twoDays(t, e)
 	e.Archive(archDay)
@@ -134,7 +134,7 @@ func TestArchiveExpiresOldDays(t *testing.T) {
 }
 
 func TestRelationReadsArchives(t *testing.T) {
-	e := openFiles(t, t.TempDir(), true, nil)
+	e := openFiles(t, t.TempDir(), nil)
 	defer e.Close()
 	twoDays(t, e)
 	e.Archive(archDay)
@@ -153,7 +153,7 @@ func TestRelationReadsArchives(t *testing.T) {
 }
 
 func TestUntimedRecordArchived(t *testing.T) {
-	e := openFiles(t, t.TempDir(), true, nil)
+	e := openFiles(t, t.TempDir(), nil)
 	defer e.Close()
 	r := logRec(t, "s", "api", ``)
 	r.Time, r.Seq = time.Time{}, (archDay-1)<<32+1
@@ -169,7 +169,7 @@ func TestUntimedRecordArchived(t *testing.T) {
 // before.
 func TestArchiveAtMidnight(t *testing.T) {
 	dir := t.TempDir()
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	defer e.Close()
 	e.Archive(archDay)
 	addSync(t, e, withSeq(logRec(t, "s", "api", ``), archDay<<32+1))
@@ -186,7 +186,7 @@ func TestArchiveAtMidnight(t *testing.T) {
 // between publishing and deleting, or a late row) are merged into the
 // archive, each once.
 func TestArchiveMergesRowsLeftHot(t *testing.T) {
-	e := openFiles(t, t.TempDir(), true, nil)
+	e := openFiles(t, t.TempDir(), nil)
 	defer e.Close()
 	twoDays(t, e)
 	e.Archive(archDay)
@@ -203,34 +203,3 @@ func TestArchiveMergesRowsLeftHot(t *testing.T) {
 	}
 }
 
-// TestReaderSeesArchives: a read-only open reads the archives too.
-func TestReaderSeesArchives(t *testing.T) {
-	dir := t.TempDir()
-	w := openFiles(t, dir, true, nil)
-	twoDays(t, w)
-	w.Archive(archDay)
-	w.Close()
-	r := openFiles(t, dir, false, nil)
-	defer r.Close()
-	if n := r.Count(); n != 3 {
-		t.Errorf("reader sees %d records, want 3", n)
-	}
-}
-
-// TestReaderSurvivesExpiredArchive: a reader keeps working after the writer
-// deletes an archive it read (review: Important 1).
-func TestReaderSurvivesExpiredArchive(t *testing.T) {
-	dir := t.TempDir()
-	w := openFiles(t, dir, true, nil)
-	twoDays(t, w)
-	w.Archive(archDay)
-	w.Close()
-	r := openFiles(t, dir, false, nil)
-	defer r.Close()
-	w = openFiles(t, dir, true, nil)
-	w.Archive(archDay + 4) // expires both archived days
-	w.Close()
-	if n := r.Count(); n != 3 {
-		t.Errorf("reader sees %d records after the archives went, want 3", n)
-	}
-}

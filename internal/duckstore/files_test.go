@@ -12,9 +12,9 @@ import (
 	"github.com/jimbeveridge/loghorn/internal/record"
 )
 
-func openFiles(t *testing.T, dir string, write bool, warn func(string)) *Engine {
+func openFiles(t *testing.T, dir string, warn func(string)) *Engine {
 	t.Helper()
-	e, err := OpenFiles(config.Input{}, warn, FileOptions{Dir: dir, Write: write, KeepDays: 3})
+	e, err := OpenFiles(config.Input{}, warn, FileOptions{Dir: dir, KeepDays: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func withSeq(r record.Record, seq int) record.Record { r.Seq = seq; return r }
 func TestFilesPersistAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	day := 20000
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	addSync(t, e,
 		withSeq(logRec(t, "s", "api", `,"n":1`), day<<32+1),
 		withSeq(spanRec(t, `{"trace_id":"0af7651916cd43dd8448eb211c80319c","span_id":"a000000000000001","name":"chat","kind":"client","start":"2026-11-17T17:01:01.000Z","end":"2026-11-17T17:01:02.500Z","duration_ms":1500,"service.name":"svc"}`), day<<32+2),
@@ -47,7 +47,7 @@ func TestFilesPersistAcrossReopen(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "loghorn.duckdb")); err != nil {
 		t.Fatal(err)
 	}
-	e = openFiles(t, dir, true, nil)
+	e = openFiles(t, dir, nil)
 	defer e.Close()
 	// One file, one records table for logs and spans (spec: Layout D).
 	var tables []string
@@ -84,35 +84,9 @@ func TestFilesPersistAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestReadOnlyOpenNeedsFiles(t *testing.T) {
-	dir := t.TempDir()
-	if e, err := OpenFiles(config.Input{}, nil, FileOptions{Dir: dir}); err == nil {
-		e.Close()
-		t.Fatal("read-only open of an empty directory succeeded")
-	}
-	// DuckDB's lock keeps another process out while a writer has the files
-	// open; within one process it doesn't, so that isn't tested here.
-	w := openFiles(t, dir, true, nil)
-	addSync(t, w, withSeq(logRec(t, "s", "api", ``), 1))
-	w.Close()
-	r := openFiles(t, dir, false, nil)
-	defer r.Close()
-	recs, err := r.Records(context.Background(), "true")
-	if err != nil || len(recs) != 1 {
-		t.Fatalf("read-only records: %v, %v", recs, err)
-	}
-	var n int
-	if err := r.DB().QueryRow(`SELECT count(*) FROM duckdb_databases() WHERE database_name LIKE '%_db'`).Scan(&n); err != nil || n != 0 {
-		t.Errorf("a reader keeps %d files attached (%v)", n, err)
-	}
-	if tl, _ := r.Tallies(record.SourceLog, "s", "api"); tl["labels.schema"].Count != 1 {
-		t.Errorf("reader tallies %v", tl)
-	}
-}
-
 func TestWriteFailureFallsBackToMemory(t *testing.T) {
 	var warnings []string
-	e := openFiles(t, t.TempDir(), true, func(m string) { warnings = append(warnings, m) })
+	e := openFiles(t, t.TempDir(), func(m string) { warnings = append(warnings, m) })
 	defer e.Close()
 	addSync(t, e, withSeq(logRec(t, "s", "api", ``), 1))
 	e.wmu.Lock()
@@ -135,7 +109,7 @@ func TestWriteFailureFallsBackToMemory(t *testing.T) {
 
 func TestFilesAreOwnerOnly(t *testing.T) {
 	dir := t.TempDir()
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	addSync(t, e, withSeq(logRec(t, "s", "api", ``), 1))
 	defer e.Close()
 	matches, _ := filepath.Glob(filepath.Join(dir, "*.duckdb*"))
@@ -155,7 +129,7 @@ func TestFilesAreOwnerOnly(t *testing.T) {
 
 func TestMetaPersists(t *testing.T) {
 	dir := t.TempDir()
-	e := openFiles(t, dir, true, nil)
+	e := openFiles(t, dir, nil)
 	if v, err := e.Meta("imported"); err != nil || v != "" {
 		t.Errorf("meta in new files: %q, %v", v, err)
 	}
@@ -163,30 +137,10 @@ func TestMetaPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Close()
-	e = openFiles(t, dir, true, nil)
+	e = openFiles(t, dir, nil)
 	defer e.Close()
 	if v, err := e.Meta("imported"); err != nil || v != "1" {
 		t.Errorf("meta after reopen = %q, %v", v, err)
-	}
-}
-
-// TestReaderReadsMeta: a reader sees the writer's marks (review: Important 2).
-func TestReaderReadsMeta(t *testing.T) {
-	dir := t.TempDir()
-	w := openFiles(t, dir, true, nil)
-	w.Close()
-	r := openFiles(t, dir, false, nil)
-	if v, err := r.Meta("imported"); err != nil || v != "" {
-		t.Errorf("unmarked: %q, %v", v, err)
-	}
-	r.Close()
-	w = openFiles(t, dir, true, nil)
-	w.SetMeta("imported", "1")
-	w.Close()
-	r = openFiles(t, dir, false, nil)
-	defer r.Close()
-	if v, err := r.Meta("imported"); err != nil || v != "1" {
-		t.Errorf("marked: %q, %v", v, err)
 	}
 }
 
@@ -196,7 +150,7 @@ func TestReaderReadsMeta(t *testing.T) {
 func TestSkippedRecordsUnmarkImport(t *testing.T) {
 	dir := t.TempDir()
 	var warns []string
-	e := openFiles(t, dir, true, func(m string) { warns = append(warns, m) })
+	e := openFiles(t, dir, func(m string) { warns = append(warns, m) })
 	e.SetMeta("imported", "1")
 	e.SetMaxQueue(1)
 	e.wmu.Lock() // the writer stalls, as during a long archive
@@ -208,7 +162,7 @@ func TestSkippedRecordsUnmarkImport(t *testing.T) {
 	if !strings.Contains(strings.Join(warns, "\n"), "skipped") {
 		t.Errorf("warnings %q", warns)
 	}
-	r := openFiles(t, dir, false, nil)
+	r := openFiles(t, dir, nil)
 	defer r.Close()
 	if v, _ := r.Meta("imported"); v == "1" {
 		t.Error("files with skipped records still marked imported")
@@ -220,7 +174,7 @@ func TestSkippedRecordsUnmarkImport(t *testing.T) {
 // of its batch is lost and the files stay in use (review §1.1).
 func TestOutOfRangeTimeKeepsTheBatch(t *testing.T) {
 	var warns []string
-	e := openFiles(t, t.TempDir(), true, func(m string) { warns = append(warns, m) })
+	e := openFiles(t, t.TempDir(), func(m string) { warns = append(warns, m) })
 	defer e.Close()
 	far := logRec(t, "api", "s", ``)
 	far.Time = time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -241,7 +195,7 @@ func TestOutOfRangeTimeKeepsTheBatch(t *testing.T) {
 // is stored and the files stay in use (review §1.1).
 func TestBadRowSkipsOnlyItself(t *testing.T) {
 	var warns []string
-	e := openFiles(t, t.TempDir(), true, func(m string) { warns = append(warns, m) })
+	e := openFiles(t, t.TempDir(), func(m string) { warns = append(warns, m) })
 	defer e.Close()
 	e.wmu.Lock()
 	e.rejectRow = func(r record.Record) bool { return r.Seq == 2 }

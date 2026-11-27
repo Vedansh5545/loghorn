@@ -19,40 +19,24 @@ import (
 // KeepDays is how many days before today are kept, as for the text files.
 const KeepDays = 3
 
-// Options opens a store over a .loghorn directory.
+// Options opens the store over a data folder.
 type Options struct {
 	Mode     Mode
 	RunStart time.Time
 	Input    config.Input
-	Dir      string // the .loghorn directory, with the text logs
-	// DBDir holds loghorn.duckdb and the Parquet archive; ""
-	// means Dir.
-	DBDir string
-	// Write is true in the one process that owns the database file
-	// (loghorn serve, holding the data folder's lock): it writes and
-	// archives it.
-	Write bool
-	// DeferImport, with Write, is a run without -web: nothing reads the
-	// files this run, so an import from text is left to the next writer
-	// with -web and the command starts at once (D-027, adapting D-024).
-	// Records still go to the files; that import starts them again from
-	// text.
-	DeferImport bool
-	Now         func() time.Time // nil: time.Now
-	Warn        func(string)     // nil: print to stderr
+	// Dir is the data folder: the text logs, loghorn.duckdb and its
+	// Parquet archive. The store owns the database file: it is opened by
+	// the one process holding the folder's lock (loghorn serve).
+	Dir  string
+	Now  func() time.Time // nil: time.Now
+	Warn func(string)     // nil: print to stderr
 }
 
-// Open opens a store over the retained days (today and KeepDays before).
-//
-//   - Write: the database file, created if missing. Files not yet filled
-//     from text (new, cut short, or deferred) are started again from the
-//     retained days' text, once; after that the files hold the records.
-//     Closed days then move to Parquet archives, and expired ones go.
-//   - Live without Write: the owner has the files, so the retained days are
-//     read from their text into memory.
-//   - Otherwise (stored days): the files' and archives' records, copied
-//     into memory, or the text when there are no files, they can't be
-//     read, or they don't hold every record yet (not marked imported).
+// Open opens the database file in o.Dir for writing, creating it if
+// missing, over the retained days (today and KeepDays before). Files not
+// yet filled from text (new or cut short) are started again from the
+// retained days' text, once; after that the files hold the records.
+// Closed days then move to Parquet archives, and expired ones go.
 func Open(o Options) (*Store, error) {
 	if o.Now == nil {
 		o.Now = time.Now
@@ -60,33 +44,11 @@ func Open(o Options) (*Store, error) {
 	if o.Warn == nil {
 		o.Warn = func(m string) { fmt.Fprintln(os.Stderr, m) }
 	}
-	if o.DBDir == "" {
-		o.DBDir = o.Dir
-	}
-	today := DayNumber(o.Now())
-	switch {
-	case o.Write:
-		return openWriter(o, today)
-	case o.Mode == ModeLive:
-		return openText(o, today)
-	}
-	e, err := duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o, false))
-	if err != nil {
-		if _, serr := os.Stat(filepath.Join(o.DBDir, duckstore.FileName)); serr == nil {
-			o.Warn("loghorn: DuckDB: can't read the stored records (" + firstLine(err) + "); reading the text logs")
-		}
-		return openText(o, today)
-	}
-	if v, _ := e.Meta(duckstore.ImportedKey); v != "1" {
-		// The text has everything the files have, and more.
-		e.Close()
-		return openText(o, today)
-	}
-	return newStore(e, o), nil
+	return openWriter(o, DayNumber(o.Now()))
 }
 
-func fileOptions(o Options, write bool) duckstore.FileOptions {
-	return duckstore.FileOptions{Dir: o.DBDir, Write: write, KeepDays: KeepDays}
+func fileOptions(o Options) duckstore.FileOptions {
+	return duckstore.FileOptions{Dir: o.Dir, KeepDays: KeepDays}
 }
 
 func newStore(e *duckstore.Engine, o Options) *Store {
@@ -98,7 +60,7 @@ func newStore(e *duckstore.Engine, o Options) *Store {
 // openWriter opens the files for writing, importing the text first if they
 // haven't been filled from it yet.
 func openWriter(o Options, today int) (*Store, error) {
-	e, err := duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o, true))
+	e, err := duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o))
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +70,12 @@ func openWriter(o Options, today int) (*Store, error) {
 		e.Close()
 		return nil, err
 	}
-	if v != "1" && !o.DeferImport {
-		if e.Count() > 0 || archived(o.DBDir) {
+	if v != "1" {
+		if e.Count() > 0 || archived(o.Dir) {
 			// Whatever is there came from text, which still has it.
 			e.Close()
-			clearFiles(o.DBDir)
-			if e, err = duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o, true)); err != nil {
+			clearFiles(o.Dir)
+			if e, err = duckstore.OpenFiles(o.Input, o.Warn, fileOptions(o)); err != nil {
 				return nil, err
 			}
 		}
@@ -170,23 +132,6 @@ func (s *Store) importText(o Options, today int) (n int, complete bool) {
 		}
 	}
 	return s.e.Count() - before, complete
-}
-
-// openText reads the retained days' text into memory.
-func openText(o Options, today int) (*Store, error) {
-	e, err := duckstore.OpenMemory(o.Input, o.Warn)
-	if err != nil {
-		return nil, err
-	}
-	s := newStore(e, o)
-	for d := today - KeepDays; d <= today; d++ {
-		if files := dayText(o.Dir, d); textBytes(files) > 0 {
-			if err := s.load(files, d, o.Input); err != nil {
-				o.Warn("loghorn: reading the text logs: " + firstLine(err))
-			}
-		}
-	}
-	return s.ready(today), nil
 }
 
 // load reads text files of day into s, ids carrying that day. A day is
